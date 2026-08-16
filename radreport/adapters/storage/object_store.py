@@ -1,0 +1,117 @@
+"""Stores and retrieves recorded audio in S3-compatible object storage.
+
+Defines: ObjectStore, the interface; S3ObjectStore for real buckets; InMemoryObjectStore for
+tests; and audio_key, which builds the storage path for a recording.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import uuid
+from dataclasses import dataclass
+from typing import Any, BinaryIO, Protocol
+
+from radreport.core.config import StorageSettings
+from radreport.core.logging import get_logger
+
+log = get_logger(__name__)
+
+#: the two stores, kept apart by prefix as well as by policy.
+CLINICAL_PREFIX = "clinical"
+TRAINING_PREFIX = "training"
+"""The scrubbed copy. Muting person-name spans happens in the training copy only; the clinical archive stays intact."""
+
+
+@dataclass(frozen=True, slots=True)
+class StoredObject:
+    key: str
+    size_bytes: int
+    content_hash: str
+
+
+class ObjectStore(Protocol):
+    def put(self, key: str, data: bytes, *, content_type: str) -> StoredObject: ...
+    def get(self, key: str) -> bytes: ...
+    def open(self, key: str) -> BinaryIO: ...
+    def exists(self, key: str) -> bool: ...
+    def delete(self, key: str) -> None: ...
+
+
+def audio_key(tenant_id: uuid.UUID, recording_id: uuid.UUID, audio_format: str, *, uploaded_at: dt.datetime | None = None, store: str = CLINICAL_PREFIX) -> str:
+    """`<store>/<tenant>/<yyyy>/<mm>/<recording>.<ext>`"""
+    when = uploaded_at or dt.datetime.now(dt.UTC)
+    return f"{store}/{tenant_id}/{when:%Y/%m}/{recording_id}.{audio_format}"
+
+
+class S3ObjectStore:
+    """boto3-backed store with SSE-KMS."""
+
+    def __init__(self, settings: StorageSettings, *, client: Any | None = None) -> None:
+        self._settings = settings
+        self._bucket = settings.bucket
+        if client is not None:
+            self._client = client
+        else:
+            import boto3
+
+            self._client = boto3.client("s3", endpoint_url=settings.endpoint_url, aws_access_key_id=settings.access_key_id, aws_secret_access_key=settings.secret_access_key, region_name=settings.region)
+        if not settings.sse_kms_key_id:
+            log.warning("storage_sse_kms_unset", detail="falling back to SSE-S3; set a KMS key before handling real audio")
+
+    def _encryption_args(self) -> dict[str, str]:
+        if self._settings.sse_kms_key_id:
+            return {"ServerSideEncryption": "aws:kms", "SSEKMSKeyId": self._settings.sse_kms_key_id}
+        return {"ServerSideEncryption": "AES256"}
+
+    def put(self, key: str, data: bytes, *, content_type: str) -> StoredObject:
+        from radreport.core.hashing import hash_bytes
+
+        self._client.put_object(Bucket=self._bucket, Key=key, Body=data, ContentType=content_type, **self._encryption_args())
+        return StoredObject(key=key, size_bytes=len(data), content_hash=hash_bytes(data))
+
+    def get(self, key: str) -> bytes:
+        response = self._client.get_object(Bucket=self._bucket, Key=key)
+        return response["Body"].read()
+
+    def open(self, key: str) -> BinaryIO:
+        return self._client.get_object(Bucket=self._bucket, Key=key)["Body"]
+
+    def exists(self, key: str) -> bool:
+        from botocore.exceptions import ClientError
+
+        try:
+            self._client.head_object(Bucket=self._bucket, Key=key)
+        except ClientError:
+            return False
+        return True
+
+    def delete(self, key: str) -> None:
+        """Only for the erasure cascade."""
+        self._client.delete_object(Bucket=self._bucket, Key=key)
+
+
+class InMemoryObjectStore:
+    """For tests and the synthetic-data dev path. No PHI ever reaches it."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, bytes] = {}
+
+    def put(self, key: str, data: bytes, *, content_type: str) -> StoredObject:
+        from radreport.core.hashing import hash_bytes
+
+        self._data[key] = data
+        return StoredObject(key=key, size_bytes=len(data), content_hash=hash_bytes(data))
+
+    def get(self, key: str) -> bytes:
+        return self._data[key]
+
+    def open(self, key: str) -> BinaryIO:
+        import io
+
+        return io.BytesIO(self._data[key])
+
+    def exists(self, key: str) -> bool:
+        return key in self._data
+
+    def delete(self, key: str) -> None:
+        self._data.pop(key, None)
