@@ -652,3 +652,312 @@ keys, so a naive same-key check finds nothing.
 conditions, re-derivable at any time.
 
 - `evaluate_eligibility()`, `derive_training_eligibility()`, `rederive_for_tenant()`
+- `record_consent_event()` — the audit chain behind a withdrawal
+- `verify_g6_legal_basis()` — the adaptation gate reads this, not a boolean column
+
+---
+
+## 5. Engines
+
+The only place a vendor is named. Everything above calls an interface; swapping
+a provider is configuration, not an engineering project.
+
+**13 files, 1,995 lines.** (2 package `__init__` stubs omitted below.)
+
+| Lines | File | Purpose |
+|---:|---|---|
+| 452 | `adapters/asr/rover.py` | ROVER multi-engine voting. NULL is a candidate, which suppresses single-engine insertions. |
+| 288 | `adapters/llm/registry.py` | Resolves "which model serves task T for tenant X"; refuses activation without a gold-set eval run |
+| 200 | `adapters/llm/anthropic_client.py` | Anthropic client with cache-control blocks and usage accounting |
+| 172 | `adapters/llm/prompt.py` | `PromptBundle` — makes a cache-hostile prompt order unexpressible |
+| 155 | `adapters/llm/openai_compat.py` | OpenAI-compatible client, for locally hosted models |
+| 148 | `adapters/asr/whisper_local.py` | faster-whisper behind the engine interface, plus the deterministic stub |
+| 138 | `adapters/llm/base.py` | `LLMClient` protocol, request/response/usage types |
+| 133 | `adapters/llm/sampling.py` | k-sample fan-out with cache warm-up (sample 1 completes before 2..k) |
+| 127 | `adapters/llm/concurrency.py` | Concurrency limiter and circuit breaker |
+| 92 | `adapters/llm/pricing.py` | Corrected Sonnet 5 pricing and cached-call cost accounting |
+| 90 | `adapters/asr/base.py` | `ASREngine` protocol, word timings, config hashing for idempotent reruns |
+
+### `adapters/llm/base.py` — the LLM interface
+One interface over cloud and local providers. A local model is a row in
+`model_definition` with an `endpoint_override`, not a second code path.
+
+- `LLMClient` protocol, `LLMRequest` / `LLMResponse`, `BatchRequestItem`
+- `Usage` and `ResolvedModelRef` — cost and provenance recorded on every call
+
+### `adapters/llm/prompt.py` — prompt construction with cache ordering
+The rule `[stable: system, schema, exemplars] → [breakpoint] → [volatile:
+transcript]` is a type here, not a convention. Retrofitting it means
+restructuring every prompt and re-running the gate.
+
+- `PromptBundle` makes the wrong order unexpressible
+- `system_block()`, `schema_block()`, `section_block()`, `exemplar_block()`
+- Rejects unpinned exemplars in the stable region — they invalidate the prefix while looking cached
+
+### `adapters/llm/sampling.py` — k-sample self-consistency
+Sample 1 must complete before 2..k fire. The obvious `asyncio.gather` over all k
+forfeits ~29% of the LLM bill, silently.
+
+- `sample_k()` with the cache warm-up ordering, `majority_vote()` over `SampleSet`
+- Varies temperature and seed only — samples 2..k are exact prefix repeats
+
+### `adapters/llm/registry.py` — task → model resolution
+Every call site asks which model serves task `extraction` for tenant T; none
+names a model. Skipping this hardcodes a model id in seven places.
+
+- `TaskModelResolver` → `ResolvedModel`, per tenant per task
+- `activate_assignment()` refuses activation without a gold-set `eval_run` — a rule Postgres `CHECK` cannot express
+
+### `adapters/llm/pricing.py` — cost accounting
+Makes the real per-stage number observable, which is the only way the
+optimisation ladder gets verified rather than asserted.
+
+- `cost_usd()` with cache tiers and the Batch API discount
+- `derive_cache_prices()`, `savings_vs_uncached()`, `SeedPrice` for the catalog
+
+### `adapters/llm/concurrency.py` — rate limiting and circuit breaking
+Covers saturation, which the design doc's outage handling does not. An unbounded
+retry storm against a rate limit looks exactly like an outage.
+
+- `ProviderLimiter` — concurrency ceiling and backpressure per provider
+- `CircuitBreaker` — opens on sustained failure rather than retrying into it
+
+### `adapters/llm/anthropic_client.py` — Anthropic client
+Written against the current API shape, which the design doc predates.
+
+- `thinking: {type: "adaptive"}` plus `output_config.effort`; `budget_tokens` is rejected
+- Structured output via `output_config.format`; tool schemas take top-level `strict: true`
+- No assistant prefill
+
+### `adapters/llm/openai_compat.py` — OpenAI-compatible client
+What makes "local models are just rows with an `endpoint_override`" true rather
+than aspirational.
+
+- `OpenAICompatibleClient` against any OpenAI-shaped endpoint
+- Lets the bounded tasks move to open-weight models as a configuration change
+
+### `adapters/asr/base.py` — the ASR interface
+Phase-0 infrastructure, not a pipeline stage: S4's bootstrap run needs it, S4
+gates the gold set, and the gold set gates everything.
+
+- `ASREngine` protocol, `ASRConfig`, `ASRResult`, `Word` with timings
+- Shaped for a bake-off, because Phase 2 runs one across several engines
+
+### `adapters/asr/whisper_local.py` — local Whisper
+The one engine behind the interface today. Medium is the default over large-v3
+on the design doc's own numbers: 13.2% WER against 19.0% on Indian-accented
+speech, with insertions at 50.7% of large-v3's errors.
+
+- `WhisperLocalEngine` and `StubASREngine` for tests and no-model runs
+- An invented word in a clinical transcript is not a smaller error than a missed one
+
+### `adapters/asr/rover.py` — multi-engine voting
+Recognizer Output Voting Error Reduction. Two engines rarely make the same
+mistake, and where they agree the word is almost certainly right.
+
+- `choose_base()`, `build_network()`, `reconcile()` — word transition network and per-slot vote
+- `DisputedSpan` + `arbitration_payload()` / `apply_arbitration()` for the slots voting cannot settle
+- `from_asr_results()` adapts the engine outputs into hypotheses
+
+---
+
+## 6. Review and export
+
+The human loop and what leaves the building. The schema for this was designed in
+Phase 0; this module is the behaviour.
+
+**10 files, 2,371 lines.** (1 package `__init__` stub omitted below.)
+
+| Lines | File | Purpose |
+|---:|---|---|
+| 590 | `review/session.py` | Open a draft, record revisions, `active_edit_seconds`, categorised edit events |
+| 478 | `review/signing.py` | The four refusals between a draft and a signed record; addenda |
+| 280 | `export/hl7.py` | HL7 v2 ORU^R01, MLLP-framed |
+| 280 | `review/grading.py` | G0–G4, CSE rate, and the feed into autonomy accrual + CUSUM |
+| 262 | `export/fhir.py` | FHIR R4 DiagnosticReport + transaction bundle |
+| 272 | `review/queue.py` | Priority → alert → flagged count → oldest, filtered by role |
+| 153 | `review/feedback.py` | §9.6's "this draft was useless", actually recorded |
+| 135 | `review/rbac.py` | The four roles, genuinely different (an assistant may not sign) |
+| 6 | `review/__init__.py` | Package docstring |
+
+### `review/rbac.py` — the four roles
+Stated as code because the instinct is to collapse them into "can edit" and
+"can't", and three of the four distinctions are load-bearing.
+
+- `Reviewer`, `Permission`, `require()`, `PermissionDenied`
+- A radiologist assistant may revise but may not sign — two-layer supervision is the safety model
+- Enforced server-side on every route, never from a header
+
+### `review/queue.py` — the review queue
+Flagged-first ordering, which `report_draft.flagged_field_count` exists to
+drive: a reviewer who reads thirty near-perfect drafts stops reading carefully.
+
+- `build_queue()` and `sort_key()` — priority beats flags, flags beat age
+- `queue_stats()`, `count_by_status()` for the dashboard
+
+### `review/session.py` — opening and revising a draft
+Produces the most commercially valuable data in the system, and two fields carry
+that value.
+
+- `open_draft()` → `DraftView` with fields, provenance and `Retraction`s
+- `record_revision()` + `categorise_edit()` — per-field edit events with audio offsets
+- `active_edit_seconds` is focus time, not wall clock; the break-even bar is 18–36 seconds
+
+### `review/signing.py` — signing and amendment
+The moment a draft becomes a legal medical record, so the gates are refusals
+rather than warnings.
+
+- `preflight()` → `SigningChecks.may_sign`, so the button and the call agree; `SigningRefused` otherwise
+- Four gates: only a radiologist signs, no blocking verification finding, no unacknowledged
+  critical alert (`acknowledge_alert()`), no ungrounded value
+- `final_report` is immutable and content-hashed; `amend_report()` writes an addendum pointing at
+  the report it amends
+
+### `review/grading.py` — G0–G4
+A judgement about clinical significance, not edit volume. G3 and G4 are the CSE
+set, and the CSE rate is what every non-inferiority calculation is made of.
+
+- `grade_report()` on the §5.4.1 sampling schedule
+- `cse_rate()` → the number autonomy accrual and the release gate both read
+
+### `review/feedback.py` — "this draft was useless"
+The affordance plus the half that usually goes missing: somewhere for the answer
+to go, and a number someone looks at.
+
+- `report_usefulness()`, `usefulness_stats()`
+- Flywheel-stall detection: a reviewer who rewrites from scratch stops engaging
+
+### `export/hl7.py` — HL7 v2 ORU^R01
+The format every RIS in an Indian radiology practice already speaks. Built by
+hand because the message emitted here is one narrow shape.
+
+- `build_oru()` from a signed `final_report` + `OruContext`
+- `escape()` and `hl7_timestamp()` for the encoding rules
+- `ExportRefused` — an unsigned report cannot be exported
+
+### `export/fhir.py` — FHIR R4 DiagnosticReport
+The modern half. Both exist because a deployment does not get to choose which
+system its customer runs.
+
+- `build_diagnostic_report()` and `build_bundle()` as plain dicts
+- `FhirContext` carries the patient, practitioner and accession references
+
+---
+
+## 7. Governance
+
+Measurement, and the machinery that decides what the rest of the system is
+allowed to do unsupervised. Reads from everything; called by nothing.
+
+**16 files, 3,341 lines.** (3 package `__init__` stubs omitted below.)
+
+| Lines | File | Purpose |
+|---:|---|---|
+| 443 | `autonomy/accrual.py` | Evidence gathering and the Beta-Binomial posterior |
+| 443 | `eval/goldset.py` | §5.3-stratified assembly, freeze, permanent training exclusion |
+| 423 | `eval/bakeoff.py` | ASR bake-off: per-partition, insertions tracked independently |
+| 374 | `monitoring/drift.py` | PSI against an explicit baseline window |
+| 360 | `autonomy/grant.py` | Bayesian sequential grant, mechanical CUSUM revocation |
+| 348 | `adaptation/gates.py` | §8.6.5's six gates; two unimplemented and failing closed |
+| 321 | `eval/harness.py` | Eval runner, scopeable to one `task_key` |
+| 175 | `eval/gates.py` | Release-gate evaluation with per-stratum breakdowns |
+| 158 | `eval/metrics/asr_metrics.py` | WER, INS_RATE, CTER — all from one alignment |
+| 103 | `eval/metrics/routing_metrics.py` | Routing accuracy, codeword compliance, study-code recall |
+| 97 | `eval/metrics/alignment.py` | Token alignment shared by the ASR metrics |
+| 90 | `eval/metrics/__init__.py` | Metric registry |
+| 272 | `autonomy/release.py` | The release gate: what a grant actually changes, and §4.3's coverage |
+| 4 | `autonomy/__init__.py` | Package docstring — Beta observes, Phase 6 grants |
+
+### `eval/harness.py` — the eval harness
+Precedes the pipeline by invariant I6: you cannot tell whether a stage works
+without something to measure it with, and retrofitting means every earlier stage
+was built blind.
+
+- `EvalHarness` over `EvalContext` and `StageOutputs`
+- Scopeable to one `task_key`, so a per-task model swap can be measured alone
+- `assert_no_eval_leakage()` — training data must not reach the eval set
+
+### `eval/goldset.py` — gold-set assembly
+Stratified by `capture_device_class`, because a WER measured on the lab's old
+handhelds predicts nothing about the microphones about to arrive.
+
+- `eligible_candidates()`, `assemble()`, `freeze()` — an immutable set every gate reads
+- `quality_bucket()`, `partition_summary()`
+- `assert_no_training_leakage()` enforces the R21 exclusion
+
+### `eval/bakeoff.py` — the ASR bake-off
+Refuses to produce a single score, on the strength of §7.6: a combined number
+would have picked large-v3, the model that invents words.
+
+- `run_bakeoff()` per partition, per engine → `EngineResult` / `PartitionResult`
+- Insertions reported independently of WER, never folded in
+- `has_non_latin_script()` and `format_report()` for the decision record
+
+### `eval/gates.py` — release gates
+No pipeline version reaches production unless a release-gate `eval_run` shows no
+regression on CSE_DRAFT, HALLUC_RATE or ROUTE_TOP1 per template.
+
+- `evaluate_gate()` → `GateVerdict`, per `GateMetric`
+- `Direction` per metric — ROUTE_TOP1 regresses downward, HALLUC_RATE upward
+
+### `eval/metrics/` — one module per §5.2 metric
+The registry plus the metrics computable from stored artefacts alone. Two
+separations here are structural, not stylistic.
+
+- `__init__.py` — `Metric` protocol, `MetricRegistry`, `default_registry`; task-scoping so a
+  routing-only run does not report an empty WER as a result
+- `alignment.py` — `tokenize()` / `align()`, shared so WER and INS_RATE come from one alignment
+- `asr_metrics.py` — `WordErrorRate`, `InsertionRate`, `ClinicalTermErrorRate`
+- `routing_metrics.py` — `CodewordCompliance` (did they say it) vs. `StudyCodeRecall` (did we
+  hear it) vs. `RouteTop1`
+
+### `autonomy/accrual.py` — observation only
+Records evidence and computes how much of it exists. Grants nothing. Evidence
+gathered before anyone can act on it is evidence nobody was tempted to shape.
+
+- `record_observation()`, `snapshot()` → `AccrualSnapshot`
+- `posterior_non_inferiority()` against the measured baseline
+- `open_accrual()` starts a window
+
+### `autonomy/grant.py` — grant and revocation
+The asymmetry is the design: granting is deliberate and hard, revocation is fast
+and available to the party at risk.
+
+- `grant()` needs volume, posterior above threshold, a measured baseline and a named human
+- `revoke()` / `suspend()` — a lab admin may revoke its own autonomy; only a product admin grants it
+- `cusum_increment()` / `step_cusum()` / `observe_graded_report()` — continuous CUSUM monitoring
+
+### `autonomy/release.py` — the gate that acts on a grant
+The seam that was missing until Phase 6: `autonomy_class.status` was written by
+`grant.py` and read by nothing, so a granted class behaved exactly like an
+accruing one and §4.3's review reduction had no implementation.
+
+- `may_release_without_review()` → `ReleaseDecision` with a stable `blocker` code
+- **The §5.4.1 grading sample is never released.** Grading feeds the CUSUM and
+  the CUSUM is the only thing that can revoke, so releasing the sample would
+  freeze the monitor at the moment the grant lands — and it would keep
+  reporting as coverage
+- `AUTONOMOUS_RELEASE_THRESHOLD = 0.90`, above §8.3.7's 0.70. That number is the
+  bar for "an assistant may review this", which still has a human reading every
+  word; it was never calibrated for "nobody does". **Not from the design doc** —
+  a policy constant stated here with its rationale
+- Also gated on `radiologist_profile.autonomy_enabled`, which nothing read
+  before: a class-level grant is not consent from the person whose name is on
+  the report (§10.7)
+- `coverage()` → `Coverage`, measuring §4.3's target over *signed* volume
+
+### `adaptation/gates.py` — §8.6.5's six prerequisite gates
+Nothing trains until all six pass, and the result is recorded against the
+adaptation run so a promoted model traces back to the evidence that permitted it.
+
+- Implemented: `gate_g1_volume`, `gate_g3_speaker_balance`, `gate_g4_hardware_homogeneous`,
+  `gate_g6_legal_basis`
+- **G2 and G5 are unimplemented and fail closed** — their text is in neither `PLAN.md` nor the
+  design PDF
+- `evaluate_gates()` → `GateReport`; `require_gates()` raises `AdaptationBlocked`
+
+### `monitoring/drift.py` — drift monitoring
+A vendor-side model change is a pipeline change that must re-clear the release
+gate. This notices when something changed and nobody said so.
+
+- `population_stability_index()` against an explicit baseline window, not a mean comparison
