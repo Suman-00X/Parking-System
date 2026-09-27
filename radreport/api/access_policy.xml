@@ -1,0 +1,377 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Who may call which route. Read once at startup by radreport/api/access.py; every
+  request is checked against it before any route handler runs.
+
+  - A route that is not listed here is refused (404), and the app refuses to start
+    if it serves a route this file does not list, or lists one it does not serve.
+  - realm="public": no sign-in. realm="admin": the admin panel's session cookie.
+    realm="lab": a lab user (currently the X-User-Id / X-Tenant-Id headers).
+  - <allow role="..."/> names each role that may call the route; a role must belong
+    to the route's realm. Handlers keep their own finer checks on top of this.
+  - rate-limit names a <rate-limit>; its counter is shared by every route that uses
+    it, per caller (key="principal") or per client address (key="ip").
+  - max-body-bytes refuses a larger declared Content-Length with 413.
+  - environments limits a route to those deployment environments; elsewhere it 404s.
+-->
+<access-policy version="1">
+
+  <roles>
+    <role id="product_admin" realm="admin" description="Configures labs, models and platform users."/>
+    <role id="support" realm="admin" description="Read-only view of the admin panel."/>
+    <role id="lab_admin" realm="lab" description="Runs a lab's day-to-day operations."/>
+    <role id="radiologist" realm="lab" description="Clinical approvals, review and signing."/>
+    <role id="transcriptionist" realm="lab" description="Drafts revisions and verbatim transcripts."/>
+    <role id="auditor" realm="lab" description="Read-only clinical audit."/>
+  </roles>
+
+  <rate-limits>
+    <rate-limit id="login" requests="5" window-seconds="60" key="ip"/>
+    <rate-limit id="public" requests="120" window-seconds="60" key="ip"/>
+    <rate-limit id="admin-read" requests="300" window-seconds="60" key="principal"/>
+    <rate-limit id="admin-write" requests="60" window-seconds="60" key="principal"/>
+    <rate-limit id="admin-upload" requests="10" window-seconds="60" key="principal"/>
+    <rate-limit id="lab-read" requests="300" window-seconds="60" key="principal"/>
+    <rate-limit id="lab-write" requests="120" window-seconds="60" key="principal"/>
+    <rate-limit id="lab-upload" requests="30" window-seconds="60" key="principal"/>
+  </rate-limits>
+
+  <!-- ============================================================ public -->
+  <routes realm="public">
+    <route id="ops.health" method="GET" path="/health" rate-limit="public" description="Liveness."/>
+    <route id="ops.ready" method="GET" path="/ready" rate-limit="public" description="Readiness of dependencies."/>
+    <route id="ui.static" method="GET" path="/ui/static/{name}" rate-limit="public" description="Stylesheets and scripts."/>
+    <route id="docs.openapi" method="GET" path="/openapi.json" rate-limit="public" environments="local test development"/>
+    <route id="docs.swagger" method="GET" path="/docs" rate-limit="public" environments="local test development"/>
+    <route id="docs.swagger-redirect" method="GET" path="/docs/oauth2-redirect" rate-limit="public" environments="local test development"/>
+    <route id="docs.redoc" method="GET" path="/redoc" rate-limit="public" environments="local test development"/>
+    <route id="admin.login.page" method="GET" path="/admin/login" rate-limit="public" description="Admin panel sign-in form."/>
+    <route id="admin.login" method="POST" path="/admin/login" rate-limit="login" max-body-bytes="4096" description="Admin panel sign-in."/>
+    <route id="admin.logout" method="POST" path="/admin/logout" rate-limit="public" max-body-bytes="4096" description="Admin panel sign-out; harmless without a session."/>
+  </routes>
+
+  <!-- ============================================== admin panel (HTML) -->
+  <routes realm="admin">
+    <route id="admin.home" method="GET" path="/admin" rate-limit="admin-read">
+      <allow role="product_admin"/>
+      <allow role="support"/>
+    </route>
+    <route id="admin.labs.page" method="GET" path="/admin/labs" rate-limit="admin-read">
+      <allow role="product_admin"/>
+      <allow role="support"/>
+    </route>
+    <route id="admin.labs.create" method="POST" path="/admin/labs" rate-limit="admin-write" max-body-bytes="65536">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.lab.page" method="GET" path="/admin/labs/{tenant_id}" rate-limit="admin-read">
+      <allow role="product_admin"/>
+      <allow role="support"/>
+    </route>
+    <route id="admin.lab.readiness.page" method="GET" path="/admin/labs/{tenant_id}/readiness" rate-limit="admin-read">
+      <allow role="product_admin"/>
+      <allow role="support"/>
+    </route>
+    <route id="admin.lab.status" method="POST" path="/admin/labs/{tenant_id}/status" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.lab.assign" method="POST" path="/admin/labs/{tenant_id}/assign" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.lab.assignment.activate" method="POST" path="/admin/labs/{tenant_id}/assignments/{assignment_id}/activate" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.lab.onboarding.page" method="GET" path="/admin/labs/{tenant_id}/onboarding" rate-limit="admin-read">
+      <allow role="product_admin"/>
+      <allow role="support"/>
+    </route>
+    <route id="admin.lab.onboarding.roster" method="POST" path="/admin/labs/{tenant_id}/onboarding/roster" rate-limit="admin-upload" max-body-bytes="52428800">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.lab.onboarding.templates" method="POST" path="/admin/labs/{tenant_id}/onboarding/templates" rate-limit="admin-upload" max-body-bytes="52428800">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.lab.onboarding.merge-proposals" method="POST" path="/admin/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.lab.onboarding.step" method="POST" path="/admin/labs/{tenant_id}/onboarding/steps/{step}" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.providers.page" method="GET" path="/admin/providers" rate-limit="admin-read">
+      <allow role="product_admin"/>
+      <allow role="support"/>
+    </route>
+    <route id="admin.providers.create" method="POST" path="/admin/providers" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.models.create" method="POST" path="/admin/models" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.users.page" method="GET" path="/admin/users" rate-limit="admin-read">
+      <allow role="product_admin"/>
+      <allow role="support"/>
+    </route>
+    <route id="admin.users.create" method="POST" path="/admin/users" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.user.deactivate" method="POST" path="/admin/users/{user_id}/deactivate" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.user.reactivate" method="POST" path="/admin/users/{user_id}/reactivate" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.user.password" method="POST" path="/admin/users/{user_id}/password" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+  </routes>
+
+  <!-- ============================================== admin panel (JSON) -->
+  <routes realm="admin">
+    <route id="admin.api.labs.list" method="GET" path="/admin/api/labs" rate-limit="admin-read">
+      <allow role="product_admin"/>
+      <allow role="support"/>
+    </route>
+    <route id="admin.api.labs.create" method="POST" path="/admin/api/labs" rate-limit="admin-write" max-body-bytes="65536">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.lab.readiness" method="GET" path="/admin/api/labs/{tenant_id}/readiness" rate-limit="admin-read">
+      <allow role="product_admin"/>
+      <allow role="support"/>
+    </route>
+    <route id="admin.api.lab.status" method="POST" path="/admin/api/labs/{tenant_id}/status" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.lab.steps" method="GET" path="/admin/api/labs/{tenant_id}/steps" rate-limit="admin-read">
+      <allow role="product_admin"/>
+      <allow role="support"/>
+    </route>
+    <route id="admin.api.lab.assignments.propose" method="POST" path="/admin/api/labs/{tenant_id}/assignments" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.lab.assignment.activate" method="POST" path="/admin/api/labs/{tenant_id}/assignments/{assignment_id}/activate" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.lab.onboarding.status" method="GET" path="/admin/api/labs/{tenant_id}/onboarding" rate-limit="admin-read">
+      <allow role="product_admin"/>
+      <allow role="support"/>
+    </route>
+    <route id="admin.api.lab.onboarding.roster" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/roster" rate-limit="admin-upload" max-body-bytes="52428800">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.lab.onboarding.templates" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/templates" rate-limit="admin-upload" max-body-bytes="52428800">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.lab.onboarding.corpus" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/corpus" rate-limit="admin-upload" max-body-bytes="104857600">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.lab.onboarding.merge-proposals" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.lab.onboarding.step" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/steps/{step}" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.lab.autonomy.read" method="GET" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}" rate-limit="admin-read">
+      <allow role="product_admin"/>
+      <allow role="support"/>
+    </route>
+    <route id="admin.api.lab.autonomy.open-accrual" method="POST" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}/open-accrual" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.lab.autonomy.grant" method="POST" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}/grant" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.lab.autonomy.revoke" method="POST" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}/revoke" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.lab.adaptation.gates" method="POST" path="/admin/api/labs/{tenant_id}/adaptation/gates" rate-limit="admin-write" max-body-bytes="1048576">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.lab.adaptation.require-gates" method="POST" path="/admin/api/labs/{tenant_id}/adaptation/require-gates" rate-limit="admin-write" max-body-bytes="1048576">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.users.list" method="GET" path="/admin/api/users" rate-limit="admin-read">
+      <allow role="product_admin"/>
+      <allow role="support"/>
+    </route>
+    <route id="admin.api.users.create" method="POST" path="/admin/api/users" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.user.deactivate" method="POST" path="/admin/api/users/{user_id}/deactivate" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.user.reactivate" method="POST" path="/admin/api/users/{user_id}/reactivate" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+    <route id="admin.api.user.password" method="POST" path="/admin/api/users/{user_id}/password" rate-limit="admin-write" max-body-bytes="4096">
+      <allow role="product_admin"/>
+    </route>
+  </routes>
+
+  <!-- ======================================================== ingest -->
+  <routes realm="lab">
+    <route id="ingest.recording" method="POST" path="/ingest/recordings" rate-limit="lab-upload" max-body-bytes="536870912">
+      <allow role="radiologist"/>
+      <allow role="lab_admin"/>
+    </route>
+  </routes>
+
+  <!-- ========================================= onboarding (lab side) -->
+  <routes realm="lab">
+    <route id="onboarding.voice-enrollment" method="POST" path="/onboarding/radiologists/{radiologist_id}/voice-enrollment" rate-limit="lab-write" max-body-bytes="65536">
+      <allow role="lab_admin"/>
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.training-consent" method="POST" path="/onboarding/radiologists/{radiologist_id}/training-consent" rate-limit="lab-write" max-body-bytes="4096">
+      <allow role="lab_admin"/>
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.candidates" method="GET" path="/onboarding/templates/candidates" rate-limit="lab-read">
+      <allow role="lab_admin"/>
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.candidate.review" method="POST" path="/onboarding/templates/candidates/{candidate_id}/review" rate-limit="lab-write" max-body-bytes="1048576">
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.merge.decide" method="POST" path="/onboarding/merge-proposals/{proposal_id}/decide" rate-limit="lab-write" max-body-bytes="4096">
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.batch.apply" method="POST" path="/onboarding/batches/{batch_id}/apply" rate-limit="lab-write" max-body-bytes="4096">
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.batch.revert" method="POST" path="/onboarding/batches/{batch_id}/revert" rate-limit="lab-write" max-body-bytes="4096">
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.mapping.verify" method="POST" path="/onboarding/corpus/mappings/{mapping_id}/verify" rate-limit="lab-write" max-body-bytes="4096">
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.histogram" method="GET" path="/onboarding/corpus/histogram" rate-limit="lab-read">
+      <allow role="lab_admin"/>
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.referrer-prior" method="GET" path="/onboarding/corpus/referrer-prior" rate-limit="lab-read">
+      <allow role="lab_admin"/>
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.finding.resolve" method="POST" path="/onboarding/collision-findings/{finding_id}/resolve" rate-limit="lab-write" max-body-bytes="4096">
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.verbatim.queue" method="GET" path="/onboarding/verbatim/queue" rate-limit="lab-read">
+      <allow role="transcriptionist"/>
+      <allow role="lab_admin"/>
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.verbatim.submit" method="POST" path="/onboarding/verbatim" rate-limit="lab-write" max-body-bytes="1048576">
+      <allow role="transcriptionist"/>
+    </route>
+    <route id="onboarding.boilerplate.export" method="GET" path="/onboarding/boilerplate/export" rate-limit="lab-read">
+      <allow role="lab_admin"/>
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.boilerplate.promote" method="POST" path="/onboarding/boilerplate/{candidate_id}/promote" rate-limit="lab-write" max-body-bytes="4096">
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.rule.author" method="POST" path="/onboarding/critical-rules" rate-limit="lab-write" max-body-bytes="65536">
+      <allow role="radiologist"/>
+    </route>
+    <route id="onboarding.rule.approve" method="POST" path="/onboarding/critical-rules/{rule_id}/approve" rate-limit="lab-write" max-body-bytes="4096">
+      <allow role="radiologist"/>
+    </route>
+  </routes>
+
+  <!-- ======================================================== review -->
+  <routes realm="lab">
+    <route id="review.queue" method="GET" path="/review/queue" rate-limit="lab-read">
+      <allow role="radiologist"/>
+      <allow role="transcriptionist"/>
+      <allow role="lab_admin"/>
+      <allow role="auditor"/>
+    </route>
+    <route id="review.queue.stats" method="GET" path="/review/queue/stats" rate-limit="lab-read">
+      <allow role="radiologist"/>
+      <allow role="transcriptionist"/>
+      <allow role="lab_admin"/>
+      <allow role="auditor"/>
+    </route>
+    <route id="review.draft" method="GET" path="/review/drafts/{draft_id}" rate-limit="lab-read">
+      <allow role="radiologist"/>
+      <allow role="transcriptionist"/>
+      <allow role="auditor"/>
+    </route>
+    <route id="review.draft.audio" method="GET" path="/review/drafts/{draft_id}/audio" rate-limit="lab-read">
+      <allow role="radiologist"/>
+      <allow role="transcriptionist"/>
+      <allow role="auditor"/>
+    </route>
+    <route id="review.draft.revision" method="POST" path="/review/drafts/{draft_id}/revisions" rate-limit="lab-write" max-body-bytes="1048576">
+      <allow role="radiologist"/>
+      <allow role="transcriptionist"/>
+    </route>
+    <route id="review.draft.sign" method="POST" path="/review/drafts/{draft_id}/sign" rate-limit="lab-write" max-body-bytes="4096">
+      <allow role="radiologist"/>
+    </route>
+    <route id="review.report.addendum" method="POST" path="/review/reports/{report_id}/addendum" rate-limit="lab-write" max-body-bytes="1048576">
+      <allow role="radiologist"/>
+    </route>
+    <route id="review.alert.acknowledge" method="POST" path="/review/alerts/{alert_id}/acknowledge" rate-limit="lab-write" max-body-bytes="4096">
+      <allow role="radiologist"/>
+    </route>
+    <route id="review.report.grade" method="POST" path="/review/reports/{report_id}/grade" rate-limit="lab-write" max-body-bytes="4096">
+      <allow role="radiologist"/>
+    </route>
+    <route id="review.metrics.cse-rate" method="GET" path="/review/metrics/cse-rate" rate-limit="lab-read">
+      <allow role="radiologist"/>
+    </route>
+    <route id="review.draft.usefulness" method="POST" path="/review/drafts/{draft_id}/usefulness" rate-limit="lab-write" max-body-bytes="4096">
+      <allow role="radiologist"/>
+      <allow role="transcriptionist"/>
+    </route>
+    <route id="review.metrics.usefulness" method="GET" path="/review/metrics/usefulness" rate-limit="lab-read">
+      <allow role="radiologist"/>
+      <allow role="transcriptionist"/>
+      <allow role="lab_admin"/>
+      <allow role="auditor"/>
+    </route>
+    <route id="ui.queue" method="GET" path="/ui/queue" rate-limit="lab-read">
+      <allow role="radiologist"/>
+      <allow role="transcriptionist"/>
+      <allow role="lab_admin"/>
+      <allow role="auditor"/>
+    </route>
+    <route id="ui.draft" method="GET" path="/ui/drafts/{draft_id}" rate-limit="lab-read">
+      <allow role="radiologist"/>
+      <allow role="transcriptionist"/>
+      <allow role="auditor"/>
+    </route>
+  </routes>
+
+  <!-- ===================================== autonomy, export, drift -->
+  <routes realm="lab">
+    <route id="ga.autonomy.read" method="GET" path="/ga/autonomy/{class_code}" rate-limit="lab-read">
+      <allow role="lab_admin"/>
+      <allow role="radiologist"/>
+      <allow role="auditor"/>
+    </route>
+    <route id="ga.autonomy.revoke" method="POST" path="/ga/autonomy/{class_code}/revoke" rate-limit="lab-write" max-body-bytes="4096">
+      <allow role="radiologist"/>
+      <allow role="lab_admin"/>
+    </route>
+    <route id="ga.autonomy.coverage" method="GET" path="/ga/autonomy-coverage" rate-limit="lab-read">
+      <allow role="radiologist"/>
+      <allow role="lab_admin"/>
+      <allow role="auditor"/>
+    </route>
+    <route id="ga.export.hl7" method="GET" path="/ga/export/{report_id}/hl7" rate-limit="lab-read">
+      <allow role="radiologist"/>
+      <allow role="lab_admin"/>
+    </route>
+    <route id="ga.export.fhir" method="GET" path="/ga/export/{report_id}/fhir" rate-limit="lab-read">
+      <allow role="radiologist"/>
+      <allow role="lab_admin"/>
+    </route>
+    <route id="ga.drift" method="GET" path="/ga/drift" rate-limit="lab-read">
+      <allow role="lab_admin"/>
+      <allow role="radiologist"/>
+      <allow role="auditor"/>
+    </route>
+  </routes>
+
+</access-policy>
