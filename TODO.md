@@ -1,3 +1,320 @@
+# TODO Roadmap (2026-10-05)
+
+## BLOCKING: `alembic upgrade head` fails on a fresh database (CRITICAL)
+
+**Found 2026-10-05 while verifying Phase 6's migration 0006.** Pre-existing and
+unrelated to that change, but it blocks the entire `tests/db` suite — those
+tests run `command.upgrade(config, "head")` in the `migrated_db` fixture, so
+none of them can run until this is fixed.
+
+### The cause
+Revision **0001** builds the schema with `Base.metadata.create_all`, which reads
+the **live models**. Every later hand-written migration then tries to re-apply a
+change the models already express. First failure:
+
+```
+0004_template_version_spoken_code.py
+  ALTER TABLE template_version DROP CONSTRAINT uq_template_version_tenant_id_spoken_study_code
+  -> psycopg.errors.UndefinedObject: constraint ... does not exist
+```
+
+The constraint is already absent from `Base.metadata`, so 0001 never created it.
+**0005 has the same shape** — it drops `task_key_valid`, while the real
+constraint name under the `ck_%(table_name)s_%(constraint_name)s` naming
+convention is `ck_task_model_assignment_task_key_valid`. Both are latent until
+someone migrates from scratch.
+
+### Options (a decision, not a mechanical fix)
+- [ ] **Freeze 0001.** Transcribe the schema as it stood at 0001 into explicit
+      `op.create_table` calls so it stops tracking the models. Correct, and the
+      one that makes every future migration behave. ~57 tables of work.
+- [ ] **Make 0002–0005 idempotent**, guarding each step on the current database
+      state (`pg_constraint` / `information_schema`). Cheaper, and what 0006
+      already does — see `_has_column` / `_has_constraint` there. Leaves the
+      underlying drift in place.
+- [ ] **Squash to a new baseline.** Drop 0001–0005, emit one revision from
+      today's models. Simplest, but only if no deployed database is mid-chain.
+
+Also fix 0005's two `drop_constraint("task_key_valid", ...)` calls to use the
+convention-qualified name regardless of which option is chosen.
+
+---
+
+## BLOCKING: Lab User Authentication (CRITICAL — Production Blocker)
+
+**Current State (2026-10-06):** Lab users have no real login. Admins do.
+
+### Context
+- **Admin auth**: session cookie from `/admin/login` (server-side, revocable). Every
+  route's roles, rate limit and body cap are in `radreport/api/access_policy.xml`,
+  enforced by `AccessMiddleware` (`radreport/api/access.py`) before any handler runs.
+- **Lab user auth**: still the placeholder `X-User-Id` + `X-Tenant-Id` headers,
+  **accepted in every environment, production included**. The middleware now looks
+  the user up inside the claimed tenant and checks their stored roles against the
+  policy, so a forged pair must name a real, active user with the right role; but
+  nothing proves the caller *is* that user.
+- The review UI (`/ui/*`) cannot be used from a plain browser, because nothing
+  sends those headers.
+
+### Required Before Production
+
+- [ ] **Implement Lab User Authentication** (TBD)
+  - Choose auth method: OIDC, session-based, or deployment-specific
+  - Replace `AccessMiddleware._identify_lab_user` in `radreport/api/access.py`;
+    handlers read `request.state.identity` through `current_principal`, so they
+    do not change. The policy file's `realm="lab"` routes and roles stay as they are.
+  - Build login UI (form or redirect to IdP)
+  - Until then, consider refusing the header path outside local/test/development
+    the way the old admin header was refused.
+
+### Why This Matters
+- Today anyone who can reach the API and knows a lab user's id and tenant id can
+  act as that user.
+- This is prerequisite for any production deployment.
+
+## Rate limits are per process
+
+`RateLimiter` in `radreport/api/access.py` counts in memory, so with
+`WORKERS=N` each worker allows the full limit (up to N× overall), and limits reset
+on restart. Move the counters to Postgres or Redis before relying on them for
+abuse protection across workers.
+
+---
+
+# Cost Optimization Roadmap (2026-10-05)
+
+## Overview
+App not yet cost-optimized. Upgrading hardware alone will only help 10-30%.
+Expected optimization potential: **40-60% cost reduction** with app-level fixes.
+
+**ROI:** $20k engineering → $108-144k savings over 3 years (5-7x return)
+
+---
+
+## PHASE 1: Quick Wins (1-2 weeks, save $1-2k/month)
+
+### Priority: CRITICAL
+
+- [ ] **Add Query Instrumentation** (4 hours)
+  - Enable SQLAlchemy echo in test mode
+  - Add slow-query logging (queries > 100ms)
+  - Set up Postgres `log_min_duration_statement = 100`
+  - Add metrics: query count, query time percentiles
+  - Integration: `radreport/db/session.py`
+
+- [ ] **Increase Connection Pool** (1 hour)
+  - Change default from `pool_size=10` to `pool_size=30-50`
+  - Test under peak load (500 concurrent users)
+  - Monitor Postgres memory usage
+  - File: `radreport/db/session.py` line 42
+
+- [ ] **Add Request-Scoped Caching** (3 hours)
+  - Cache tenant config per request
+  - Cache model assignments per request
+  - Cache user roles per request
+  - Use FastAPI dependency with cache lifetime
+  - Location: `radreport/api/deps.py` (new request context manager)
+
+- [ ] **Identify Missing Indexes** (2 hours)
+  - Run `SELECT * FROM pg_stat_statements` on production
+  - EXPLAIN ANALYZE top 20 slowest queries
+  - Document findings in `DB_INDEXES_TODO.md`
+  - Likely candidates:
+    - `study.patient_id` (without tenant_id prefix)
+    - `pipeline_run.created_at` (for cost queries)
+    - `stage_execution.task_key` (for metrics)
+
+---
+
+## PHASE 2: N+1 Query Elimination (2-3 weeks, save $2-4k/month)
+
+### Priority: HIGH
+
+- [ ] **Fix Admin Panel Queries** (4 hours)
+  - Location: `radreport/api/routes/admin_panel.py`, `radreport/api/routes/admin_api.py`
+  - Add `selectinload(Tenant.branding)` on lab list
+  - Add `selectinload(Tenant.users)` on lab detail
+  - Add `joinedload(PlatformUser.sessions)` on user admin
+  - Test: compare query counts before/after
+
+- [ ] **Fix Report Generation Queries** (3 hours)
+  - Location: `radreport/pipeline/stages/`
+  - Add `joinedload(Recording.study)` in extraction stage
+  - Add `joinedload(Recording.metadata)` early
+  - Add `selectinload(Study.findings)` for verification stage
+  - Profile cost reduction
+
+- [ ] **Fix Onboarding List Queries** (3 hours)
+  - Location: `radreport/api/routes/onboarding.py`
+  - Add eager loading for ImportBatch relationships
+  - Add pagination (LIMIT/OFFSET)
+  - Fix: batch status endpoint
+
+- [ ] **Implement Batch Insert Operations** (4 hours)
+  - Location: `radreport/onboarding/` (import handlers)
+  - Replace per-row inserts with `bulk_insert_mappings()`
+  - Batch size: 1000 rows per batch
+  - Expected: 10-50x faster for large imports
+  - Test with 5000-row onboarding corpus
+
+- [ ] **Implement Batch Updates** (2 hours)
+  - Location: `radreport/pipeline/` (pipeline writes)
+  - Add batch flush for pending_writes
+  - Use `bulk_save_objects()` for stage_execution updates
+  - Profile: compare 100-row flush timing
+
+- [ ] **Add Query Result Pagination** (2 hours)
+  - Location: `radreport/api/routes/` (all list endpoints)
+  - Add LIMIT/OFFSET to all list queries
+  - Document: default page_size=20, max=100
+  - Endpoints to audit:
+    - GET /admin/labs
+    - GET /admin/users
+    - GET /api/studies
+    - GET /api/recordings
+
+---
+
+## PHASE 3: Infrastructure (3-4 weeks, save $1-3k/month + 3-5x capacity)
+
+### Priority: HIGH
+
+- [ ] **Deploy PgBouncer** (4 hours)
+  - Set up connection pooler in front of Postgres
+  - Config: `pool_mode = transaction`
+  - Expected: 10x more app connections, same DB load
+  - Test failover scenarios
+  - Monitoring: bounce counts, pool utilization
+
+- [ ] **Add Read Replicas** (2-3 days)
+  - Create read replica of primary Postgres
+  - Add read/write routing in app
+  - Routes for read replicas:
+    - Admin panel queries
+    - Report view endpoints
+    - Metering/cost queries
+  - File: `radreport/db/session.py` (add read_replica_session())
+  - Keep writes on primary (necessary for RLS)
+
+- [ ] **Partition Large Tables** (3-4 days)
+  - Partition `pipeline_run` by month (created_at)
+  - Partition `recording` by tenant_id
+  - Partition `training_corpus_item` by tenant_id
+  - Create migration (alembic)
+  - Test: query performance, DELETE performance
+
+- [ ] **Enable VACUUM Tuning** (1 hour)
+  - Increase autovacuum on high-churn tables
+  - Set aggressive for: `pipeline_run`, `stage_execution`, `recording`
+  - Monitor bloat with `pg_bloat_check`
+
+- [ ] **Enable Column Compression** (2 hours)
+  - Add COMPRESSION=pglz to large text columns
+  - Columns: transcript, json_data, audio_metadata
+  - Expected: 50-70% storage reduction
+  - Slight query slowdown (acceptable tradeoff)
+
+---
+
+## PHASE 4: Advanced (Optional, long-term)
+
+### Priority: MEDIUM
+
+- [ ] **Async Database Driver** (1-2 weeks)
+  - Migrate to `sqlalchemy[asyncio]` or `asyncpg`
+  - Change: sync Session → async AsyncSession
+  - Expected: 20-30% more req/sec capacity
+  - Large refactor; schedule separately
+
+- [ ] **LLM Response Caching** (1 week)
+  - Cache LLM responses keyed on (stage, input_hash)
+  - Backend: Redis or Postgres jsonb
+  - Expected: 5-15% cost reduction for repeat submissions
+  - Location: `radreport/adapters/llm/base.py`
+
+- [ ] **Materialized Views** (3 hours)
+  - Create MATERIALIZED VIEW for `v_canonical_eval_set`
+  - Refresh daily at low-traffic time
+  - Expected: 5% improvement for eval-heavy workloads
+
+- [ ] **Per-Lab Cost Dashboard** (2-3 hours)
+  - Expose `v_tenant_metering_rollup` in admin UI
+  - Add cost trend chart
+  - Add cost/stage breakdown
+  - Add anomaly detection (cost spike alerts)
+  - Location: `radreport/api/routes/admin_ui.py`
+
+---
+
+## Metrics to Track
+
+### Before Optimization
+- [ ] Document baseline:
+  - Query count per request (trace random 100 requests)
+  - Average query time (p50, p95, p99)
+  - DB CPU usage under peak load
+  - Monthly query volume
+  - Current cost: $10k/month (assumed)
+
+### After Each Phase
+- [ ] Phase 1 complete:
+  - Query instrumentation set up
+  - Slow query log analyzed
+  - Connection pool increased
+  - Estimated cost savings: $1-2k/month
+
+- [ ] Phase 2 complete:
+  - N+1 queries eliminated
+  - Batch operations in place
+  - Query count per request reduced by ~50%
+  - Estimated additional savings: $2-4k/month
+
+- [ ] Phase 3 complete:
+  - PgBouncer deployed
+  - Read replicas active
+  - Large tables partitioned
+  - Throughput increased 3-5x
+  - Estimated additional savings: $1-3k/month
+
+---
+
+## Validation Tests
+
+- [ ] Query instrumentation working: check slow query log for entries
+- [ ] Connection pool increased: verify `SHOW max_connections` and actual conn count
+- [ ] Request caching working: profile request handler, cache hit rate > 80%
+- [ ] N+1 queries fixed: query count per request < 10 (was > 50 before)
+- [ ] Batch operations fast: 5000-row import < 5 seconds (was ~50s)
+- [ ] PgBouncer working: app handles 2x connections with same DB load
+- [ ] Read replicas working: 90% read queries hit replica (via query tagging)
+
+---
+
+## Cost Projection
+
+| Phase | Effort | Monthly Savings | Cumulative |
+|-------|--------|-----------------|-----------|
+| Phase 1 | 1-2 weeks | $1-2k | $1-2k (10-20% off) |
+| Phase 1+2 | 3-4 weeks | $2-4k | $3-6k (30-60% off) |
+| Phase 1+2+3 | 6-8 weeks | $1-3k | $4-9k (40-90% off) |
+| Phase 1+2+3+4 | 8-12 weeks | varies | $5-9k (50-90% off) |
+
+**Hardware upgrade ROI:** Only worthwhile AFTER phases 1-3 (else wasted on inefficient queries)
+
+---
+
+## Notes
+
+- Monitor Postgres under production load after each phase
+- Use `pg_stat_statements` extension for query analysis
+- Set up alerting on: slow queries, connection pool exhaustion, cache miss rate
+- Document all query optimization decisions in commit messages
+- Test each change with at least 2x expected load
+
+---
+
+# Lexicon & Term Extraction Roadmap (2026-10-05)
+
 ## PHASE 0 (Current)
 
 - ✅ Regex-based term extraction from structured templates
@@ -377,3 +694,38 @@ ROI: Positive by month 6–9 ✅
 
 ---
 
+## Configuration & DevOps (Before Production)
+
+### Priority: HIGH
+
+- [ ] **Move G3_speaker_balance limits to configurable settings** (4 hours)
+  - Current: Hardcoded in [adaptation/gates.py:47-54](radreport/adaptation/gates.py#L47-L54)
+    - `GLOBAL_ADAPTER_HOURS = 20.0` 
+    - `MIN_SPEAKERS = 5`
+    - `MAX_SPEAKER_SHARE = 0.40`
+  - **Approach:** Create `system_config` table (or use the admin panel)
+  - Admin can adjust thresholds without code changes
+  - Environment variable fallback: `ADAPTER_HOURS_THRESHOLD`, `MIN_SPEAKERS_FOR_ADAPTER`, `MAX_SPEAKER_SHARE`
+  - Integration: Update `evaluate_gates()` to read from config instead of constants
+  - **Why:** Pilot may need different thresholds; ops should control without engineering
+
+- [ ] **Add health check endpoint + multi-instance LB support** (6 hours)
+  - **Endpoint:** `GET /health` returns JSON `{status: "healthy", checks: {db: true, redis: true, ...}}`
+  - **Purpose:** Allow load balancer to route away from unhealthy instances
+  - **Design for scale:**
+    - Use dependency injection for instance ID: `INSTANCE_ID` env var or UUID header
+    - Health check should NOT require database write (read-only, fast)
+    - Return per-check status (e.g., db latency, memory usage)
+  - **Integration:** `radreport/api/routes/health.py` (new file)
+  - **Before production:** Verify with LB that can consume this endpoint
+  - **Future:** Add metrics (response time, error rate) to health check
+
+- [ ] **Add environment variables for adapter gates** (2 hours)
+  - Current hardcoded constants in [adaptation/gates.py:47-54](radreport/adaptation/gates.py#L47-L54)
+  - Add env var fallbacks (with defaults):
+    - `ADAPTER_HOURS_THRESHOLD=20.0` (G1_volume gate)
+    - `MIN_SPEAKERS_FOR_ADAPTER=5` (G3_speaker_balance gate)
+    - `MAX_SPEAKER_SHARE=0.40` (G3_speaker_balance gate)
+  - Integration: Update `evaluate_gates()` to read from env at startup
+  - **Why:** Allows ops to tune thresholds for different labs/pilot stages without code changes
+  - Example usage: `ADAPTER_HOURS_THRESHOLD=15.0 python -m radreport.main` (lab with less data)
