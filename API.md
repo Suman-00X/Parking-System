@@ -473,3 +473,394 @@ transitions can track status from the write alone after an initial list.
 `multipart/form-data`: `file` (an HR CSV export) and, on the API, `trigger`
 (`initial_onboarding` by default; `new_radiologist`, `site_expansion`, …). Up to
 50 MiB.
+
+**This is the only way to add a user — radiologist, transcriptionist, lab admin
+or auditor alike.** There is no per-user endpoint; everyone arrives through
+this CSV, uploaded by a product admin for the lab.
+
+CSV columns ([`parse_roster_csv`](radreport/onboarding/roster.py#L57)):
+
+| Column | Required | Notes |
+|---|---|---|
+| `employee_code` | ✅ | the identity key; duplicates **within one file** are rejected as a data-entry error |
+| `display_name` | ✅ | — |
+| `email` | — | — |
+| `roles` | — | `;`-separated, validated against `UserRole`; **empty defaults to `radiologist`** |
+| `subspecialty` | — | `;`-separated |
+| `default_language` | — | defaults to `en-IN` |
+
+So a transcriptionist is a row with `roles=transcriptionist`, and a
+radiologist who is also a lab admin is `roles=radiologist;lab_admin`.
+
+Returns `batch_id`, `created`, `updated`, `profiles_created`, `problems[]`. A
+file that parses to **zero** rows with problems is `422`; partial problems come
+back in `problems[]` alongside a successful import.
+
+**Re-import is an upsert, and roles are additive.**
+[`import_roster`](radreport/onboarding/roster.py#L106) matches on
+`employee_code`, refreshes `display_name`/`email`, sets `is_active = True`, and
+**unions** the roles — a re-import must not silently strip a role an admin
+granted after the first import. A `radiologist` row also gets a
+`radiologist_profile` created on first sight, carrying language and
+subspecialty.
+
+The batch records no submitting lab user; who uploaded it is in the
+`admin_org_selected` audit row the request wrote.
+
+## 1.5 Voice and the two consents
+
+Lab side: these consents belong to the radiologist, not the vendor.
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/onboarding/radiologists/{radiologist_id}/voice-enrollment` | `lab_admin`, `radiologist` | [`onboarding.py:69`](radreport/api/routes/onboarding.py#L69) |
+| POST | `/onboarding/radiologists/{radiologist_id}/training-consent` | `lab_admin`, `radiologist` | [`onboarding.py:88`](radreport/api/routes/onboarding.py#L88) |
+
+Enrollment body: `embedding` (**exactly 192 floats**) and `consent_ref`
+(non-empty). No voiceprint without a signed consent reference — a missing one
+is `422` ([`enroll_voice`](radreport/onboarding/roster.py#L150)).
+
+Training-consent body: `{"consent_ref": "..."}` or `{"consent_ref": null}`.
+Returns `{"granted": bool}`.
+
+**These are two different consents and two different rows.** Enrollment consent
+permits a voiceprint for speaker identification. Training consent permits the
+radiologist's audio to pool into model training. A `null` `consent_ref` on the
+second records a **refusal** — a real answer, not a missing one: the
+radiologist stays enrolled and their audio never pools
+([`record_training_consent`](radreport/onboarding/roster.py#L169)).
+
+## 1.6 What has no CRUD endpoint
+
+Worth knowing before you go looking.
+
+| Thing | Status |
+|---|---|
+| Read one lab as JSON | **No `GET /admin/api/labs/{id}`.** Filter the list, read the `POST .../status` response, or open the `/admin/labs/{id}` page |
+| Legal next statuses | Not in any JSON response. The lab page offers only legal targets; an API client hard-codes the table in [1.3](#13-the-lifecycle-status-machine) or discovers the boundary by eating a `409` |
+| Create / update / delete one lab user | **None.** The roster CSV is the only write path, and it never deletes — re-import sets `is_active = True` and unions roles. (Platform users do have these — see [Platform users](#platform-users).) |
+| Branding | **None.** `register_lab` inserts an empty `tenant_branding` row and nothing ever touches it again |
+| Patients and studies | **None.** Nothing in `radreport/` constructs a `Patient` or a `Study` outside tests — see [Phase 3](#31-capture) |
+| Offboarding | `offboard()` exists in the module but no route calls it. Reach `offboarded` through `POST .../status` |
+
+---
+
+# Phase 2 — Teach the lab its knowledge
+
+**34 routes.** The longest phase, and the one the product is really about. The
+lab's own templates, vocabulary, normals and safety rules are extracted from
+its historical material, each behind a human gate.
+
+The work is split by realm. **A product admin uploads the lab's material and
+runs the mining steps**, from the lab's onboarding page or the admin API.
+**The lab's own staff make every clinical decision** on the `/onboarding`
+routes; gates marked **R** are radiologist-only, because they are clinical calls
+rather than data-quality ones.
+
+> **The shape repeats at every stage: machine proposes, human disposes.** A
+> mining or seeding step writes *candidates*. A separate **R** route accepts
+> them. Nothing a machine produced goes live without a named radiologist on the
+> row.
+
+## 2.0 The step runner
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/admin/labs/{tenant_id}/onboarding/steps/{step}` | `product_admin` — a button per step on the onboarding page | [`admin_panel.py:622`](radreport/api/routes/admin_panel.py#L622) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/steps/{step}` | `product_admin` | [`admin_api.py:209`](radreport/api/routes/admin_api.py#L209) |
+
+The parameterless mining and seeding steps share one route. `{step}` is a name
+from [`STEPS`](radreport/admin/onboarding_steps.py#L110):
+
+| `{step}` | Does | Section |
+|---|---|---|
+| `derive-map` | Derive the report-to-template map | [2.2](#22-feed-the-historical-reports-s2) |
+| `lexicon-mine` | Mine terms from the corpus | [2.3](#23-mine-the-vocabulary-s3) |
+| `collision-audit` | Run the sound-alike collision audit | [2.3](#23-mine-the-vocabulary-s3) |
+| `mine-variants` | Mine what the ASR actually heard | [2.4](#24-verbatim-annotation-s4) |
+| `boilerplate-mine` | Rank normal statements | [2.5](#25-rank-the-normals-s5) |
+| `critical-rules-seed` | Propose critical-finding rules | [2.6](#26-author-the-safety-rules-s6) |
+
+An unknown name is `404` listing the valid ones. The API takes an optional JSON
+body for the two steps that have options — `{"min_frequency": n}` for
+`lexicon-mine`, `{"verified_only": true}` for `boilerplate-mine` — and returns
+the step's result. The page's buttons run with the defaults and redirect with a
+one-line summary of the counts.
+
+## 2.1 Templates (S1)
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/admin/labs/{tenant_id}/onboarding/templates` | `product_admin` — upload form | [`admin_panel.py:601`](radreport/api/routes/admin_panel.py#L601) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/templates` | `product_admin` | [`admin_api.py:169`](radreport/api/routes/admin_api.py#L169) |
+| GET | `/onboarding/templates/candidates?batch_id=` | `lab_admin`, `radiologist` | [`onboarding.py:112`](radreport/api/routes/onboarding.py#L112) |
+| POST | `/onboarding/templates/candidates/{candidate_id}/review` | **R** | [`onboarding.py:129`](radreport/api/routes/onboarding.py#L129) |
+| POST | `/admin/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals` | `product_admin` — link per template batch | [`admin_panel.py:612`](radreport/api/routes/admin_panel.py#L612) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals` | `product_admin` | [`admin_api.py:200`](radreport/api/routes/admin_api.py#L200) |
+| POST | `/onboarding/merge-proposals/{proposal_id}/decide` | **R** | [`onboarding.py:145`](radreport/api/routes/onboarding.py#L145) |
+| POST | `/onboarding/batches/{batch_id}/apply` | **R** | [`onboarding.py:157`](radreport/api/routes/onboarding.py#L157) |
+| POST | `/onboarding/batches/{batch_id}/revert` | **R** | [`onboarding.py:175`](radreport/api/routes/onboarding.py#L175) |
+
+Submission takes `files` (multipart, several documents, up to 50 MiB in all; on
+the API also an optional `trigger`) and returns `batch_id`, `candidates`,
+`low_confidence`, `failures[]` (`filename`, `reason`). No files is `422`.
+
+The candidate list comes back **lowest parse confidence first** — the work
+queue is ordered by how likely the machine is to be wrong. Each entry carries
+`parse_confidence`, `field_count`, `needs_field_by_field_review` and
+`merged_into_template_id`.
+
+Review body: `decision` (`approved` \| `edited` \| `rejected` \| `merged`,
+default `approved`) plus optional overrides `spoken_study_code`, `code`,
+`modality`, `body_region`, `json_schema`.
+
+**Nothing goes live until `apply`**, which promotes approved candidates into
+`template_version` and is where the refusals land: `409` if the batch has
+blocking issues or is in the wrong state, `412` if approvals are outstanding.
+`revert` re-points `is_current` at the previous version.
+
+Merge proposals are near-duplicate detection, run **before** routing is
+trained — two templates that are really one would otherwise teach the router a
+distinction that does not exist. The admin route returns `{"proposals": n}`; a
+batch that is not this lab's is `404`.
+
+## 2.2 Feed the historical reports (S2)
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/admin/api/labs/{tenant_id}/onboarding/corpus` | `product_admin` | [`admin_api.py:194`](radreport/api/routes/admin_api.py#L194) |
+| POST | `.../onboarding/steps/derive-map` | `product_admin` — see [2.0](#20-the-step-runner) | — |
+| POST | `/onboarding/corpus/mappings/{mapping_id}/verify` | **R** | [`onboarding.py:190`](radreport/api/routes/onboarding.py#L190) |
+| GET | `/onboarding/corpus/histogram?verified_only=` | `lab_admin`, `radiologist` | [`onboarding.py:203`](radreport/api/routes/onboarding.py#L203) |
+| GET | `/onboarding/corpus/referrer-prior` | `lab_admin`, `radiologist` | [`onboarding.py:210`](radreport/api/routes/onboarding.py#L210) |
+
+This is the report feeding step, and everything downstream depends on it.
+
+The corpus load is **API only** — it arrives as structured records, so the
+onboarding page points at the API rather than offering a form. It takes
+`{"records": [...], "trigger": "..."}`, up to 100 MiB. Each record:
+`report_text` (required) plus `external_report_id`,
+`radiologist_employee_code`, `referring_doctor`, `patient_sex`,
+`patient_age_years`, `is_deidentified`. Returns `batch_id`, `loaded`,
+`duplicates`, `rejected[]` (`id`, `reason`).
+
+`derive-map` guesses which template each historical report was written from and
+returns `mapped`, `unmapped`, `by_method`, `verified`, `verification_target`.
+**It is a guess.** `verification_target` is how many a radiologist has to
+confirm before it is trusted; poll it from the `verify` response rather than
+recomputing it.
+
+The two reads are what the corpus is *for*:
+
+- **`histogram`** — power-law head detection. `share` and `cumulative_share`
+  per template, which is how the ~20 templates V1 actually ships get chosen.
+- **`referrer-prior`** — `P(template | referring doctor)`, fed to the router as
+  a prior.
+
+## 2.3 Mine the vocabulary (S3)
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `.../onboarding/steps/lexicon-mine` | `product_admin` — see [2.0](#20-the-step-runner) | — |
+| POST | `.../onboarding/steps/collision-audit` | `product_admin` — see [2.0](#20-the-step-runner) | — |
+| POST | `/onboarding/collision-findings/{finding_id}/resolve` | **R** | [`onboarding.py:222`](radreport/api/routes/onboarding.py#L222) |
+
+Mining returns `batch_id`, `pass_number`, `terms_extracted`, `terms_new`,
+`terms_pending_review`, `ambiguous`. It is re-runnable — pass 2 follows
+verbatim annotation ([2.4](#24-verbatim-annotation-s4)).
+
+**The collision audit is blocking.** It finds near-homophone term pairs — the
+canonical example being LMC against LMP — and returns `new_findings`,
+`blocking`, and `findings[]` with `id`, `label_a`, `label_b`, `distance`,
+`collision_class`, `severity`. Every finding with `severity: "block"` must be
+resolved by a radiologist before the lab can proceed.
+
+## 2.4 Verbatim annotation (S4)
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| GET | `/onboarding/verbatim/queue?limit=` | `transcriptionist`, `lab_admin`, `radiologist` | [`onboarding.py:235`](radreport/api/routes/onboarding.py#L235) |
+| POST | `/onboarding/verbatim` | **`transcriptionist`** | [`onboarding.py:254`](radreport/api/routes/onboarding.py#L254) |
+| POST | `.../onboarding/steps/mine-variants` | `product_admin` — see [2.0](#20-the-step-runner) | — |
+
+The critical path, served as a work queue: `outstanding`, `current[]`,
+`legacy[]`, `gold_progress`, `corpus_hours`. `current` before `legacy` —
+audio from the device class actually in use is worth more than archive audio.
+
+Submission body: `recording_id`, `text`, `includes_disfluencies`,
+`is_eval_set_member`.
+
+**`includes_disfluencies: false` records the transcript but makes it
+permanently ineligible for ASR training** — a cleaned transcript teaches a
+model to delete words. Eval-set members are excluded for the obvious reason.
+`training_eligible` in the response is the conjunction of both.
+
+`mine-variants` closes the loop with [2.3](#23-mine-the-vocabulary-s3): it
+scans paired audio for what the ASR *actually heard* for each known term, and
+returns `transcripts_scanned`, `variants_written`, `terms_touched`,
+`unmatched_frequent[]`.
+
+## 2.5 Rank the normals (S5)
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `.../onboarding/steps/boilerplate-mine` | `product_admin` — see [2.0](#20-the-step-runner) | — |
+| GET | `/onboarding/boilerplate/export` | `lab_admin`, `radiologist` | [`onboarding.py:267`](radreport/api/routes/onboarding.py#L267) |
+| POST | `/onboarding/boilerplate/{candidate_id}/promote` | **R** | [`onboarding.py:279`](radreport/api/routes/onboarding.py#L279) |
+
+Mining ranks the normal statements this lab writes, by corpus share, and
+returns `candidates_written`, `fields_scanned`, `per_template`. The V1
+deliverable is a CSV (`{"csv": "..."}`), not a screen.
+
+Promotion and auto-fill are **two decisions**: `enable_auto_fill` defaults to
+`false`, and a critical field refuses auto-fill outright (`422`). Returns
+`template_field_id`, `absence_policy`, `default_normal_text`.
+
+## 2.6 Author the safety rules (S6)
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `.../onboarding/steps/critical-rules-seed` | `product_admin` — see [2.0](#20-the-step-runner) | — |
+| POST | `/onboarding/critical-rules` | **R** | [`onboarding.py:304`](radreport/api/routes/onboarding.py#L304) |
+| POST | `/onboarding/critical-rules/{rule_id}/approve` | **R** | [`onboarding.py:316`](radreport/api/routes/onboarding.py#L316) |
+
+Seeding proposes rules from the corpus and returns `created[]`, `candidates[]`
+(with `code`, `finding_label`, `severity`, `corpus_mentions`, `examples`) and
+`lab_specific_phrases[]`. **Every seeded rule is inactive and unapproved.**
+
+Authoring body: `code`, `finding_label`, `pattern`, `severity`, `sla_minutes`
+(> 0), `escalation_path` (**≥ 1 entry**), `pattern_type` (`lexical`),
+`negation_sensitive` (`true`), `requires_ack` (`true`).
+
+**A rule with no escalation path is refused.** An alert nobody is obliged to
+receive is not a safety control. The label, SLA and escalation path are
+clinical, which is why authoring is **R** and not an admin step.
+
+## 2.7 Configure the engines
+
+Interleaved with the stages above, not after them: a product admin picks which
+model serves each pipeline step while the lab is still onboarding.
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| GET | `/admin/providers` | `product_admin`, `support` — providers and models page | [`admin_panel.py:425`](radreport/api/routes/admin_panel.py#L425) |
+| POST | `/admin/providers` | `product_admin` | [`admin_panel.py:502`](radreport/api/routes/admin_panel.py#L502) |
+| POST | `/admin/models` | `product_admin` | [`admin_panel.py:512`](radreport/api/routes/admin_panel.py#L512) |
+| POST | `/admin/labs/{tenant_id}/assign` | `product_admin` — the *Propose* form on the lab page | [`admin_panel.py:404`](radreport/api/routes/admin_panel.py#L404) |
+| POST | `/admin/labs/{tenant_id}/assignments/{assignment_id}/activate` | `product_admin` — the *activate* button next to a proposal | [`admin_panel.py:414`](radreport/api/routes/admin_panel.py#L414) |
+| GET | `/admin/api/labs/{tenant_id}/steps` | `product_admin`, `support` | [`admin_api.py:120`](radreport/api/routes/admin_api.py#L120) |
+| POST | `/admin/api/labs/{tenant_id}/assignments` | `product_admin` | [`admin_api.py:131`](radreport/api/routes/admin_api.py#L131) |
+| POST | `/admin/api/labs/{tenant_id}/assignments/{assignment_id}/activate` | `product_admin` | [`admin_api.py:141`](radreport/api/routes/admin_api.py#L141) |
+
+Form fields: providers take `name`, `kind` (`cloud_api` \|
+`local_openai_compatible`), `api_key_env_var`, `default_endpoint`; models take
+`provider_id`, `model_identifier`, `display_name`, `endpoint_override`;
+`assign` takes `task_key` and `model_definition_id`. The API's propose body is
+the same pair as JSON, and returns `201` with `assignment_id` and `status`.
+
+**Cloud API keys are never entered or stored here.** A provider names an
+*environment variable*; the server reads the key from its own environment. A
+locally hosted model is configured by address instead.
+
+`GET /admin/api/labs/{id}/steps` is the same per-step view as the lab page, for
+scripting an onboarding: `task_key`, `task_bucket`, `is_asr`, `active_model`,
+`active_provider`, `is_local`, `is_configured`, `proposed[]` (`assignment_id`,
+`label`).
+
+**Proposing does not make a model live.** Activation is a separate call, and it
+is gated: it is `412` if the assignment has no gold-set eval run behind it, and
+`404` if it does not resolve for this lab. That gate is what the engine bake-off
+exists to satisfy. On the page, a refusal comes back as the lab page with the
+reason shown.
+
+A step with no active model does not degrade — the pipeline fails at the first
+such step. The lab page counts them and says so.
+
+## 2.8 Readiness and the gate to pilot
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| GET | `/admin/labs/{tenant_id}/onboarding` | `product_admin`, `support` — the onboarding page | [`admin_panel.py:523`](radreport/api/routes/admin_panel.py#L523) |
+| GET | `/admin/api/labs/{tenant_id}/onboarding` | `product_admin`, `support` | [`admin_api.py:154`](radreport/api/routes/admin_api.py#L154) |
+| GET | `/admin/labs/{tenant_id}/readiness` | `product_admin`, `support` — **HTML** | [`admin_panel.py:359`](radreport/api/routes/admin_panel.py#L359) |
+| GET | `/admin/api/labs/{tenant_id}/readiness` | `product_admin`, `support` | [`admin_api.py:96`](radreport/api/routes/admin_api.py#L96) |
+
+The onboarding status is the view across every stage
+([`onboarding_overview`](radreport/admin/onboarding_steps.py#L33)):
+`corpus_verification` (`verified`, `target`), `gold_progress`,
+`active_critical_rules`, `recent_batches[]` (last 20), and `readiness` with
+`passed`, `failures[]`, `warnings[]` and the full `checks[]`. The onboarding
+page renders the same, with the upload forms, a button per
+[step](#20-the-step-runner) and a *propose merges* link on each template batch.
+
+`GET /admin/api/labs/{id}/readiness` is the gate alone:
+`{"passed": bool, "checks": [{check_id, status, measured_value, threshold,
+detail}]}`. The readiness page is the same report as a screen, blocking checks
+first.
+
+All four evaluate with `persist=False`
+([`evaluate_readiness`](radreport/onboarding/readiness.py#L148)), so none of
+them writes a `readiness_check` row and any of them is a safe dry run. Each
+opens the lab's session through `admin_lab_session`, so RLS sees the lab's rows.
+
+### Then, and only then
+
+```
+GET  /admin/api/labs/{id}/readiness           → confirm `passed: true`
+POST /admin/api/labs/{id}/status  {"status": "pilot"}
+```
+
+— or, in the browser, the readiness page and then the status form on the lab
+page.
+
+`onboarding → pilot` is **the one gated transition**
+([`S7_GATED_TRANSITION`](radreport/core/tenancy.py#L165)).
+[`transition_status`](radreport/onboarding/registration.py#L111) re-runs
+readiness itself and refuses on any fail-severity check:
+`409 onboarding -> pilot is gated on readiness: every fail-severity check must
+pass first`. Checking first only tells you whether the write will succeed; it
+does not make it succeed.
+
+---
+
+# Phase 3 — Runtime: one report, end to end
+
+**12 routes.** A dictation arrives and leaves as a signed report. This is the
+product. Every route here is in the lab realm.
+
+## 3.1 Capture
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/ingest/recordings` | `radiologist`, `lab_admin` | [`ingest.py:38`](radreport/api/routes/ingest.py#L38) |
+
+`multipart/form-data`, up to 512 MiB:
+
+| Field | Type | Default |
+|---|---|---|
+| `file` | file | required |
+| `study_id` | uuid | required |
+| `radiologist_id` | uuid | required |
+| `device_id` | string | `null` |
+| `capture_device_class` | `legacy` \| `dictation_mic_ptt` \| `headset` | `dictation_mic_ptt` |
+| `is_push_to_talk` | bool | `true` |
+
+`201` returns `recording_id`, `content_hash`, `duration_seconds`,
+`sample_rate_hz`, `audio_format`, `measured_snr_db`, `silence_ratio`,
+`capture_device_class`, `warnings[]`.
+
+- `409` — already ingested. `detail` is an **object**:
+  `{"message": ..., "recording_id": ..., "content_hash": ...}`. Idempotent by
+  content hash, so treat this as success and take the id.
+- `422` — a fail-severity audio gate. `detail` is an object:
+  `{"message": ..., "code": ...}`. Warn-severity gates come back in `warnings`
+  on the `201` instead.
+
+**`study_id` has to come from somewhere, and nothing here creates it.** No
+route constructs a `Study` or a `Patient`; outside tests, neither type is
+instantiated anywhere in `radreport/`. A real deployment needs an
+ADT/ORM feed that does not exist yet.
+
+## 3.2 The missing link
+
+**Capture does not start the pipeline.** `/ingest/recordings` validates the
