@@ -628,6 +628,8 @@ from [`STEPS`](radreport/admin/onboarding_steps.py#L110):
 | `mine-variants` | Mine what the ASR actually heard | [2.4](#24-verbatim-annotation-s4) |
 | `boilerplate-mine` | Rank normal statements | [2.5](#25-rank-the-normals-s5) |
 | `critical-rules-seed` | Propose critical-finding rules | [2.6](#26-author-the-safety-rules-s6) |
+| `acceptance-assemble` | Fill the lab's acceptance set from its verbatim transcripts | [2.8](#28-readiness-and-the-gate-to-pilot) |
+| `acceptance-freeze` | Freeze the acceptance set | [2.8](#28-readiness-and-the-gate-to-pilot) |
 
 An unknown name is `404` listing the valid ones. The API takes an optional JSON
 body for the two steps that have options — `{"min_frequency": n}` for
@@ -825,6 +827,21 @@ A step with no active model does not degrade — the pipeline fails at the first
 such step. The lab page counts them and says so.
 
 ## 2.8 Readiness and the gate to pilot
+
+**The acceptance set comes first.** The `gold_set_frozen` check needs a frozen
+per-lab acceptance set of at least 40 items. Registration creates it empty; fill
+it once the transcriptionists have produced verbatim transcripts (2.4):
+
+```
+POST /admin/api/labs/{id}/onboarding/steps/acceptance-assemble   → {"items", "target": 40, "short_by"}
+POST /admin/api/labs/{id}/onboarding/steps/acceptance-freeze     → 409 while short of 40
+```
+
+Only current-hardware recordings with disfluency-preserving transcripts are
+used, spread across radiologists and audio quality; chosen transcripts are
+excluded from training for good. Assembling again adds to the set until it is
+frozen; after that both steps answer `409`, because readiness was measured
+against it.
 
 | Method | Path | Who | Source |
 |---|---|---|---|

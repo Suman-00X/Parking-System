@@ -1151,7 +1151,8 @@ One implementation behind both the onboarding page and the admin API.
 - `onboarding_overview()` — corpus verification, gold progress, active rules, recent batches, readiness
 - `import_roster_file()`, `submit_template_files()`, `load_corpus_records()`, `propose_template_merges()`
 - `STEPS` — `derive-map`, `lexicon-mine`, `collision-audit`, `mine-variants`,
-  `boilerplate-mine`, `critical-rules-seed`; `run_step()` runs one by name
+  `boilerplate-mine`, `critical-rules-seed`, and `acceptance-assemble` / `acceptance-freeze`
+  (fill and freeze the lab's acceptance set, which the pilot gate needs); `run_step()` runs one by name
 - `StepRefused` carries the HTTP status the API answers with
 
 ### `admin/modelconfig.py` — per-lab model configuration
@@ -1386,7 +1387,7 @@ in [API.md](API.md#appendix-a--index-by-prefix).
 | POST | `/admin/api/labs/{tenant_id}/onboarding/templates` | Submit template documents |
 | POST | `/admin/api/labs/{tenant_id}/onboarding/corpus` | Load the historical report corpus |
 | POST | `/admin/api/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals` | Propose near-duplicate merges |
-| POST | `/admin/api/labs/{tenant_id}/onboarding/steps/{step}` | Run `derive-map`, `lexicon-mine`, `collision-audit`, `mine-variants`, `boilerplate-mine` or `critical-rules-seed` |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/steps/{step}` | Run `derive-map`, `lexicon-mine`, `collision-audit`, `mine-variants`, `boilerplate-mine`, `critical-rules-seed`, `acceptance-assemble` or `acceptance-freeze` |
 | GET | `/admin/api/labs/{tenant_id}/autonomy/{class_code}` | Accrual state and the Beta-Binomial posterior |
 | POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/open-accrual` | Start observing a class |
 | POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/grant` | The Bayesian sequential grant |
