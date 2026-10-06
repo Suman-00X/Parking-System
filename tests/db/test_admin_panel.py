@@ -512,3 +512,19 @@ def test_a_lab_route_refuses_a_lab_user_without_the_role(admin_fixture) -> None:
     headers = {"Authorization": f"Bearer {token}"}
     assert client.post(f"/onboarding/critical-rules/{uuid.uuid4()}/approve", headers=headers).status_code == 403
     assert client.get("/review/queue", headers=headers).status_code == 200
+
+
+def test_a_batch_uploaded_from_the_admin_panel_names_its_admin(admin_fixture) -> None:
+    """Without this, an admin's upload showed no submitter at all: `submitted_by` points at lab users only."""
+    from radreport.db.models.onboarding import ImportBatch
+    from radreport.db.session import tenant_session
+
+    f = admin_fixture
+    client, _cookie = _signed_in(f["email"])
+    roster = b"employee_code,display_name,email,roles\nR9,Dr Nine,nine@lab.example,radiologist\n"
+    response = client.post(f"/admin/api/labs/{f['tenant_id']}/onboarding/roster", files={"file": ("roster.csv", roster, "text/csv")})
+    assert response.status_code == 200, response.text
+    with tenant_session(f["tenant_id"], url=f["db"]) as session:
+        batch = session.get(ImportBatch, uuid.UUID(response.json()["batch_id"]))
+        assert batch.submitted_by is None
+        assert batch.submitted_by_platform_user_id == f["admin_id"]

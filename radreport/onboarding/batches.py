@@ -21,6 +21,7 @@ from radreport.core.logging import get_logger
 from radreport.core.types import ActorType, CollisionResolution, CollisionSeverity, ImportStatus
 from radreport.db.models.onboarding import CollisionAuditFinding, ImportArtifact, ImportBatch
 from radreport.db.models.orchestration import AuditLog
+from radreport.db.session import ACTING_PLATFORM_USER
 
 log = get_logger(__name__)
 
@@ -39,8 +40,9 @@ class ArtifactUpload:
 
 
 def open_batch(session: Session, *, tenant_id: uuid.UUID, batch_type: str, stage: str, trigger: str, submitted_by: uuid.UUID | None = None) -> ImportBatch:
-    """Start a batch in `uploading`."""
-    batch = ImportBatch(tenant_id=tenant_id, batch_type=batch_type, trigger=trigger, stage=stage, status=ImportStatus.UPLOADING, submitted_by=submitted_by)
+    """Start a batch in `uploading`, recording a product admin as its submitter when one is acting."""
+    platform_user_id = session.info.get(ACTING_PLATFORM_USER) if submitted_by is None else None
+    batch = ImportBatch(tenant_id=tenant_id, batch_type=batch_type, trigger=trigger, stage=stage, status=ImportStatus.UPLOADING, submitted_by=submitted_by, submitted_by_platform_user_id=platform_user_id)
     session.add(batch)
     session.flush()
     log.info("import_batch_opened", tenant_id=str(tenant_id), batch_id=str(batch.id), stage=stage, batch_type=batch_type, trigger=trigger)

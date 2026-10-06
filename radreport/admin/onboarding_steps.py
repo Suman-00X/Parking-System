@@ -42,7 +42,7 @@ def onboarding_overview(session: Session, tenant_id: uuid.UUID) -> dict[str, Any
         "corpus_verification": {"verified": verified, "target": target},
         "gold_progress": {k: {"annotated": v[0], "target": v[1]} for k, v in paired_audio.gold_partition_progress(session, tenant_id=tenant_id).items()},
         "active_critical_rules": len(critical_rules.active_rules(session, tenant_id=tenant_id)),
-        "recent_batches": [{"id": str(b.id), "batch_type": b.batch_type, "stage": b.stage, "status": b.status, "blocking_issue_count": b.blocking_issue_count, "accepted": b.accepted_count} for b in batches],
+        "recent_batches": [{"id": str(b.id), "batch_type": b.batch_type, "stage": b.stage, "status": b.status, "blocking_issue_count": b.blocking_issue_count, "accepted": b.accepted_count, "submitted_by": str(b.submitted_by) if b.submitted_by else None, "submitted_by_platform_user_id": str(b.submitted_by_platform_user_id) if b.submitted_by_platform_user_id else None} for b in batches],
         "readiness": {"passed": report.passed, "failures": [o.check_id for o in report.failures], "warnings": [o.check_id for o in report.warnings], "checks": [{"check_id": o.check_id, "status": o.status, "measured_value": o.measured_value, "threshold": o.threshold} for o in report.outcomes]},
     }
 

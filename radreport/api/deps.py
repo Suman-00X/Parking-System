@@ -20,7 +20,7 @@ from radreport.admin.auth import AuthenticatedAdmin
 from radreport.api.access import Identity
 from radreport.core.tenancy import Principal, tenant_scope
 from radreport.db.models.tenancy import Tenant
-from radreport.db.session import get_sessionmaker, select_org, tenant_session
+from radreport.db.session import ACTING_PLATFORM_USER, get_sessionmaker, select_org, tenant_session
 
 
 def _identity(request: Request) -> Identity | None:
@@ -76,6 +76,8 @@ def admin_lab_session(admin: AuthenticatedAdmin, tenant_id: uuid.UUID, *, ip_add
         if session.get(Tenant, tenant_id) is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"no lab {tenant_id}")
         select_org(session, tenant_id=tenant_id, platform_user_id=admin.platform_user_id, ip_address=ip_address)
+        # On the session, not only in a context variable: FastAPI runs this dependency in another thread.
+        session.info[ACTING_PLATFORM_USER] = admin.platform_user_id
         try:
             yield session
             session.commit()

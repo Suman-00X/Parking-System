@@ -19,6 +19,9 @@ from radreport.core.config import get_settings
 from radreport.core.errors import CrossTenantAccess, NoTenantContext
 from radreport.core.tenancy import PRINCIPAL_GUC, TENANT_GUC, Principal, current_tenant_id_or_none, tenant_scope
 
+#: `session.info` key naming the product admin acting through a session, if any.
+ACTING_PLATFORM_USER = "acting_platform_user_id"
+
 
 @lru_cache(maxsize=4)
 def get_engine(url: str | None = None) -> Engine:
