@@ -1,6 +1,7 @@
 """Builds the evidence for letting a class of reports skip review, by watching what reviewers change -- without acting on it.
 
-Order: record what a reviewer did to each draft (record_observation) -> summarise the record so
+Order: find the class a report belongs to (class_for_report) -> record what a reviewer did to
+each draft (record_observation) -> summarise the record so
 far (snapshot) -> test whether the unreviewed rate would be no worse than the reviewed one
 (posterior_non_inferiority) -> start collecting for a new class (open_accrual).
 """
@@ -70,8 +71,9 @@ def record_observation(session: Session, *, tenant_id: uuid.UUID, final_report_i
     if final is None or final.tenant_id != tenant_id:
         raise ValueError(f"no final_report {final_report_id} in this tenant")
 
-    klass = _class_for_report(session, tenant_id, final)
+    klass = class_for_report(session, tenant_id, final)
     if klass is None:
+        log.info("autonomy_observation_skipped", final_report_id=str(final.id), reason="report belongs to no autonomy class")
         return None
     if klass.status == AutonomyStatus.NOT_EVALUATED:
         log.info("autonomy_observation_skipped", final_report_id=str(final.id), reason="class is not_evaluated; accrual has not been opened")
@@ -234,7 +236,13 @@ def open_accrual(session: Session, *, tenant_id: uuid.UUID, class_code: str, act
     return klass
 
 
-def _class_for_report(session: Session, tenant_id: uuid.UUID, final: FinalReport) -> AutonomyClass | None:
+def class_for_report(session: Session, tenant_id: uuid.UUID, final: FinalReport) -> AutonomyClass | None:
+    """The class a report counts against: the one that released it, else its template's."""
+    if final.autonomy_class_id is not None:
+        # Authoritative for a released report, even if its template has since moved to another class.
+        released_by = session.get(AutonomyClass, final.autonomy_class_id)
+        if released_by is not None and released_by.tenant_id == tenant_id:
+            return released_by
     row = session.execute(select(AutonomyClass).join(Template, Template.autonomy_class_id == AutonomyClass.id).join(TemplateVersion, TemplateVersion.template_id == Template.id).join(ReportDraft, ReportDraft.template_version_id == TemplateVersion.id).where(ReportDraft.tenant_id == tenant_id, ReportDraft.id == final.report_draft_id)).scalars().first()
     return row
 
