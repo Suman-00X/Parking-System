@@ -8,14 +8,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
-from sqlalchemy import select
 
 from radreport.api.deps import CurrentPrincipal, DbSession, client_ip
 from radreport.auth import lab
 from radreport.auth.lab import SignInFailed, TokenInvalid
-from radreport.core.types import TenantStatus
-from radreport.db.models.tenancy import Tenant
-from radreport.db.session import system_session, tenant_session
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -40,18 +36,10 @@ class LoginRequest(BaseModel):
 @router.post("/login", response_model=TokenResponse)
 def login(body: LoginRequest, request: Request) -> TokenResponse:
     """Sign a lab user in with their lab's slug, email and password."""
-    refused = HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid lab, email or password")
-    with system_session() as session:
-        tenant = session.execute(select(Tenant).where(Tenant.slug == body.lab)).scalar_one_or_none()
-        tenant_id = tenant.id if tenant and tenant.status != TenantStatus.OFFBOARDED else None
-    if tenant_id is None:
-        # Same answer as a wrong password, so the form cannot be used to list labs.
-        raise refused
-    with tenant_session(tenant_id) as session:
-        try:
-            return _response(lab.login(session, tenant_id=tenant_id, email=body.email, password=body.password, user_agent=request.headers.get("user-agent"), ip_address=client_ip(request)))
-        except SignInFailed as exc:
-            raise refused from exc
+    try:
+        return _response(lab.sign_in_to_lab(lab_slug=body.lab, email=body.email, password=body.password, user_agent=request.headers.get("user-agent"), ip_address=client_ip(request)))
+    except SignInFailed as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid lab, email or password") from exc
 
 
 class RefreshRequest(BaseModel):
@@ -62,31 +50,15 @@ class RefreshRequest(BaseModel):
 def refresh_tokens(body: RefreshRequest, request: Request) -> TokenResponse:
     """Trade a refresh token for a new access token and refresh token."""
     try:
-        tenant_id = lab.tenant_of_refresh_token(body.refresh_token)
+        return _response(lab.refresh_in_lab(raw=body.refresh_token, user_agent=request.headers.get("user-agent"), ip_address=client_ip(request)))
     except TokenInvalid as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
-    refused: TokenInvalid | None = None
-    with tenant_session(tenant_id) as session:
-        try:
-            pair = lab.refresh(session, raw=body.refresh_token, user_agent=request.headers.get("user-agent"), ip_address=client_ip(request))
-        except TokenInvalid as exc:
-            # Caught inside the transaction on purpose: a refusal may have revoked a stolen token's
-            # whole sign-in, and raising here would roll that revocation back.
-            refused = exc
-    if refused is not None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(refused)) from refused
-    return _response(pair)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(body: RefreshRequest) -> Response:
     """End the sign-in a refresh token belongs to; harmless if it is unknown."""
-    try:
-        tenant_id = lab.tenant_of_refresh_token(body.refresh_token)
-    except TokenInvalid:
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-    with tenant_session(tenant_id) as session:
-        lab.logout(session, raw=body.refresh_token)
+    lab.logout_in_lab(raw=body.refresh_token)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

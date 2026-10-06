@@ -4,7 +4,8 @@ Order: find the signing secret (token_secret, require_token_secret) -> sign in (
 access token (issue_access_token) plus a refresh token (_issue_refresh) -> check an access token on
 each request (verify_access_token) -> trade a refresh token for a new pair (refresh), or end the
 sign-in (logout) -> set or change a password (set_password, change_password), which signs the
-user out everywhere (revoke_all).
+user out everywhere (revoke_all). sign_in_to_lab, refresh_in_lab and logout_in_lab wrap these
+with their own sessions for the API and the browser sign-in alike.
 """
 
 from __future__ import annotations
@@ -35,6 +36,11 @@ ISSUER: Final[str] = "radreport"
 _DEV_SECRET: Final[str] = "radreport-development-only-secret-do-not-deploy"
 _DEV_ENVIRONMENTS: Final[frozenset[str]] = frozenset({"local", "test", "development"})
 MIN_SECRET_LENGTH: Final[int] = 32
+#: Browser sign-in keeps the same tokens in httponly cookies, out of reach of page scripts.
+ACCESS_COOKIE: Final[str] = "radreport_lab_access"
+REFRESH_COOKIE: Final[str] = "radreport_lab_refresh"
+#: The refresh cookie is sent only to the browser sign-in routes, never with ordinary requests.
+REFRESH_COOKIE_PATH: Final[str] = "/ui"
 
 
 class SignInFailed(Exception):
@@ -227,3 +233,50 @@ def change_password(session: Session, *, user_id: uuid.UUID, current: str, new: 
     if user is None or not verify_password(current, user.password_hash):
         raise SignInFailed("current password is wrong")
     return set_password(session, user_id=user.id, password=new, actor_id=user.id)
+
+
+def sign_in_to_lab(*, lab_slug: str, email: str, password: str, user_agent: str | None = None, ip_address: str | None = None) -> TokenPair:
+    """Find the lab by slug and sign a user in; every failure raises the same SignInFailed."""
+    from radreport.core.types import TenantStatus
+    from radreport.db.models.tenancy import Tenant
+    from radreport.db.session import system_session, tenant_session
+
+    with system_session() as session:
+        tenant = session.execute(select(Tenant).where(Tenant.slug == lab_slug)).scalar_one_or_none()
+        tenant_id = tenant.id if tenant and tenant.status != TenantStatus.OFFBOARDED else None
+    if tenant_id is None:
+        # Same failure as a wrong password, so the form cannot be used to list labs.
+        verify_password(password, hash_password("x" * MIN_PASSWORD_LENGTH))
+        raise SignInFailed("invalid lab, email or password")
+    with tenant_session(tenant_id) as session:
+        return login(session, tenant_id=tenant_id, email=email, password=password, user_agent=user_agent, ip_address=ip_address)
+
+
+def refresh_in_lab(*, raw: str, user_agent: str | None = None, ip_address: str | None = None) -> TokenPair:
+    """Trade a refresh token for a new pair in its own lab, committing any revocation before refusing."""
+    from radreport.db.session import tenant_session
+
+    tenant_id = tenant_of_refresh_token(raw)
+    refused: TokenInvalid | None = None
+    with tenant_session(tenant_id) as session:
+        try:
+            pair = refresh(session, raw=raw, user_agent=user_agent, ip_address=ip_address)
+        except TokenInvalid as exc:
+            # Caught inside the transaction on purpose: a refusal may have revoked a stolen token's
+            # whole sign-in, and raising here would roll that revocation back.
+            refused = exc
+    if refused is not None:
+        raise refused
+    return pair
+
+
+def logout_in_lab(*, raw: str) -> None:
+    """End a sign-in by its refresh token; harmless if the token is malformed or unknown."""
+    from radreport.db.session import tenant_session
+
+    try:
+        tenant_id = tenant_of_refresh_token(raw)
+    except TokenInvalid:
+        return
+    with tenant_session(tenant_id) as session:
+        logout(session, raw=raw)

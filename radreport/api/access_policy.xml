@@ -76,6 +76,20 @@
     <route id="auth.logout" method="POST" path="/auth/logout" rate-limit="token-refresh" max-body-bytes="4096" description="End the sign-in a refresh token belongs to.">
       <param name="refresh_token" in="json" type="string" required="true" pattern="[0-9a-fA-F\-]{36}\.[A-Za-z0-9_\-]{32,100}" max-length="140"/>
     </route>
+    <route id="ui.login.page" method="GET" path="/ui/login" rate-limit="public" description="Lab user browser sign-in form.">
+      <param name="error" in="query" type="string" max-length="500"/>
+      <param name="next" in="query" type="string" pattern="/ui/[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*" max-length="300"/>
+    </route>
+    <route id="ui.login" method="POST" path="/ui/login" rate-limit="login" max-body-bytes="4096" description="Lab user browser sign-in; sets httponly token cookies.">
+      <param name="lab" in="form" type="string" required="true" pattern="[a-z0-9][a-z0-9-]{1,62}"/>
+      <param name="email" in="form" type="string" required="true" pattern="[^@\s]{1,64}@[^@\s]{1,255}" max-length="320"/>
+      <param name="password" in="form" type="string" required="true" max-length="1024"/>
+      <param name="next" in="form" type="string" pattern="/ui/[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*" max-length="300"/>
+    </route>
+    <route id="ui.refresh" method="GET" path="/ui/refresh" rate-limit="token-refresh" description="Renew the browser's token cookies from its refresh cookie.">
+      <param name="next" in="query" type="string" pattern="/ui/[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*" max-length="300"/>
+    </route>
+    <route id="ui.logout" method="POST" path="/ui/logout" rate-limit="token-refresh" max-body-bytes="4096" description="End the browser's sign-in."/>
     <route id="admin.logout" method="POST" path="/admin/logout" rate-limit="public" max-body-bytes="4096" description="Admin panel sign-out; harmless without a session."/>
   </routes>
 

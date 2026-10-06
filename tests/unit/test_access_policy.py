@@ -317,3 +317,35 @@ def test_sign_in_limits_are_shared_and_throughput_limits_are_not() -> None:
 def test_an_unknown_store_is_refused() -> None:
     with pytest.raises(PolicyError, match="store must be"):
         parse_policy('<access-policy version="1"><rate-limits><rate-limit id="x" requests="1" window-seconds="1" key="ip" store="redis"/></rate-limits></access-policy>')
+
+
+# ======================================================= browser sign-in ===
+def test_a_signed_out_browser_on_a_review_page_is_sent_to_sign_in() -> None:
+    client = TestClient(create_app(), follow_redirects=False)
+    response = client.get("/ui/queue")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/ui/login?next=%2Fui%2Fqueue"
+
+
+def test_an_expired_access_cookie_goes_to_refresh_first() -> None:
+    from radreport.auth.lab import ACCESS_COOKIE
+
+    client = TestClient(create_app(), follow_redirects=False)
+    client.cookies.set(ACCESS_COOKIE, "expired-or-garbage")
+    assert client.get("/ui/queue").headers["location"].startswith("/ui/refresh?next=")
+    assert client.get("/review/queue").status_code == 401, "an API call gets a status code, not a redirect"
+
+
+def test_a_lab_cookie_authenticates_but_only_same_site_writes(client: TestClient) -> None:
+    from radreport.auth.lab import ACCESS_COOKIE
+
+    token = _bearer(RADIOLOGIST, UserRole.RADIOLOGIST)["Authorization"].split(" ", 1)[1]
+    client.cookies.set(ACCESS_COOKIE, token)
+    assert client.post("/lab/sign", headers={"Origin": "http://testserver"}).status_code == 200
+    assert client.post("/lab/sign", headers={"Origin": "https://evil.example"}).status_code == 403
+
+
+def test_sign_in_never_redirects_off_site() -> None:
+    client = TestClient(create_app(), follow_redirects=False)
+    for target in ("https://evil.example", "//evil.example", "/admin/labs", "/ui/../admin"):
+        assert client.get("/ui/login", params={"next": target}).status_code == 400, target

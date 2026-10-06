@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Final
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
@@ -34,7 +34,7 @@ from starlette.routing import Route
 
 from radreport.admin import auth
 from radreport.admin.auth import AuthenticatedAdmin
-from radreport.auth.lab import TokenInvalid, verify_access_token
+from radreport.auth.lab import ACCESS_COOKIE, REFRESH_COOKIE, TokenInvalid, verify_access_token
 from radreport.core.config import get_settings
 from radreport.core.logging import get_logger
 from radreport.core.tenancy import Principal
@@ -422,8 +422,12 @@ class AccessMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
     def _check_origin(self, rule: RouteRule, request: Request) -> Response | None:
-        """Refuse a cross-site write to a cookie-authenticated route (CSRF)."""
-        if request.method in ("GET", "HEAD", "OPTIONS") or not rule.path.startswith("/admin"):
+        """Refuse a cross-site write authenticated by a cookie, or to a sign-in form (CSRF)."""
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return None
+        lab_cookie = ACCESS_COOKIE in request.cookies and "authorization" not in request.headers
+        if not (rule.path.startswith(("/admin", "/ui/")) or lab_cookie):
+            # A bearer token is never attached by the browser on its own, so it cannot be forged cross-site.
             return None
         source = request.headers.get("origin") or request.headers.get("referer")
         if source is None:
@@ -463,13 +467,21 @@ class AccessMiddleware(BaseHTTPMiddleware):
         return Identity(realm="admin", key=f"admin:{admin.platform_user_id}", roles=frozenset({admin.role}), admin=admin)
 
     def _identify_lab_user(self, rule: RouteRule, request: Request) -> Identity | Response:
-        scheme, _, token = request.headers.get("authorization", "").partition(" ")
-        if scheme.lower() != "bearer" or not token:
-            return _deny(401, "sign in at /auth/login and send Authorization: Bearer <access token>", headers={"WWW-Authenticate": "Bearer"})
-        try:
-            claims = verify_access_token(token.strip())
-        except TokenInvalid:
-            return _deny(401, "access token is invalid or expired; refresh it at /auth/refresh", headers={"WWW-Authenticate": 'Bearer error="invalid_token"'})
+        scheme, _, header_token = request.headers.get("authorization", "").partition(" ")
+        token = header_token.strip() if scheme.lower() == "bearer" else request.cookies.get(ACCESS_COOKIE, "")
+        claims = None
+        if token:
+            try:
+                claims = verify_access_token(token)
+            except TokenInvalid:
+                claims = None
+        if claims is None:
+            if request.method == "GET" and request.url.path.startswith("/ui/") and not header_token:
+                # A browser page: renew from the refresh cookie if it has one, else sign in.
+                target = "/ui/refresh" if request.cookies.get(REFRESH_COOKIE) is not None or token else "/ui/login"
+                return RedirectResponse(f"{target}?{urlencode({'next': request.url.path})}", status_code=303)
+            detail = "access token is invalid or expired; refresh it at /auth/refresh" if token else "sign in at /auth/login and send Authorization: Bearer <access token>"
+            return _deny(401, detail, headers={"WWW-Authenticate": 'Bearer error="invalid_token"' if token else "Bearer"})
         if not claims.roles & rule.roles:
             log.warning("access_refused", route=rule.id, realm="lab", roles=sorted(claims.roles), user_id=str(claims.user_id))
             return _deny(403, f"this route requires one of: {', '.join(sorted(rule.roles))}")
