@@ -442,3 +442,58 @@ Each has a test that fails loudly.
   not sequence order — zipping two lists paired every provenance span with the
   wrong utterance as soon as a repair existed.
 
+## What is deliberately not done yet
+
+- **§8.6.5's second and fifth gates.** Unimplemented, failing closed, so no
+  ASR adaptation can run until their conditions are transcribed from the design
+  doc and the checks written. Every gate report names them.
+- **The distilled classifier and router.** §8.6 places them after the ASR
+  adaptation path, which is gated above.
+- **DICOM.** Conditional on §4.4's trigger rule: ≥95% accession compliance
+  after four weeks defers it indefinitely, <90% pursues it. Nothing to build
+  until that measurement exists.
+- **An actual RIS connection.** The messages are built and tested; nothing
+  sends them. D22 — which field in upload metadata carries the accession
+  number — is still open, and `build_oru` refuses rather than emitting a
+  message with a placeholder.
+- **An LLM-composed report.** Compose renders deterministically from
+  `render_spec`. §7.9.3 lists `compose` as a task and plan §0.2a makes it a
+  local-model candidate for Beta at the earliest — a model asked to write the
+  report from structured fields smooths over the gaps that matter.
+- **No bake-off results.** `eval/bakeoff.py` runs and is tested against stub
+  engines, but the decision it exists to make needs audio from the new
+  microphones. That is blocker #1 below, not a coding task.
+- **No S5 admin panel screen.** Deferred from V1 (plan §3): the ranking
+  accumulates and exports as CSV, which is enough for the pilot.
+- **No PDF template import.** D16 says Word only. PDF is refused explicitly
+  rather than half-parsed — a `template_field` mangled by text-layout
+  extraction is invisible after import.
+- **No model assignments seeded.** An assignment cannot go active without a
+  gold-set `eval_run`, and seeding one would bypass the gate the registry
+  exists to enforce.
+
+- **No tenant offboarding cascade.** §6.11 defines erasure per *patient*, not
+  per tenant. The lifecycle transition exists; the cascade behind it does not,
+  and `registration.offboard` says so rather than pretending otherwise.
+- **No manual fallback path.** §9.4 names the requirement — reports must still
+  be produced when the pipeline is down — with no design. `suspended` logs the
+  hook; the operator kill switch and documented degraded mode are still owed.
+
+## Blockers that are not code
+
+From plan §4. None of these are engineering tasks and several gate the
+schedule:
+
+1. **Microphones** — the longest-lead item. The `current` gold partition cannot
+   accumulate until they are deployed, and it gates the bake-off, which gates
+   the pipeline.
+2. **D12 baseline audit** — 50 signed reports graded G0–G4, producing
+   `baseline_cse_rate`. Every non-inferiority calculation depends on it and S7
+   blocks without it. Pure human work on existing data; it can start today.
+3. **Pooling clause + patient-notice wording** — the two genuinely irreversible
+   items (§10.8). Free before contract #1, near-impossible to retrofit across
+   signed labs. The schema is ready for them; the legal text is not written.
+4. **D21 consent wording** — draft it as *two* consents (§10.3). Enrollment for
+   diarization and training use are separate purposes under DPDP.
+5. **D22 accession number field mapping** — without it, RIS filing at GA is
+   impossible, independent of DICOM.
