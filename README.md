@@ -309,3 +309,136 @@ radreport/
   devtools/      synthetic data (no PHI on developer machines), seed
 ```
 
+## The things most likely to be broken by a careless change
+
+Each has a test that fails loudly.
+
+- **`core/tenancy.py`** — `UNTENANTED_TABLES` / `NULLABLE_TENANT_TABLES` are the
+  §11.3 exception list. A new table that is on neither list and has no
+  `tenant_id` fails the build. Migration 0002 generates its policies from the
+  same introspection, so a table cannot be classified and then left unpoliced.
+- **`db/base.py:tenant_fk`** — use it, never a bare `ForeignKey`, between two
+  tenant-scoped tables. (Where either side has a *nullable* `tenant_id`, a plain
+  FK is correct: a composite one is skipped under MATCH SIMPLE when a column is
+  NULL, so it would enforce nothing on exactly the global rows.)
+- **`adapters/llm/prompt.py`** — unpinned exemplars in the stable region are
+  rejected. Retrieved-per-report exemplars invalidate the prefix on every call
+  while still *looking* cached.
+- **`adapters/llm/sampling.py`** — sample 1 completes before 2..k fire. The
+  obvious `asyncio.gather` over all k forfeits ~29% of the LLM bill silently.
+- **`adapters/llm/registry.py`** — no activation without a gold-set `eval_run`.
+  §6.14 flags this for code review because Postgres `CHECK` cannot express it.
+- **`eval/metrics/`** — `WER` and `INS_RATE` stay separate metrics; so do
+  `CODEWORD_COMPLIANCE` and `STUDYCODE_RECALL`.
+- **`eval/bakeoff.py:rank`** — an engine whose insertions dominate its errors
+  sinks regardless of headline WER, and `recommend()` reads the `current`
+  partition only. Blending the two numbers selects the engine that invents
+  findings (§7.6); reading `legacy` selects the engine that was good on the
+  microphones you are replacing (§5.3, R14).
+- **`onboarding/templates.py:apply_templates`** — the collision audit runs
+  before any row is written, so a batch that would introduce an LMC/LMP pair is
+  refused whole rather than applied and then flagged.
+- **`onboarding/boilerplate.py:promote_candidate`** — storing a normal
+  statement and deciding to emit it are two decisions. `enable_auto_fill`
+  defaults to False and a critical field refuses it outright (R4, §6.5).
+- **`pipeline/stages/normalise.py`** — the margin guard escalates instead of
+  picking when the top two candidates sit within `TAU_MARGIN`. It also does
+  **not** rewrite the transcript: char offsets are what provenance cites and
+  what grounding verifies verbatim, so a substitution re-bases every quote.
+- **`pipeline/stages/repairs.py`** — the retraction applies *backwards* and the
+  correction *forwards*. Reversing that turns "left — sorry, right" into a G4
+  laterality error. The cue list stays narrow: a cue that fires on ordinary
+  speech silently deletes findings.
+- **`pipeline/stages/critical.py`** — negation is sentence-local *and*
+  positional. A whole-sentence membership test suppresses "no fracture; large
+  pneumothorax", and a document-wide one suppresses far more.
+- **`pipeline/stages/grounding.py`** — the quote is checked against the cited
+  **character range**, not searched for in the transcript. A quote that appears
+  somewhere proves nothing about the span the model pointed at.
+- **`pipeline/stages/confidence.py`** — `min(critical) × mean(all)`. Averaging
+  hides the one weak critical field among thirty strong ones, which is the only
+  case the number exists to catch.
+- **`core/text.py:split_sentences`** — a period between two digits is not a
+  sentence boundary. The naive `[.;\n]+` this replaced cut "no 3.2 cm
+  pneumothorax" in half and fired a false critical alert, because the negation
+  and the finding landed in different fragments.
+- **`pipeline/stages/repairs.py:apply_repairs`** — a repair inside one
+  utterance **splits** it. Excluding the utterance whole takes the correction
+  out with the retraction, and the finding disappears with no flag.
+- **`pipeline/stages/extract.py:merge_samples`** — a value with no citation is
+  dropped, not flagged (I1); the k-sample denominator is `k`, not the number of
+  samples that answered.
+- **`review/session.py:record_revision`** — `active_edit_seconds` is focus
+  time, measured by the browser and **clamped to the wall clock** by the
+  server. §15.2's commercial argument rests on this number against an 18–36
+  second break-even bar; an unbounded client value is one instrumentation bug
+  away from becoming the headline metric.
+- **`review/rbac.py`** — an assistant revises and a radiologist signs. Two-layer
+  supervision is the whole safety model of the assistant path, and a system
+  that let an assistant sign would have the same screen and none of it.
+- **`review/signing.py:preflight`** — every gate `sign_report` enforces,
+  computed without signing, so the screen can disable the button *and say why*.
+  The two must not drift: a button that looks available while the call refuses
+  teaches people to click and see.
+- **`adapters/asr/rover.py`** — NULL is a voting candidate. That is the whole
+  anti-hallucination property: a word one engine invented and two did not hear
+  loses 2–1 and never reaches the transcript. `AGREEMENT_WEIGHT` leans on
+  agreement over confidence, because confidence is self-reported and §7.6's
+  failure mode is an engine that inserts confidently.
+- **`pipeline/stages/post_correction.py`** — the **only** stage that rewrites
+  the transcript, and only because it runs before any offset is recorded. It
+  raises if utterances or resolutions already exist. Its position in the graph
+  is the safety argument, not the implementation.
+- **`autonomy/accrual.py:_beta_cdf`** — checked against closed forms for
+  Beta(1,1), Beta(2,2) and the arcsine law. An earlier continued fraction was
+  wrong by exactly 1 and returned plausible-looking numbers; a posterior that
+  feeds a grant decision is not somewhere to trust code by inspection.
+- **`autonomy/grant.py`** — granting is deliberate and hard, revocation is
+  mechanical and easy. That asymmetry is the safety argument, and anything that
+  makes revocation as hard as a grant inverts it. `DEFAULT_CUSUM_THRESHOLD` was
+  chosen from simulated run lengths, and `test_grant.py` re-derives them.
+- **`adaptation/gates.py`** — G2 and G5 are unimplemented and fail closed. A
+  gate with invented criteria that passes is indistinguishable from one that
+  was genuinely satisfied, which defeats the point of a checklist.
+- **`export/hl7.py:escape`** — an unescaped `|` truncates the segment, which
+  presents as a report that silently loses its second half. The escape
+  character is replaced first, or the others get double-escaped.
+- **`pipeline/stages/persist.py`** — the seam between the pipeline and the
+  review surface. Emits every domain row through `pending_writes` so a shadow
+  run discards them by the same mechanism as any other write, and orders the
+  utterance inserts so a self-correction's target exists before the row that
+  references it.
+- **`pipeline/timing.py`** — character offset to audio time. Every provenance
+  span's `audio_start_ms` depends on it; without it §7.2's click-to-listen
+  plays from 0 ms and §6.7's training rows carry no usable span. `(0, 0, True)`
+  means *unknown*, and the flag is what distinguishes it from a real span at
+  the start of the recording.
+- **`review/grading.py:_feed_autonomy`** — grading is the only place a graded
+  report exists, so it is the only place accrual and the CUSUM can be fed. An
+  unfed safety monitor is worse than none: it reports as coverage.
+- **`api/access_policy.xml` + `api/access.py`** — the only place a route's
+  roles are decided. A new route that is not added to the XML makes the app
+  refuse to start; a role added to an `<allow>` takes effect everywhere at once.
+  Admin identity comes only from the session cookie: the old
+  `X-Platform-User-Id` header made the admin realm spoofable and is gone.
+- **`api/deps.py:admin_lab_session`** — an admin acting on a lab must go
+  through it (or `AdminLabDb`), which binds the session to that lab. Without
+  the binding RLS hides every row, and the readiness page reported every check
+  as failed for exactly that reason.
+- **`admin/modelconfig.py`** — a provider row stores the *name* of the
+  environment variable holding its API key, never the key. Every tenant-scoped
+  read and write binds the tenant first: an unbound session is refused on write
+  and returns **nothing** on read, and the read failure looks like "this lab
+  has no configuration" rather than like an error.
+- **`api/app.py` `/health` vs `/ready`** — liveness checks nothing but the
+  process, because a liveness probe that fails on a database blip gets the
+  container killed for no benefit. Readiness opens a connection *and* compares
+  the schema revision against the code's head. `/health` alone returns 200
+  against a misconfigured database URL, which is how a server reports healthy
+  and fails every request that touches a table.
+- **`pipeline/stages/persist.py`** — the `seq -> utterance row` map is keyed on
+  each row's own `seq`. The rows are emitted in *reference* order so a
+  self-correction's target is inserted before the row pointing at it, which is
+  not sequence order — zipping two lists paired every provenance span with the
+  wrong utterance as soon as a repair existed.
+
