@@ -541,3 +541,23 @@ def test_a_corpus_file_loads_from_the_onboarding_page(admin_fixture) -> None:
 
     refused = client.post(f"/admin/labs/{f['tenant_id']}/onboarding/corpus", files={"file": ("bad.csv", b"text\nx\n", "text/csv")})
     assert "error=" in refused.headers["location"]
+
+
+def test_an_admin_changes_their_own_password(admin_fixture) -> None:
+    f = admin_fixture
+    client, _cookie = _signed_in(f["email"])
+    assert client.get("/admin/account").status_code == 200
+    wrong = client.post("/admin/account/password", data={"current_password": "not my password", "new_password": "a brand new passphrase"})
+    assert "error=" in wrong.headers["location"] and wrong.headers["location"].startswith("/admin/account")
+
+    done = client.post("/admin/account/password", data={"current_password": PASSWORD, "new_password": "a brand new passphrase"})
+    assert done.headers["location"].startswith("/admin/login")
+    assert client.get("/admin/labs").headers["location"] == "/admin/login", "the old session ended"
+    fresh = TestClient(create_app(), follow_redirects=False)
+    assert fresh.post("/admin/login", data={"email": f["email"], "password": PASSWORD}).headers["location"].startswith("/admin/login?error")
+    assert fresh.post("/admin/login", data={"email": f["email"], "password": "a brand new passphrase"}).headers["location"] == "/admin/labs"
+
+
+def test_support_may_change_only_its_own_password(admin_fixture) -> None:
+    client, _cookie = _signed_in(_support_account(admin_fixture["db"]))
+    assert client.post("/admin/api/account/password", json={"current_password": PASSWORD, "new_password": "support's new passphrase"}).status_code == 204

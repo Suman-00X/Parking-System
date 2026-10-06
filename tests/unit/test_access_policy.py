@@ -111,10 +111,14 @@ def test_the_shipped_policy_covers_exactly_the_served_routes() -> None:
     verify_coverage(create_app(), load_policy())
 
 
+#: The only writes support may make: to its own account, never to configuration.
+SUPPORT_OWN_ACCOUNT_ROUTES = {"admin.account.password", "admin.api.account.password"}
+
+
 def test_support_is_read_only() -> None:
     policy = load_policy()
     for rule in policy.routes:
-        if PlatformRole.SUPPORT in rule.roles:
+        if PlatformRole.SUPPORT in rule.roles and rule.id not in SUPPORT_OWN_ACCOUNT_ROUTES:
             assert rule.method == "GET", f"{rule.id} lets support change something"
 
 

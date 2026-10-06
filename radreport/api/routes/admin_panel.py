@@ -4,7 +4,8 @@ Order: sign in (login_page, login_submit, logout_submit) -> manage labs (home, l
 create_lab, lab_page, set_lab_user_password, change_status, lab_readiness_page) -> configure models per step
 (assign_step, activate_step, providers_page, add_provider, add_model) -> onboard a lab
 (onboarding_page, upload_roster, upload_templates, upload_corpus, merge_proposals, run_onboarding_step) ->
-manage platform users (users_page, create_user, deactivate_user, reactivate_user, reset_password).
+manage platform users (users_page, create_user, deactivate_user, reactivate_user, reset_password)
+-> your own account (account_page, change_own_password).
 """
 
 from __future__ import annotations
@@ -782,3 +783,36 @@ def reset_password(user_id: uuid.UUID, admin: CurrentAdmin, password: Annotated[
     if user_id == admin.platform_user_id:
         return _redirect("/admin/login", error="Your password changed; sign in again")
     return _redirect("/admin/users", notice=done)
+
+
+# ================================================================ account ===
+@router.get("/account", response_class=HTMLResponse)
+def account_page(admin: CurrentAdmin, error: str | None = None) -> HTMLResponse:
+    """Your own account: change your password."""
+    return _page(
+        "Your account",
+        f"""{_messages(error, None)}
+ <div class="meta">{_esc(admin.display_name)} · {_esc(admin.role)}</div>
+ <h2>Change your password</h2>
+ <form class="stack" method="post" action="/admin/account/password">
+ <label for="current_password">Current password</label>
+ <input id="current_password" name="current_password" type="password" required autocomplete="current-password">
+ <label for="new_password">New password (at least {auth.MIN_PASSWORD_LENGTH} characters)</label>
+ <input id="new_password" name="new_password" type="password" minlength="{auth.MIN_PASSWORD_LENGTH}" required autocomplete="new-password">
+ <div class="actions"><button class="primary" type="submit">Change password</button></div>
+ </form>
+ <p class="meta">Changing it signs you out everywhere, this browser included.</p>""",
+        admin=admin,
+    )
+
+
+@router.post("/account/password")
+def change_own_password(admin: CurrentAdmin, current_password: Annotated[str, Form()], new_password: Annotated[str, Form()]) -> Response:
+    with system_session() as session:
+        try:
+            users.change_own_password(session, user_id=admin.platform_user_id, current=current_password, new=new_password)
+        except users.UserChangeRefused as exc:
+            return _redirect("/admin/account", error=exc.reason)
+    response = _redirect("/admin/login", error="Password changed; sign in with the new one")
+    response.delete_cookie(auth.SESSION_COOKIE, path="/")
+    return response

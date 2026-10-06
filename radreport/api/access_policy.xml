@@ -198,6 +198,13 @@
       <param name="user_id" in="path" type="uuid" required="true"/>
       <param name="password" in="form" type="string" required="true" max-length="1024"/>
     </route>
+    <route id="admin.account.page" method="GET" path="/admin/account" roles="product_admin,support" rate-limit="admin-read">
+      <param name="error" in="query" type="string" max-length="500"/>
+    </route>
+    <route id="admin.account.password" method="POST" path="/admin/account/password" roles="product_admin,support" rate-limit="login" max-body-bytes="4096" description="Change your own password; needs the current one.">
+      <param name="current_password" in="form" type="string" required="true" max-length="1024"/>
+      <param name="new_password" in="form" type="string" required="true" max-length="1024"/>
+    </route>
   </routes>
 
   <!-- ========================================== admin panel (JSON) -->
@@ -294,6 +301,10 @@
       <param name="tenant_id" in="path" type="uuid" required="true"/>
       <param name="recording_ids" in="json" type="array" required="true" max-length="100000"/>
       <param name="target" in="json" type="string" pattern="asr_global|asr_speaker|utterance_classifier|router"/>
+    </route>
+    <route id="admin.api.account.password" method="POST" path="/admin/api/account/password" roles="product_admin,support" rate-limit="login" max-body-bytes="4096" description="Change your own password; needs the current one.">
+      <param name="current_password" in="json" type="string" required="true" max-length="1024"/>
+      <param name="new_password" in="json" type="string" required="true" max-length="1024"/>
     </route>
     <route id="admin.api.users.list" method="GET" path="/admin/api/users" roles="product_admin,support" rate-limit="admin-read"/>
     <route id="admin.api.users.create" method="POST" path="/admin/api/users" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">

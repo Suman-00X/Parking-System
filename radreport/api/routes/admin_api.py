@@ -5,7 +5,8 @@ Order: labs (list_labs, register_lab_json, readiness, change_status) -> models p
 upload_corpus, merge_proposals, run_onboarding_step) -> lab users' sign-in (list_lab_users,
 set_lab_user_password) -> autonomy and adaptation (get_accrual,
 open_accrual, grant_autonomy, revoke_autonomy, adaptation_gates, require_adaptation_gates) ->
-platform users (list_users, create_user, deactivate_user, reactivate_user, reset_user_password).
+platform users (list_users, create_user, deactivate_user, reactivate_user, reset_user_password,
+change_own_password).
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, File, Form, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -400,3 +401,20 @@ def reset_user_password(user_id: uuid.UUID, body: PasswordRequest, admin: Curren
             return _user_out(users.reset_password(session, user_id=user_id, password=body.password, actor_id=admin.platform_user_id))
         except users.UserChangeRefused as exc:
             raise _refused(exc) from exc
+
+
+class OwnPasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/account/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_own_password(body: OwnPasswordRequest, admin: CurrentAdmin) -> Response:
+    """Replace your own password; every session, this one included, ends."""
+    with system_session() as session:
+        try:
+            users.change_own_password(session, user_id=admin.platform_user_id, current=body.current_password, new=body.new_password)
+        except users.UserChangeRefused as exc:
+            code = status.HTTP_403_FORBIDDEN if exc.code == "wrong_password" else status.HTTP_422_UNPROCESSABLE_CONTENT
+            raise HTTPException(code, exc.reason) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
