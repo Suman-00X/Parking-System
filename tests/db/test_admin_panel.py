@@ -311,11 +311,21 @@ def test_support_can_read_but_not_change_anything(admin_fixture) -> None:
 
 
 def test_a_bad_slug_is_refused_by_the_server_not_only_the_form(admin_fixture) -> None:
+    """The access policy's pattern rejects it before the handler runs, on the page and the API alike."""
     client, _cookie = _signed_in(admin_fixture["email"])
-    response = client.post("/admin/labs", data={"name": "Bad", "slug": "Not A Slug!", "admin_display_name": "a", "admin_email": "a@b.c", "admin_employee_code": "1"})
-    assert response.status_code == 303
-    assert "error=" in response.headers["location"]
-    assert client.post("/admin/api/labs", json={"name": "Bad", "slug": "Not A Slug!", "admin_email": "a@b.c", "admin_display_name": "a", "admin_employee_code": "1"}).status_code == 422
+    page = client.post("/admin/labs", data={"name": "Bad", "slug": "Not A Slug!", "admin_display_name": "a", "admin_email": "a@b.c", "admin_employee_code": "1"})
+    assert page.status_code == 400
+    assert "'slug'" in page.json()["detail"]
+    assert client.post("/admin/api/labs", json={"name": "Bad", "slug": "Not A Slug!", "admin_email": "a@b.c", "admin_display_name": "a", "admin_employee_code": "1"}).status_code == 400
+
+
+def test_an_extra_field_cannot_be_smuggled_into_registration(admin_fixture) -> None:
+    """Pydantic would silently drop an unknown key; the policy refuses it outright."""
+    client, _cookie = _signed_in(admin_fixture["email"])
+    body = {"name": "Lab", "slug": f"lab-{uuid.uuid4().hex[:6]}", "admin_email": "a@b.c", "admin_display_name": "a", "admin_employee_code": "1", "status": "live"}
+    response = client.post("/admin/api/labs", json=body)
+    assert response.status_code == 400
+    assert "'status' is not accepted" in response.json()["detail"]
 
 
 def test_pooling_consent_needs_its_contract_reference(admin_fixture) -> None:

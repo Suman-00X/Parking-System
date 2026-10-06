@@ -1,9 +1,10 @@
 """Checks every request against the access policy file before any route handler runs.
 
-Order: read the policy (load_policy, parse_policy) -> confirm it lists exactly the routes the
-app serves (verify_coverage) -> for each request, find its rule (AccessPolicy.match), identify
-the caller for that rule's realm, check their role and rate limit (AccessMiddleware) -> leave
-the result on `request.state.identity` for handlers to read.
+Order: read the policy, its roles and its declared parameters (load_policy, parse_policy,
+_parse_param) -> confirm it lists exactly the routes the app serves (verify_coverage) -> for each
+request, find its rule (AccessPolicy.match), identify the caller for that rule's realm, check
+their role and rate limit (AccessMiddleware) -> leave the result on `request.state.identity` and
+the rule on `request.state.access_rule`; input_check.py then checks the parameters.
 """
 
 from __future__ import annotations
@@ -39,10 +40,14 @@ log = get_logger(__name__)
 POLICY_PATH: Final[Path] = Path(__file__).with_name("access_policy.xml")
 REALMS: Final[frozenset[str]] = frozenset({"public", "admin", "lab"})
 RATE_KEYS: Final[frozenset[str]] = frozenset({"ip", "principal"})
+PARAM_LOCATIONS: Final[frozenset[str]] = frozenset({"path", "query", "form", "file", "json"})
+PARAM_TYPES: Final[frozenset[str]] = frozenset({"string", "uuid", "int", "number", "bool", "object", "array", "file"})
+#: Applied to a string parameter that declares no max-length of its own.
+DEFAULT_MAX_LENGTH: Final[int] = 2000
 ADMIN_LOGIN_PATH: Final[str] = "/admin/login"
 ADMIN_API_PREFIX: Final[str] = "/admin/api/"
 
-_PARAM = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*(?::path)?\}")
+_PARAM = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?::path)?\}")
 
 
 class PolicyError(Exception):
@@ -58,6 +63,22 @@ class RateLimit:
 
 
 @dataclass(frozen=True, slots=True)
+class ParamRule:
+    name: str
+    location: str
+    """path, query, form, file or json (a top-level key of a JSON object body)."""
+
+    type: str
+    required: bool
+    pattern: re.Pattern[str] | None
+    """Must match the whole value (fullmatch)."""
+
+    max_length: int | None
+    multiple: bool
+    """Whether the parameter may repeat (a list of files, a repeated query key)."""
+
+
+@dataclass(frozen=True, slots=True)
 class RouteRule:
     id: str
     method: str
@@ -69,6 +90,11 @@ class RouteRule:
     environments: frozenset[str] | None
     description: str
     pattern: re.Pattern[str]
+    params: tuple[ParamRule, ...] = ()
+
+    def param(self, location: str, name: str) -> ParamRule | None:
+        """The declared parameter, or None if this route does not accept it."""
+        return next((p for p in self.params if p.location == location and p.name == name), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,12 +121,12 @@ class AccessPolicy:
 
 
 def _compile(path: str) -> re.Pattern[str]:
-    """`/a/{id}/b` -> `^/a/[^/]+/b$`."""
+    """`/a/{id}/b` -> `^/a/(?P<id>[^/]+)/b$`, so the path parameters can be read back by name."""
     parts: list[str] = []
     position = 0
     for found in _PARAM.finditer(path):
         parts.append(re.escape(path[position : found.start()]))
-        parts.append("[^/]+")
+        parts.append(f"(?P<{found.group(1)}>[^/]+)")
         position = found.end()
     parts.append(re.escape(path[position:]))
     return re.compile("^" + "".join(parts) + "$")
@@ -119,6 +145,32 @@ def _int(element: ET.Element, name: str, *, required: bool = True) -> int | None
     if value <= 0:
         raise PolicyError(f"<{element.tag} id={element.get('id')!r}> {name} must be positive")
     return value
+
+
+def _parse_param(element: ET.Element, rule_id: str, path: str) -> ParamRule:
+    """One `<param>` of a route."""
+    name, location, kind = element.get("name"), element.get("in"), element.get("type", "string")
+    where = f"route {rule_id!r} param {name!r}"
+    if not name or location not in PARAM_LOCATIONS:
+        raise PolicyError(f"{where} needs a name and in= one of {sorted(PARAM_LOCATIONS)}")
+    if kind not in PARAM_TYPES:
+        raise PolicyError(f"{where} has type {kind!r}; use one of {sorted(PARAM_TYPES)}")
+    if (location == "file") != (kind == "file"):
+        raise PolicyError(f"{where}: type=file goes with in=file, and only there")
+    required = element.get("required", "false")
+    if required not in ("true", "false"):
+        raise PolicyError(f"{where} required must be true or false")
+    if location == "path" and (required != "true" or name not in _PARAM.findall(path)):
+        raise PolicyError(f"{where} must be required and appear as {{{name}}} in {path}")
+    raw_pattern = element.get("pattern")
+    try:
+        pattern = re.compile(raw_pattern) if raw_pattern is not None else None
+    except re.error as exc:
+        raise PolicyError(f"{where} pattern is not a valid regex: {exc}") from exc
+    max_length = _int(element, "max-length", required=False)
+    if kind == "string" and max_length is None:
+        max_length = DEFAULT_MAX_LENGTH
+    return ParamRule(name=name, location=location, type=kind, required=required == "true", pattern=pattern, max_length=max_length, multiple=element.get("multiple") == "true")
 
 
 def parse_policy(text: str) -> AccessPolicy:
@@ -166,11 +218,11 @@ def parse_policy(text: str) -> AccessPolicy:
             seen_ids.add(rule_id)
             seen_routes.add((method, path))
 
-            allowed = frozenset(a.get("role") or "" for a in element.iterfind("allow"))
+            allowed = frozenset(r.strip() for r in (element.get("roles") or "").split(",") if r.strip())
             if realm == "public" and allowed:
-                raise PolicyError(f"route {rule_id!r} is public, so it takes no <allow>")
+                raise PolicyError(f"route {rule_id!r} is public, so it takes no roles")
             if realm != "public" and not allowed:
-                raise PolicyError(f"route {rule_id!r} allows nobody; list at least one <allow role=...>")
+                raise PolicyError(f'route {rule_id!r} allows nobody; give it roles="role_a,role_b"')
             for role in allowed:
                 if roles.get(role) != realm:
                     raise PolicyError(f"route {rule_id!r} allows {role!r}, which is not a role of the {realm} realm")
@@ -181,8 +233,18 @@ def parse_policy(text: str) -> AccessPolicy:
             if realm == "public" and limit_id is not None and limits[limit_id].key != "ip":
                 raise PolicyError(f"route {rule_id!r} is public, so its rate limit must be keyed by ip")
 
+            params = tuple(_parse_param(p, rule_id, path) for p in element.iterfind("param"))
+            if len({(p.location, p.name) for p in params}) != len(params):
+                raise PolicyError(f"route {rule_id!r} declares a parameter twice")
+            missing_path = set(_PARAM.findall(path)) - {p.name for p in params if p.location == "path"}
+            if missing_path:
+                raise PolicyError(f"route {rule_id!r} does not declare its path parameter(s) {sorted(missing_path)}")
+            locations = {p.location for p in params}
+            if "json" in locations and locations & {"form", "file"}:
+                raise PolicyError(f"route {rule_id!r} mixes a JSON body with form fields")
+
             environments = element.get("environments")
-            rules.append(RouteRule(id=rule_id, method=method, path=path, realm=realm, roles=allowed, rate_limit=limits[limit_id] if limit_id else None, max_body_bytes=_int(element, "max-body-bytes", required=False), environments=frozenset(environments.split()) if environments else None, description=element.get("description") or "", pattern=_compile(path)))
+            rules.append(RouteRule(id=rule_id, method=method, path=path, realm=realm, roles=allowed, rate_limit=limits[limit_id] if limit_id else None, max_body_bytes=_int(element, "max-body-bytes", required=False), environments=frozenset(environments.split()) if environments else None, description=element.get("description") or "", pattern=_compile(path), params=params))
 
     rules.sort(key=lambda r: (r.path.count("{"), -len(r.path)))
     return AccessPolicy(roles=roles, rate_limits=limits, routes=tuple(rules))

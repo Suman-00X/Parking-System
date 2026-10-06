@@ -1,8 +1,9 @@
 """Builds the FastAPI application, mounts every route group on it, and puts the access check in front.
 
-Order: create_app assembles the app, installs AccessMiddleware and refuses to start if the access
-policy and the routes disagree; current_revision and head_revision report whether the database
-schema is up to date.
+Order: create_app assembles the app, refuses to start if the access policy disagrees with the
+routes or their parameters, and installs AccessMiddleware (who may call) in front of
+InputValidationMiddleware (with what); current_revision and head_revision report whether the
+database schema is up to date.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from radreport.api.access import AccessMiddleware, RateLimiter, load_policy, verify_coverage
+from radreport.api.input_check import InputValidationMiddleware, verify_params
 from radreport.api.routes import admin_api, admin_panel, ga, ingest, onboarding, review, review_ui
 from radreport.core.config import get_settings
 from radreport.core.logging import configure_logging
@@ -80,6 +82,9 @@ def create_app() -> FastAPI:
 
     policy = load_policy()
     verify_coverage(app, policy)
+    verify_params(app, policy)
+    # Added last runs first: the caller is identified and authorized before any body is read.
+    app.add_middleware(InputValidationMiddleware)
     app.add_middleware(AccessMiddleware, policy=policy, limiter=RateLimiter())
     return app
 

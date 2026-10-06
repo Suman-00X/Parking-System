@@ -32,20 +32,14 @@ POLICY = f"""<access-policy version="1">{ROLES}
     <route id="devonly" method="GET" path="/devonly" environments="nowhere"/>
   </routes>
   <routes realm="admin">
-    <route id="panel" method="GET" path="/admin/things">
-      <allow role="product_admin"/><allow role="support"/>
-    </route>
-    <route id="panel.write" method="POST" path="/admin/things" max-body-bytes="10">
-      <allow role="product_admin"/>
-    </route>
-    <route id="api" method="GET" path="/admin/api/things/{{thing_id}}" rate-limit="tight">
-      <allow role="product_admin"/>
+    <route id="panel" method="GET" path="/admin/things" roles="product_admin, support"/>
+    <route id="panel.write" method="POST" path="/admin/things" roles="product_admin" max-body-bytes="10"/>
+    <route id="api" method="GET" path="/admin/api/things/{{thing_id}}" roles="product_admin" rate-limit="tight">
+      <param name="thing_id" in="path" required="true"/>
     </route>
   </routes>
   <routes realm="lab">
-    <route id="sign" method="POST" path="/lab/sign">
-      <allow role="radiologist"/>
-    </route>
+    <route id="sign" method="POST" path="/lab/sign" roles="radiologist"/>
   </routes>
 </access-policy>"""
 
@@ -81,10 +75,16 @@ def _policy(routes: str) -> str:
 @pytest.mark.parametrize(
     ("routes", "message"),
     [
-        ('<routes realm="admin"><route id="a" method="GET" path="/a"><allow role="nobody"/></route></routes>', "not a role of the admin realm"),
-        ('<routes realm="admin"><route id="a" method="GET" path="/a"><allow role="radiologist"/></route></routes>', "not a role of the admin realm"),
+        ('<routes realm="admin"><route id="a" method="GET" path="/a" roles="nobody"/></routes>', "not a role of the admin realm"),
+        ('<routes realm="admin"><route id="a" method="GET" path="/a" roles="support,radiologist"/></routes>', "not a role of the admin realm"),
         ('<routes realm="admin"><route id="a" method="GET" path="/a"/></routes>', "allows nobody"),
-        ('<routes realm="public"><route id="a" method="GET" path="/a"><allow role="support"/></route></routes>', "takes no <allow>"),
+        ('<routes realm="public"><route id="a" method="GET" path="/a" roles="support"/></routes>', "takes no roles"),
+        ('<routes realm="public"><route id="a" method="GET" path="/a/{x}"/></routes>', "does not declare its path parameter"),
+        ('<routes realm="public"><route id="a" method="GET" path="/a"><param name="q" in="query" pattern="("/></route></routes>', "not a valid regex"),
+        ('<routes realm="public"><route id="a" method="GET" path="/a"><param name="q" in="body"/></route></routes>', "in= one of"),
+        ('<routes realm="public"><route id="a" method="POST" path="/a"><param name="f" in="file"/></route></routes>', "type=file goes with in=file"),
+        ('<routes realm="public"><route id="a" method="POST" path="/a"><param name="q" in="query"/><param name="q" in="query"/></route></routes>', "declares a parameter twice"),
+        ('<routes realm="public"><route id="a" method="POST" path="/a"><param name="j" in="json"/><param name="f" in="form"/></route></routes>', "mixes a JSON body"),
         ('<routes realm="public"><route id="a" method="GET" path="/a"/><route id="b" method="GET" path="/a"/></routes>', "listed twice"),
         ('<routes realm="public"><route id="a" method="GET" path="/a"/><route id="a" method="GET" path="/b"/></routes>', "used twice"),
         ('<routes realm="public"><route id="a" method="GET" path="/a" rate-limit="missing"/></routes>', "unknown rate limit"),
