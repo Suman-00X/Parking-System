@@ -18,8 +18,8 @@ from sqlalchemy.orm import Session
 
 from radreport.admin.auth import AuthenticatedAdmin
 from radreport.api.access import Identity
+from radreport.cache.lookups import tenant_config
 from radreport.core.tenancy import Principal, tenant_scope
-from radreport.db.models.tenancy import Tenant
 from radreport.db.session import ACTING_PLATFORM_USER, get_sessionmaker, select_org, tenant_session
 
 
@@ -73,7 +73,7 @@ def admin_lab_session(admin: AuthenticatedAdmin, tenant_id: uuid.UUID, *, ip_add
     """A session an admin uses on one lab: bound to it for RLS, with the selection audited."""
     principal = Principal(id=admin.platform_user_id, kind="platform_user", tenant_id=tenant_id)
     with tenant_scope(tenant_id, principal), get_sessionmaker()() as session:
-        if session.get(Tenant, tenant_id) is None:
+        if tenant_config(session, tenant_id) is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"no lab {tenant_id}")
         select_org(session, tenant_id=tenant_id, platform_user_id=admin.platform_user_id, ip_address=ip_address)
         # On the session, not only in a context variable: FastAPI runs this dependency in another thread.

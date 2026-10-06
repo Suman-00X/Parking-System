@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from radreport.cache.lookups import forget_tenant
 from radreport.core.logging import get_logger
 from radreport.core.types import TrainingConsentEvent
 from radreport.db.models.identity import RadiologistProfile
@@ -113,6 +114,7 @@ def record_consent_event(session: Session, *, tenant_id: uuid.UUID, event: str, 
     else:
         raise ValueError(f"unknown consent event {event!r}")
 
+    forget_tenant(tenant_id)
     entry = TrainingConsentEventLog(tenant_id=tenant_id, event=event, ref=ref, actor_id=actor_id, occurred_at=when)
     session.add(entry)
     session.flush()

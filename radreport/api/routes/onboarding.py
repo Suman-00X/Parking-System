@@ -16,10 +16,10 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from radreport.api.deps import CurrentPrincipal, DbSession
+from radreport.cache.lookups import user_roles
 from radreport.core.errors import ApprovalRequired, BatchBlocked, BatchStateError, ConsentRequired
 from radreport.core.tenancy import Principal
 from radreport.core.types import CandidateReviewStatus, UserRole
-from radreport.db.models.identity import AppUser
 from radreport.db.models.onboarding import ImportBatch
 from radreport.onboarding import boilerplate, corpus, critical_rules, lexicon, paired_audio, roster, templates
 
@@ -34,22 +34,24 @@ def _tenant_of(principal: Principal, session: DbSession) -> uuid.UUID:
 
 def _require_role(session: DbSession, principal: Principal, role: str) -> uuid.UUID:
     """Assert the caller holds `role` in this tenant, and return their user id."""
-    user = session.get(AppUser, principal.id)
+    assert principal.tenant_id is not None
+    user = user_roles(session, principal.tenant_id, principal.id)
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "unknown or inactive user")
-    if role not in (user.roles or []):
+    if role not in user.roles:
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"this action requires the {role!r} role")
-    return user.id
+    return user.user_id
 
 
 def _uploader(session: DbSession, principal: Principal) -> uuid.UUID:
     """A lab admin or radiologist acting for the lab; returns their user id."""
-    user = session.get(AppUser, principal.id)
+    assert principal.tenant_id is not None
+    user = user_roles(session, principal.tenant_id, principal.id)
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "unknown or inactive user")
-    if not {UserRole.LAB_ADMIN, UserRole.RADIOLOGIST} & set(user.roles or []):
+    if not {UserRole.LAB_ADMIN, UserRole.RADIOLOGIST} & set(user.roles):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "this action requires the 'lab_admin' or 'radiologist' role")
-    return user.id
+    return user.user_id
 
 
 def _get_batch(session: DbSession, tenant_id: uuid.UUID, batch_id: uuid.UUID) -> ImportBatch:

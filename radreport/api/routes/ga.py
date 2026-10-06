@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from radreport.api.deps import CurrentPrincipal, DbSession
 from radreport.autonomy import accrual, grant, release
+from radreport.cache.lookups import user_roles
 from radreport.core.tenancy import Principal
 from radreport.core.types import UserRole
 from radreport.db.models.identity import AppUser, Patient, Study
@@ -33,12 +34,13 @@ def _tenant(principal: Principal) -> uuid.UUID:
 
 
 def _require_lab_role(session: DbSession, principal: Principal, *roles: str) -> uuid.UUID:
-    user = session.get(AppUser, principal.id)
+    assert principal.tenant_id is not None
+    user = user_roles(session, principal.tenant_id, principal.id)
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "unknown or inactive user")
-    if roles and not set(roles) & set(user.roles or []):
+    if roles and not set(roles) & set(user.roles):
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"requires one of: {', '.join(roles)}")
-    return user.id
+    return user.user_id
 
 
 # ================================================================ autonomy ===

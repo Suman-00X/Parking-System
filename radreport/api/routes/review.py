@@ -16,9 +16,9 @@ from pydantic import BaseModel, Field
 
 from radreport.adapters.storage.object_store import S3ObjectStore
 from radreport.api.deps import CurrentPrincipal, DbSession
+from radreport.cache.lookups import user_roles
 from radreport.core.config import get_settings
 from radreport.core.tenancy import Principal
-from radreport.db.models.identity import AppUser
 from radreport.db.models.ingestion import Recording
 from radreport.db.models.reporting import ReportDraft
 from radreport.review import feedback, grading, signing
@@ -32,10 +32,11 @@ router = APIRouter(prefix="/review", tags=["review"])
 
 def _reviewer(session: DbSession, principal: Principal) -> Reviewer:
     """Build the acting reviewer from stored roles, not from the request."""
-    user = session.get(AppUser, principal.id)
+    assert principal.tenant_id is not None
+    user = user_roles(session, principal.tenant_id, principal.id)
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "unknown or inactive user")
-    return Reviewer(user_id=user.id, roles=tuple(user.roles or ()))
+    return Reviewer(user_id=user.user_id, roles=user.roles)
 
 
 def _tenant(principal: Principal) -> uuid.UUID:

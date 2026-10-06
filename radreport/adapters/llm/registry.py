@@ -15,6 +15,8 @@ from sqlalchemy.orm import Session
 
 from radreport.adapters.llm.base import ResolvedModelRef
 from radreport.adapters.llm.pricing import derive_cache_prices
+from radreport.cache.keys import key as cache_key
+from radreport.cache.request import forget, request_cached
 from radreport.core.errors import ModelResolutionError, UngatedActivation
 from radreport.core.logging import get_logger
 from radreport.core.types import CONSEQUENTIAL_TASKS, AssignmentEvent, AssignmentStatus, ProviderKind, TaskKey
@@ -50,15 +52,18 @@ class TaskModelResolver:
         if key in self._cache:
             return self._cache[key]
 
+        resolved = request_cached(cache_key("model_assignment", tenant_id, task_key), lambda: self._load(task_key, tenant_id))
+        self._cache[key] = resolved
+        return resolved
+
+    def _load(self, task_key: str, tenant_id: uuid.UUID) -> ResolvedModel:
         row = self._session.execute(select(TaskModelAssignment, ModelDefinition, ModelProvider).join(ModelDefinition, ModelDefinition.id == TaskModelAssignment.model_definition_id).join(ModelProvider, ModelProvider.id == ModelDefinition.provider_id).where(TaskModelAssignment.tenant_id == tenant_id, TaskModelAssignment.task_key == task_key, TaskModelAssignment.status == AssignmentStatus.ACTIVE)).first()
 
         if row is None:
             raise ModelResolutionError(f"no active model assignment for task {task_key!r} in tenant {tenant_id}")
 
         assignment, definition, provider = row
-        resolved = ResolvedModel(ref=_to_ref(definition, provider), task_key=task_key, task_bucket=assignment.task_bucket, assignment_id=assignment.id, eval_run_id=assignment.eval_run_id)
-        self._cache[key] = resolved
-        return resolved
+        return ResolvedModel(ref=_to_ref(definition, provider), task_key=task_key, task_bucket=assignment.task_bucket, assignment_id=assignment.id, eval_run_id=assignment.eval_run_id)
 
     def invalidate(self, tenant_id: uuid.UUID | None = None) -> None:
         if tenant_id is None:
@@ -117,6 +122,7 @@ def activate_assignment(session: Session, *, assignment_id: uuid.UUID, tenant_id
         session.flush()
 
     assignment.status = AssignmentStatus.ACTIVE
+    forget(cache_key("model_assignment", tenant_id, assignment.task_key))
     assignment.activated_at = now
     assignment.activated_by = actor_id
     session.add(TaskModelAssignmentLog(tenant_id=tenant_id, task_key=assignment.task_key, model_definition_id=assignment.model_definition_id, event=AssignmentEvent.ACTIVATED, eval_run_id=assignment.eval_run_id, actor_id=actor_id))

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from radreport.cache.lookups import forget_tenant
 from radreport.core.logging import get_logger
 from radreport.core.tenancy import assert_transition_allowed
 from radreport.core.types import ActorType, TenantStatus, TrainingConsentEvent, UserRole
@@ -119,6 +120,7 @@ def transition_status(session: Session, tenant_id: uuid.UUID, target: str, *, ac
     assert_transition_allowed(previous, target, s7_readiness_passed=s7_passed)
 
     tenant.status = target
+    forget_tenant(tenant_id)
     session.add(AuditLog(tenant_id=tenant_id, actor_id=actor_id, actor_type=ActorType.USER if actor_id else ActorType.SYSTEM, action="tenant_status_changed", entity_type="tenant", entity_id=tenant_id, before={"status": previous}, after={"status": target, "s7_readiness_passed": s7_passed}))
     session.flush()
 
