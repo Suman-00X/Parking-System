@@ -31,6 +31,7 @@ class Recording(Base, TenantScoped, TimestampMixin):
         enum_check("audio_format", AudioFormat.values()),
         Index("ix_recording_tenant_device_class", "tenant_id", "capture_device_class"),
         Index("ix_recording_tenant_uploaded", "tenant_id", "uploaded_at"),
+        Index("ix_recording_radiologist", "tenant_id", "radiologist_id"),
         Index("ix_recording_training_eligible", "tenant_id", postgresql_where=text("is_training_corpus_eligible")),
     )
 

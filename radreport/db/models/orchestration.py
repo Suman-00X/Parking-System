@@ -22,7 +22,7 @@ class PipelineRun(Base, TenantScoped, TimestampMixin):
     """One end-to-end run of the pipeline over a recording."""
 
     __tablename__ = "pipeline_run"
-    __table_args__ = tenant_table_args(tenant_fk("recording_id", "recording", ondelete="CASCADE"), enum_check("trigger", PipelineTrigger.values()), enum_check("status", RunStatus.values()), Index("ix_pipeline_run_status", "tenant_id", "status", "created_at"), Index("ix_pipeline_run_shadow", "tenant_id", postgresql_where=text("is_shadow")))
+    __table_args__ = tenant_table_args(tenant_fk("recording_id", "recording", ondelete="CASCADE"), enum_check("trigger", PipelineTrigger.values()), enum_check("status", RunStatus.values()), Index("ix_pipeline_run_status", "tenant_id", "status", "created_at"), Index("ix_pipeline_run_shadow", "tenant_id", postgresql_where=text("is_shadow")), Index("ix_pipeline_run_recording", "tenant_id", "recording_id"), Index("ix_pipeline_run_cost", "tenant_id", "created_at", postgresql_include=["total_cost_usd"], postgresql_where=text("not is_shadow")))
 
     id: Mapped[uuid.UUID] = uuid_pk()
     recording_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
@@ -56,6 +56,7 @@ class StageExecution(Base, TenantScoped):
         UniqueConstraint("pipeline_run_id", "stage_name", "attempt"),
         Index("ix_stage_execution_run", "tenant_id", "pipeline_run_id"),
         Index("ix_stage_execution_cost", "tenant_id", "stage_name", "created_at"),
+        Index("ix_stage_execution_task", "tenant_id", "task_key", "created_at"),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()

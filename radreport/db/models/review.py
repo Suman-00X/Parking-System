@@ -48,7 +48,17 @@ class EditEvent(Base, TenantScoped):
     """Field-level diffs — the ASR fine-tuning and correction corpus."""
 
     __tablename__ = "edit_event"
-    __table_args__ = (ForeignKeyConstraint(["report_revision_id", "tenant_id"], ["report_revision.id", "report_revision.tenant_id"], ondelete="CASCADE"), ForeignKeyConstraint(["report_field_value_id", "tenant_id"], ["report_field_value.id", "report_field_value.tenant_id"], ondelete="SET NULL"), enum_check("edit_type", EditType.values()), enum_check("error_category", ErrorCategory.values()), enum_check("severity_grade", SeverityGrade.values()), Index("ix_edit_event_category", "tenant_id", "error_category", "severity_grade"), Index("ix_edit_event_training", "tenant_id", postgresql_where=text("is_training_eligible")), {"postgresql_partition_by": "RANGE (created_at)"})
+    __table_args__ = (
+        ForeignKeyConstraint(["report_revision_id", "tenant_id"], ["report_revision.id", "report_revision.tenant_id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["report_field_value_id", "tenant_id"], ["report_field_value.id", "report_field_value.tenant_id"], ondelete="SET NULL"),
+        enum_check("edit_type", EditType.values()),
+        enum_check("error_category", ErrorCategory.values()),
+        enum_check("severity_grade", SeverityGrade.values()),
+        Index("ix_edit_event_category", "tenant_id", "error_category", "severity_grade"),
+        Index("ix_edit_event_training", "tenant_id", postgresql_where=text("is_training_eligible")),
+        Index("ix_edit_event_revision", "tenant_id", "report_revision_id"),
+        {"postgresql_partition_by": "RANGE (created_at)"},
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"), primary_key=True)
@@ -91,6 +101,7 @@ class FinalReport(Base, TenantScoped):
         CheckConstraint("(path_type = 'autonomous' AND final_revision_id IS NULL AND autonomy_class_id IS NOT NULL) OR (path_type <> 'autonomous' AND (final_revision_id IS NOT NULL OR amends_report_id IS NOT NULL))", name="autonomous_iff_unreviewed"),
         Index("ix_final_report_signed", "tenant_id", "signed_at"),
         Index("ix_final_report_path", "tenant_id", "path_type", "signed_at"),
+        Index("ix_final_report_draft", "tenant_id", "report_draft_id"),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()

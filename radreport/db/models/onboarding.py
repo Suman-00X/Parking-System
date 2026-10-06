@@ -76,7 +76,7 @@ class TemplateImportCandidate(Base, TenantScoped, TimestampMixin):
     """Parsed but **not yet live**."""
 
     __tablename__ = "template_import_candidate"
-    __table_args__ = tenant_table_args(tenant_fk("import_batch_id", "import_batch", ondelete="CASCADE"), tenant_fk("import_artifact_id", "import_artifact", ondelete="CASCADE"), ForeignKeyConstraint(["merged_into_template_id", "tenant_id"], ["template.id", "template.tenant_id"], ondelete="SET NULL", name="fk_merged_into_template_tenant"), ForeignKeyConstraint(["promoted_template_version_id", "tenant_id"], ["template_version.id", "template_version.tenant_id"], ondelete="SET NULL", name="fk_promoted_template_version_tenant"), enum_check("review_status", CandidateReviewStatus.values()))
+    __table_args__ = tenant_table_args(tenant_fk("import_batch_id", "import_batch", ondelete="CASCADE"), tenant_fk("import_artifact_id", "import_artifact", ondelete="CASCADE"), ForeignKeyConstraint(["merged_into_template_id", "tenant_id"], ["template.id", "template.tenant_id"], ondelete="SET NULL", name="fk_merged_into_template_tenant"), ForeignKeyConstraint(["promoted_template_version_id", "tenant_id"], ["template_version.id", "template_version.tenant_id"], ondelete="SET NULL", name="fk_promoted_template_version_tenant"), enum_check("review_status", CandidateReviewStatus.values()), Index("ix_template_import_candidate_batch", "tenant_id", "import_batch_id"))
 
     id: Mapped[uuid.UUID] = uuid_pk()
     import_batch_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
@@ -118,7 +118,7 @@ class CorpusReport(Base, TenantScoped, TimestampMixin):
     """Historical signed reports with no matching audio. Your largest asset."""
 
     __tablename__ = "corpus_report"
-    __table_args__ = tenant_table_args(tenant_fk("import_batch_id", "import_batch", ondelete="CASCADE"), tenant_fk("radiologist_id", "radiologist_profile", ondelete="SET NULL"), UniqueConstraint("tenant_id", "external_report_id"), Index("ix_corpus_report_referrer", "tenant_id", "referring_doctor"))
+    __table_args__ = tenant_table_args(tenant_fk("import_batch_id", "import_batch", ondelete="CASCADE"), tenant_fk("radiologist_id", "radiologist_profile", ondelete="SET NULL"), UniqueConstraint("tenant_id", "external_report_id"), Index("ix_corpus_report_referrer", "tenant_id", "referring_doctor"), Index("ix_corpus_report_batch", "tenant_id", "import_batch_id"))
 
     id: Mapped[uuid.UUID] = uuid_pk()
     import_batch_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)

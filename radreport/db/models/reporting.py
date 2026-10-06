@@ -52,7 +52,7 @@ class ReportDraft(Base, TenantScoped, TimestampMixin):
     """`tenant_id` is denormalised from `study` — this is the table where a leak would matter most, which is exactly why the composite FKs apply here."""
 
     __tablename__ = "report_draft"
-    __table_args__ = tenant_table_args(tenant_fk("recording_id", "recording", ondelete="CASCADE"), tenant_fk("template_version_id", "template_version", ondelete="RESTRICT"), tenant_fk("pipeline_run_id", "pipeline_run", ondelete="SET NULL"), tenant_fk("routing_decision_id", "routing_decision", ondelete="SET NULL"), enum_check("status", DraftStatus.values()), Index("ix_report_draft_status", "tenant_id", "status"), Index("ix_report_draft_flagged", "tenant_id", "flagged_field_count"))
+    __table_args__ = tenant_table_args(tenant_fk("recording_id", "recording", ondelete="CASCADE"), tenant_fk("template_version_id", "template_version", ondelete="RESTRICT"), tenant_fk("pipeline_run_id", "pipeline_run", ondelete="SET NULL"), tenant_fk("routing_decision_id", "routing_decision", ondelete="SET NULL"), enum_check("status", DraftStatus.values()), Index("ix_report_draft_status", "tenant_id", "status"), Index("ix_report_draft_flagged", "tenant_id", "flagged_field_count"), Index("ix_report_draft_recording", "tenant_id", "recording_id"))
 
     id: Mapped[uuid.UUID] = uuid_pk()
     recording_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
@@ -107,7 +107,7 @@ class ProvenanceSpan(Base, TenantScoped):
     """Invariant I1, made physical."""
 
     __tablename__ = "provenance_span"
-    __table_args__ = tenant_table_args(tenant_fk("report_field_value_id", "report_field_value", ondelete="CASCADE"), tenant_fk("transcript_id", "transcript", ondelete="RESTRICT"), tenant_fk("utterance_id", "transcript_utterance", ondelete="SET NULL"), Index("ix_provenance_field_value", "tenant_id", "report_field_value_id"))
+    __table_args__ = tenant_table_args(tenant_fk("report_field_value_id", "report_field_value", ondelete="CASCADE"), tenant_fk("transcript_id", "transcript", ondelete="RESTRICT"), tenant_fk("utterance_id", "transcript_utterance", ondelete="SET NULL"), Index("ix_provenance_field_value", "tenant_id", "report_field_value_id"), Index("ix_provenance_span_utterance", "tenant_id", "utterance_id"))
 
     id: Mapped[uuid.UUID] = uuid_pk()
     report_field_value_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
@@ -173,7 +173,7 @@ class CriticalFindingAlert(Base, TenantScoped):
     """Alerts bypass the normal queue entirely."""
 
     __tablename__ = "critical_finding_alert"
-    __table_args__ = tenant_table_args(tenant_fk("recording_id", "recording", ondelete="CASCADE"), tenant_fk("rule_id", "critical_finding_rule", ondelete="RESTRICT"), tenant_fk("utterance_id", "transcript_utterance", ondelete="SET NULL"), tenant_fk("acknowledged_by", "app_user", ondelete="RESTRICT"), enum_check("outcome", HumanVerdict.values()), Index("ix_alert_sla", "tenant_id", "sla_due_at", postgresql_where=text("not is_breach")))
+    __table_args__ = tenant_table_args(tenant_fk("recording_id", "recording", ondelete="CASCADE"), tenant_fk("rule_id", "critical_finding_rule", ondelete="RESTRICT"), tenant_fk("utterance_id", "transcript_utterance", ondelete="SET NULL"), tenant_fk("acknowledged_by", "app_user", ondelete="RESTRICT"), enum_check("outcome", HumanVerdict.values()), Index("ix_alert_sla", "tenant_id", "sla_due_at", postgresql_where=text("not is_breach")), Index("ix_critical_finding_alert_recording", "tenant_id", "recording_id"))
 
     id: Mapped[uuid.UUID] = uuid_pk()
     recording_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
