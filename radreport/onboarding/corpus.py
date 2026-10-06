@@ -1,6 +1,7 @@
 """The lab's historical signed reports, and the template map, usage counts and referrer ranking derived from them.
 
-Order: bulk-load the reports (load_corpus) -> work out which template each one used
+Order: read an uploaded file (parse_corpus_file) -> bulk-load the reports (load_corpus) -> work
+out which template each one used
 (derive_template_map) -> spot-check that mapping by hand (verify_mapping,
 verification_progress) -> count how often each template is used (usage_histogram,
 refresh_usage_counts) -> rank who refers the work (referrer_prior).
@@ -8,7 +9,10 @@ refresh_usage_counts) -> rank who refers the work (referrer_prior).
 
 from __future__ import annotations
 
+import csv
 import datetime as dt
+import io
+import json
 import re
 import uuid
 from collections import Counter, defaultdict
@@ -50,6 +54,53 @@ class CorpusRecord:
     patient_age_years: int | None = None
     is_deidentified: bool = False
     """**Gates every external API call**."""
+
+
+#: Columns a corpus file may carry; only report_text is required.
+CORPUS_COLUMNS = ("report_text", "external_report_id", "report_date", "radiologist_employee_code", "referring_doctor", "patient_sex", "patient_age_years", "is_deidentified")
+_TRUE = frozenset({"true", "yes", "1", "y"})
+
+
+def parse_corpus_file(data: bytes, filename: str) -> tuple[list[CorpusRecord], list[str]]:
+    """Read a CSV (one report per row) or a JSON array of records. Returns `(records, problems)`."""
+    text = data.decode("utf-8-sig", errors="replace")
+    if filename.lower().endswith(".json") or text.lstrip().startswith("["):
+        try:
+            raw_rows = json.loads(text)
+        except ValueError as exc:
+            return [], [f"not valid JSON: {exc}"]
+        if not isinstance(raw_rows, list) or not all(isinstance(r, dict) for r in raw_rows):
+            return [], ["a JSON corpus must be an array of objects"]
+        rows = [{str(k).strip().lower(): v for k, v in r.items()} for r in raw_rows]
+        first_line = 1
+    else:
+        reader = csv.DictReader(io.StringIO(text))
+        if "report_text" not in {(name or "").strip().lower() for name in (reader.fieldnames or [])}:
+            return [], ["missing required column: report_text"]
+        rows = [{(k or "").strip().lower(): (v or "").strip() for k, v in r.items()} for r in reader]
+        first_line = 2
+
+    records: list[CorpusRecord] = []
+    problems: list[str] = []
+    for line_no, row in enumerate(rows, start=first_line):
+        unknown = sorted(set(row) - set(CORPUS_COLUMNS))
+        if unknown:
+            problems.append(f"row {line_no}: unknown column(s) {', '.join(unknown)}")
+            continue
+        report_text = str(row.get("report_text") or "").strip()
+        if not report_text:
+            problems.append(f"row {line_no}: report_text is empty")
+            continue
+        age_raw = row.get("patient_age_years")
+        try:
+            age = int(age_raw) if age_raw not in (None, "") else None
+            report_date = dt.date.fromisoformat(str(row["report_date"])) if row.get("report_date") else None
+        except (TypeError, ValueError):
+            problems.append(f"row {line_no}: patient_age_years or report_date is malformed")
+            continue
+        deidentified = row.get("is_deidentified")
+        records.append(CorpusRecord(report_text=report_text, external_report_id=str(row["external_report_id"]) if row.get("external_report_id") else None, report_date=report_date, radiologist_employee_code=str(row["radiologist_employee_code"]) if row.get("radiologist_employee_code") else None, referring_doctor=str(row["referring_doctor"]) if row.get("referring_doctor") else None, patient_sex=str(row["patient_sex"]) if row.get("patient_sex") else None, patient_age_years=age, is_deidentified=deidentified is True or str(deidentified).strip().lower() in _TRUE))
+    return records, problems
 
 
 @dataclass(slots=True)

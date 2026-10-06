@@ -3,7 +3,7 @@
 Order: sign in (login_page, login_submit, logout_submit) -> manage labs (home, labs_page,
 create_lab, lab_page, set_lab_user_password, change_status, lab_readiness_page) -> configure models per step
 (assign_step, activate_step, providers_page, add_provider, add_model) -> onboard a lab
-(onboarding_page, upload_roster, upload_templates, merge_proposals, run_onboarding_step) ->
+(onboarding_page, upload_roster, upload_templates, upload_corpus, merge_proposals, run_onboarding_step) ->
 manage platform users (users_page, create_user, deactivate_user, reactivate_user, reset_password).
 """
 
@@ -590,8 +590,13 @@ def onboarding_page(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin,
  <input id="templates" name="files" type="file" multiple required>
  <div class="actions"><button type="submit">Submit templates</button></div>
  </form>
- <p class="meta">The historical report corpus is loaded through
- <code>POST /admin/api/labs/{tenant_id}/onboarding/corpus</code>, since it arrives as structured records.</p>"""
+ <form class="stack" method="post" action="{base}/corpus" enctype="multipart/form-data">
+ <label for="corpus">Historical signed reports (CSV with a report_text column, or a JSON array)</label>
+ <input id="corpus" name="file" type="file" accept=".csv,.json,text/csv,application/json" required>
+ <div class="actions"><button type="submit">Load reports</button></div>
+ </form>
+ <p class="meta">Mark rows <code>is_deidentified</code> only if they truly are: it decides whether
+ a report may ever reach an external model.</p>"""
         if can_upload
         else ""
     )
@@ -643,6 +648,18 @@ async def upload_templates(tenant_id: uuid.UUID, request: Request, admin: Curren
     except StepRefused as exc:
         return _redirect(f"/admin/labs/{tenant_id}/onboarding", error=exc.reason)
     return _redirect(f"/admin/labs/{tenant_id}/onboarding", notice=f"Templates submitted — {_summarise(result)}")
+
+
+@router.post("/labs/{tenant_id}/onboarding/corpus")
+async def upload_corpus(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, file: Annotated[UploadFile, File()]) -> Response:
+    data = await file.read()
+    try:
+        with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
+            result = onboarding_steps.load_corpus_file(session, tenant_id, data, file.filename or "corpus.csv")
+    except StepRefused as exc:
+        return _redirect(f"/admin/labs/{tenant_id}/onboarding", error=exc.reason)
+    skipped = f"; {len(result['problems'])} row(s) skipped" if result["problems"] else ""
+    return _redirect(f"/admin/labs/{tenant_id}/onboarding", notice=f"Reports loaded — {_summarise(result)}{skipped}")
 
 
 @router.post("/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals")

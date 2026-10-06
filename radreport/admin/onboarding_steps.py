@@ -1,7 +1,7 @@
 """The onboarding steps a product admin runs for a lab, shared by the admin panel's pages and its JSON API.
 
 Order: see where the lab stands (onboarding_overview) -> upload its data (import_roster_file,
-submit_template_files, load_corpus_records) -> run the mining and seeding steps
+submit_template_files, load_corpus_records, load_corpus_file) -> run the mining and seeding steps
 (propose_template_merges, run_step over STEPS) -> fill and freeze the lab's acceptance set from
 its verbatim transcripts (_assemble_acceptance, _freeze_acceptance), which the pilot gate needs.
 """
@@ -68,6 +68,15 @@ def load_corpus_records(session: Session, tenant_id: uuid.UUID, records: list[co
     """Bulk-load historical signed reports."""
     result = corpus.load_corpus(session, tenant_id=tenant_id, records=records, submitted_by=None, trigger=trigger)
     return {"batch_id": str(result.batch.id), "loaded": result.loaded, "duplicates": result.duplicates, "rejected": [{"id": rid, "reason": reason} for rid, reason in result.rejected]}
+
+
+def load_corpus_file(session: Session, tenant_id: uuid.UUID, data: bytes, filename: str, *, trigger: str = ImportTrigger.INITIAL_ONBOARDING) -> dict[str, Any]:
+    """Bulk-load historical reports from an uploaded CSV or JSON file."""
+    records, problems = corpus.parse_corpus_file(data, filename)
+    if not records:
+        raise StepRefused(422, "; ".join(problems[:5]) or "the file holds no reports")
+    result = load_corpus_records(session, tenant_id, records, trigger=trigger)
+    return result | {"problems": problems}
 
 
 def propose_template_merges(session: Session, tenant_id: uuid.UUID, batch_id: uuid.UUID) -> dict[str, Any]:

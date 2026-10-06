@@ -528,3 +528,16 @@ def test_a_batch_uploaded_from_the_admin_panel_names_its_admin(admin_fixture) ->
         batch = session.get(ImportBatch, uuid.UUID(response.json()["batch_id"]))
         assert batch.submitted_by is None
         assert batch.submitted_by_platform_user_id == f["admin_id"]
+
+
+def test_a_corpus_file_loads_from_the_onboarding_page(admin_fixture) -> None:
+    f = admin_fixture
+    client, _cookie = _signed_in(f["email"])
+    csv_body = b"report_text,external_report_id\nFINDINGS Liver normal.,R-1\nFINDINGS No effusion.,R-2\n,R-3\n"
+    response = client.post(f"/admin/labs/{f['tenant_id']}/onboarding/corpus", files={"file": ("reports.csv", csv_body, "text/csv")}, headers={"Origin": "http://testserver"})
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert "notice=" in location and "loaded%3A+2" in location and "1+row%28s%29+skipped" in location
+
+    refused = client.post(f"/admin/labs/{f['tenant_id']}/onboarding/corpus", files={"file": ("bad.csv", b"text\nx\n", "text/csv")})
+    assert "error=" in refused.headers["location"]

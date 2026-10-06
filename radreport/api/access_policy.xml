@@ -150,6 +150,10 @@
       <param name="tenant_id" in="path" type="uuid" required="true"/>
       <param name="files" in="file" type="file" required="true" multiple="true" max-length="200"/>
     </route>
+    <route id="admin.lab.onboarding.corpus" method="POST" path="/admin/labs/{tenant_id}/onboarding/corpus" roles="product_admin" rate-limit="admin-upload" max-body-bytes="104857600">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="file" in="file" type="file" required="true"/>
+    </route>
     <route id="admin.lab.onboarding.merge-proposals" method="POST" path="/admin/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
       <param name="batch_id" in="path" type="uuid" required="true"/>
       <param name="tenant_id" in="path" type="uuid" required="true"/>
