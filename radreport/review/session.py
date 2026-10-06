@@ -147,7 +147,9 @@ def open_draft(session: Session, *, tenant_id: uuid.UUID, draft_id: uuid.UUID, r
     ]
     fields.sort(key=field_sort_key)
 
-    findings = [{"check_id": f.check_id, "severity": f.severity, "message": f.message, "field_key": f.field_key} for f in session.execute(select(VerificationFinding).where(VerificationFinding.tenant_id == tenant_id, VerificationFinding.report_draft_id == draft_id)).scalars().all()]
+    # A finding points at a field value, not a field key; resolve it through the fields just loaded.
+    key_by_value = {view.field_value_id: view.field_key for view in fields}
+    findings = [{"check_id": f.check_id, "severity": f.severity, "message": f.message, "field_key": key_by_value.get(f.report_field_value_id) if f.report_field_value_id else None} for f in session.execute(select(VerificationFinding).where(VerificationFinding.tenant_id == tenant_id, VerificationFinding.report_draft_id == draft_id)).scalars().all()]
 
     if draft.status == DraftStatus.GENERATED:
         draft.status = DraftStatus.IN_REVIEW
