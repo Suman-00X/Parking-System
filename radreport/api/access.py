@@ -348,7 +348,12 @@ class SharedRateLimiter:
         """Count one request; return the seconds to wait if it is over the limit, else None."""
         now = self._clock()
         start = now - (now % limit.window_seconds)
-        hits = self._counter(limit.id, who, dt.datetime.fromtimestamp(start, dt.UTC))
+        try:
+            hits = self._counter(limit.id, who, dt.datetime.fromtimestamp(start, dt.UTC))
+        except Exception as exc:  # noqa: BLE001 - a limiter outage must not become an app outage
+            # Fail open: with the database unreachable the request cannot do anything anyway.
+            log.warning("rate_limit_store_unavailable", limit=limit.id, error=type(exc).__name__)
+            return None
         return start + limit.window_seconds - now if hits > limit.requests else None
 
 

@@ -313,9 +313,19 @@ def test_a_shared_limit_counts_in_fixed_windows() -> None:
     assert limiter.hit(limit, "ip:1") is None, "a new window starts a new count"
 
 
-def test_sign_in_limits_are_shared_and_throughput_limits_are_not() -> None:
-    limits = load_policy().rate_limits
-    assert {lid for lid, limit in limits.items() if limit.store == "shared"} == {"login", "token-refresh"}
+def test_every_shipped_limit_holds_across_workers() -> None:
+    """A per-worker count lets N workers allow N times the figure; none of the shipped limits may do that."""
+    assert {lid for lid, limit in load_policy().rate_limits.items() if limit.store != "shared"} == set()
+
+
+def test_a_shared_limiter_fails_open_when_its_store_is_down() -> None:
+    from radreport.api.access import SharedRateLimiter
+
+    def broken(*_args: object) -> int:
+        raise ConnectionError("database unreachable")
+
+    limit = RateLimit(id="login", requests=1, window_seconds=60, key="ip", store="shared")
+    assert SharedRateLimiter(counter=broken).hit(limit, "ip:1") is None
 
 
 def test_an_unknown_store_is_refused() -> None:

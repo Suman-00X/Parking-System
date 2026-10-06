@@ -88,7 +88,8 @@ class RateLimitCounter(Base):
     """Requests counted per (limit, caller, window), shared by every worker for the limits that need it."""
 
     __tablename__ = "rate_limit_counter"
-    __table_args__ = (PrimaryKeyConstraint("limit_id", "who", "window_start"), Index("ix_rate_limit_counter_window", "window_start"))
+    # UNLOGGED: a count that is lost in a crash only resets some limits; skipping the WAL keeps each hit cheap.
+    __table_args__ = (PrimaryKeyConstraint("limit_id", "who", "window_start"), Index("ix_rate_limit_counter_window", "window_start"), {"prefixes": ["UNLOGGED"]})
 
     limit_id: Mapped[str] = mapped_column(Text, nullable=False)
     who: Mapped[str] = mapped_column(Text, nullable=False)

@@ -18,8 +18,8 @@
     the handler runs; the error names the parameter but never repeats its value.
   - rate-limit names a <rate-limit>; its counter is shared by every route that uses it, per
     caller (key="principal") or per client address (key="ip"). store="shared" keeps the count
-    in Postgres so every worker sees it (used for sign-in, against password guessing); the
-    default keeps it in each worker's memory.
+    in Postgres (an unlogged table, one upsert per request) so it holds across every worker and
+    restart; store="memory", the default when omitted, counts in each worker's own memory.
   - max-body-bytes caps the request body (413); it is counted as the body arrives, so a body
     sent without a Content-Length is capped too. A route without it may carry at most 64 KiB.
   - environments limits a route to those deployment environments; elsewhere it 404s.
@@ -37,13 +37,13 @@
 
   <rate-limits>
     <rate-limit id="login" requests="5" window-seconds="60" key="ip" store="shared"/>
-    <rate-limit id="public" requests="120" window-seconds="60" key="ip"/>
-    <rate-limit id="admin-read" requests="300" window-seconds="60" key="principal"/>
-    <rate-limit id="admin-write" requests="60" window-seconds="60" key="principal"/>
-    <rate-limit id="admin-upload" requests="10" window-seconds="60" key="principal"/>
-    <rate-limit id="lab-read" requests="300" window-seconds="60" key="principal"/>
-    <rate-limit id="lab-write" requests="120" window-seconds="60" key="principal"/>
-    <rate-limit id="lab-upload" requests="30" window-seconds="60" key="principal"/>
+    <rate-limit id="public" requests="120" window-seconds="60" key="ip" store="shared"/>
+    <rate-limit id="admin-read" requests="300" window-seconds="60" key="principal" store="shared"/>
+    <rate-limit id="admin-write" requests="60" window-seconds="60" key="principal" store="shared"/>
+    <rate-limit id="admin-upload" requests="10" window-seconds="60" key="principal" store="shared"/>
+    <rate-limit id="lab-read" requests="300" window-seconds="60" key="principal" store="shared"/>
+    <rate-limit id="lab-write" requests="120" window-seconds="60" key="principal" store="shared"/>
+    <rate-limit id="lab-upload" requests="30" window-seconds="60" key="principal" store="shared"/>
     <rate-limit id="token-refresh" requests="30" window-seconds="60" key="ip" store="shared"/>
   </rate-limits>
 
