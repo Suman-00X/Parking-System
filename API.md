@@ -657,8 +657,10 @@ from [`STEPS`](radreport/admin/onboarding_steps.py#L110):
 An unknown name is `404` listing the valid ones. The API takes an optional JSON
 body for the two steps that have options — `{"min_frequency": n}` for
 `lexicon-mine`, `{"verified_only": true}` for `boilerplate-mine` — and returns
-the step's result. The page's buttons run with the defaults and redirect with a
-one-line summary of the counts.
+the step's result. On the page, the `lexicon-mine` button carries a minimum-frequency
+box and the `boilerplate-mine` button a "verified mappings only" checkbox; a
+blank box runs with the default. Each button redirects with a one-line summary
+of the counts.
 
 ## 2.1 Templates (S1)
 
@@ -1362,10 +1364,6 @@ or discovers the boundary by eating a `409`.
 roster CSV is the only way a lab user is created or changed, and it never
 deletes. `tenant_branding` is inserted empty at registration and never written
 again.
-
-**Phase 2 — step options are API-only.** The page's step buttons run with
-default options; `min_frequency` and `verified_only` can only be set through the
-API.
 
 **Phase 3 — nothing creates a `Study` or a `Patient`.** Yet
 [`/ingest/recordings`](radreport/api/routes/ingest.py#L38) requires a
