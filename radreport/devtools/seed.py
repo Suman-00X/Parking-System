@@ -3,7 +3,8 @@
 Order: load the model catalog (seed_model_catalog) -> create the first product admin, with a
 password taken from the environment (seed_platform_admin) -> create the logins shown on the login
 page's test-credentials tab (seed_demo_accounts) -> create a demo lab with sample data
-(seed_demo_tenant); main runs all four. Every later account is added from the admin panel.
+(seed_demo_tenant); main runs all four. On a developer machine, --local-accounts adds a sign-in
+for every role (devtools/local_accounts.py). Every later account is added from the admin panel.
 """
 
 from __future__ import annotations
@@ -129,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--demo-tenant", action="store_true")
     parser.add_argument("--admin-email", default="admin@radreport.local")
+    parser.add_argument("--local-accounts", action="store_true", help="developer machines only: an account for every role, written to local-credentials.md")
     args = parser.parse_args(argv)
 
     configure_logging()
@@ -143,6 +145,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"platform admin: {admin.id} <{admin.email}>")
         if not admin.password_hash:
             print(f"  no password set: export {ADMIN_PASSWORD_ENV} and re-run, or run `make admin-password EMAIL={admin.email}`")
+
+    if args.local_accounts:
+        from pathlib import Path
+
+        from radreport.devtools.local_accounts import seed_local_accounts
+
+        sheet = Path("local-credentials.md")
+        platform, lab = seed_local_accounts(sheet)
+        print(f"local accounts: {len(platform)} admin panel, {len(lab)} lab; credentials written to {sheet}")
 
     print("\nNote: no task_model_assignment rows were created. An assignment cannot go active without a gold-set eval_run, and seeding one would bypass the gate the registry exists to enforce.")
     return 0

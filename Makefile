@@ -9,7 +9,7 @@
 #               without FORCE — either would make the isolation tests pass
 #               vacuously)
 
-.PHONY: help install up down migrate migrate-owner revision seed admin admin-password \
+.PHONY: help install up down migrate migrate-owner revision seed seed-local admin admin-password \
         run dev stop restart status logs test test-unit lint fmt check clean
 
 PORT ?= 8000
@@ -45,6 +45,9 @@ revision:  ## Autogenerate a migration: make revision M="what changed"
 
 seed:  ## Seed the model catalog and the first product admin (password from RADREPORT_SEED_ADMIN_PASSWORD)
 	.venv/bin/python -m radreport.devtools.seed
+
+seed-local:  ## Developer machines: an account for every role, written to local-credentials.md
+	.venv/bin/python -m radreport.devtools.seed --local-accounts
 
 admin:  ## Create the first product admin interactively: make admin EMAIL=you@example.com
 	.venv/bin/python -m radreport.admin.cli create --email $(EMAIL)
