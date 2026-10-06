@@ -69,3 +69,8 @@ force-single-line = false
 python_version = "3.12"
 warn_unused_ignores = true
 plugins = []
+
+[[tool.mypy.overrides]]
+# These ship no type information; faster_whisper is optional and absent in most environments.
+module = ["metaphone", "soundfile", "boto3", "botocore.*", "faster_whisper"]
+ignore_missing_imports = true

@@ -81,8 +81,8 @@ class PromptBundle(BaseModel):
                 entry["cache_control"] = {"type": "ephemeral"}
             blocks.append(entry)
 
-        for block in self.volatile:
-            blocks.append({"type": "text", "text": block.text})
+        for extra in self.volatile:
+            blocks.append({"type": "text", "text": extra.text})
 
         return blocks
 

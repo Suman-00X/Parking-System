@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -55,7 +56,7 @@ def may_release_without_review(*, grant: AutonomyGrant | None, confidence: float
     if not grant.is_granted:
         return ReleaseDecision(False, f"autonomy class {grant.class_code!r} is {grant.status}, not granted", blocker="class_not_granted", class_code=grant.class_code, class_id=grant.class_id)
 
-    here = {"class_code": grant.class_code, "class_id": grant.class_id}
+    here: dict[str, Any] = {"class_code": grant.class_code, "class_id": grant.class_id}
 
     if not radiologist_opted_in:
         # `radiologist_profile.autonomy_enabled`.
@@ -116,5 +117,5 @@ def coverage(session: Session, *, tenant_id: uuid.UUID, since: dt.datetime | Non
 
     rows = session.execute(select(FinalReport.path_type, func.count()).where(*conditions).group_by(FinalReport.path_type)).all()
 
-    by_path = dict(rows)
+    by_path: dict[str, int] = {path: int(n) for path, n in rows}
     return Coverage(signed=sum(by_path.values()), released=by_path.get(PathType.AUTONOMOUS, 0), since=since)

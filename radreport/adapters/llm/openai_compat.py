@@ -55,7 +55,7 @@ class OpenAICompatibleClient:
             response.raise_for_status()
             return response
 
-        raw = await self._limiter.call(_call)
+        raw: Any = await self._limiter.call(_call)
         body = raw.json()
         latency_ms = (time.perf_counter_ns() - started) // 1_000_000
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import MutableMapping
 from typing import Any
 
 import structlog
@@ -19,7 +20,7 @@ from radreport.core.config import get_settings
 FORBIDDEN_KEYS = frozenset({"mrn", "patient_name", "name_enc", "audio_bytes", "raw_audio"})
 
 
-def _redact(_logger: Any, _name: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+def _redact(_logger: Any, _name: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     for key in list(event_dict):
         if key in FORBIDDEN_KEYS:
             event_dict[key] = "<redacted:phi>"

@@ -74,7 +74,7 @@ def enroll_voice(radiologist_id: uuid.UUID, body: VoiceEnrollmentRequest, sessio
     try:
         profile = roster.enroll_voice(session, tenant_id=tenant_id, radiologist_id=radiologist_id, embedding=body.embedding, consent_ref=body.consent_ref, actor_id=actor)
     except ConsentRequired as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return {"radiologist_id": str(profile.id), "voice_consent_ref": profile.voice_consent_ref or ""}
@@ -134,7 +134,7 @@ def review_candidate(candidate_id: uuid.UUID, body: CandidateReviewRequest, sess
     try:
         candidate = templates.review_candidate(session, tenant_id=tenant_id, candidate_id=candidate_id, reviewer_id=reviewer, **body.model_dump(exclude={"decision"}), decision=body.decision)
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     return {"candidate_id": str(candidate.id), "review_status": candidate.review_status}
 
 
@@ -150,7 +150,7 @@ def decide_merge(proposal_id: uuid.UUID, body: MergeDecisionRequest, session: Db
     try:
         proposal = templates.decide_merge(session, tenant_id=tenant_id, proposal_id=proposal_id, decision=body.decision, decided_by=reviewer)
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     return {"proposal_id": str(proposal.id), "decision": proposal.decision}
 
 
@@ -230,7 +230,7 @@ def resolve_finding(finding_id: uuid.UUID, body: ResolveFindingRequest, session:
     try:
         finding = lexicon.resolve_finding(session, tenant_id=tenant_id, finding_id=finding_id, resolution=body.resolution, resolved_by=reviewer)
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     return {"finding_id": str(finding.id), "resolution": finding.resolution}
 
 
@@ -262,7 +262,7 @@ def submit_verbatim(body: VerbatimRequest, session: DbSession, principal: Curren
     try:
         transcript = paired_audio.submit_verbatim(session, tenant_id=tenant_id, recording_id=body.recording_id, text=body.text, annotator_id=annotator, includes_disfluencies=body.includes_disfluencies, is_eval_set_member=body.is_eval_set_member)
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     return {"transcript_id": str(transcript.id), "capture_device_class": transcript.capture_device_class, "training_eligible": transcript.includes_disfluencies and not transcript.is_eval_set_member}
 
 
@@ -287,7 +287,7 @@ def promote_boilerplate(candidate_id: uuid.UUID, body: PromoteBoilerplateRequest
     try:
         template_field = boilerplate.promote_candidate(session, tenant_id=tenant_id, candidate_id=candidate_id, approved_by=approver, enable_auto_fill=body.enable_auto_fill)
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     return {"template_field_id": str(template_field.id), "absence_policy": template_field.absence_policy, "default_normal_text": template_field.default_normal_text}
 
 
@@ -312,7 +312,7 @@ def author_rule(body: AuthorRuleRequest, session: DbSession, principal: CurrentP
     try:
         rule = critical_rules.author_rule(session, tenant_id=tenant_id, authored_by=author, **body.model_dump())
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     return {"rule_id": str(rule.id), "code": rule.code}
 
 
@@ -324,5 +324,5 @@ def approve_rule(rule_id: uuid.UUID, session: DbSession, principal: CurrentPrinc
     try:
         rule = critical_rules.approve_rule(session, tenant_id=tenant_id, rule_id=rule_id, approved_by=approver)
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     return {"rule_id": str(rule.id), "code": rule.code, "is_active": rule.is_active}

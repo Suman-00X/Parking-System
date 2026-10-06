@@ -198,6 +198,7 @@ def build_network(hypotheses: list[EngineHypothesis]) -> list[Slot]:
                 insert_cursor = ref_index + 1
             else:
                 # Only this engine produced a token here — an insertion slot.
+                assert hyp_index is not None, "an alignment step has a side on at least one of the two sequences"
                 bucket = insertions[insert_cursor]
                 position = sum(1 for s in bucket if hypothesis.engine in _engines(s))
                 while len(bucket) <= position:

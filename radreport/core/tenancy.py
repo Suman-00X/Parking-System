@@ -32,10 +32,6 @@ class Principal:
     tenant_id: uuid.UUID | None
     """None only for `platform_user` and `system` before an org is selected."""
 
-    @property
-    def is_platform(self) -> bool:
-        return self.kind == "platform_user"
-
 
 _current_tenant: ContextVar[uuid.UUID | None] = ContextVar("current_tenant", default=None)
 _current_principal: ContextVar[Principal | None] = ContextVar("current_principal", default=None)

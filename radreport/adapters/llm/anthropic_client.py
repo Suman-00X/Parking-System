@@ -40,7 +40,7 @@ class AnthropicClient:
         async def _call() -> Any:
             return await self._client.messages.create(**payload)
 
-        raw = await self._limiter.call(_call)
+        raw: Any = await self._limiter.call(_call)
         latency_ms = (time.perf_counter_ns() - started) // 1_000_000
         return self._to_response(raw, model_id, latency_ms)
 
@@ -83,18 +83,18 @@ class AnthropicClient:
     async def submit_batch(self, items: list[BatchRequestItem], *, model_id: str) -> str:
         """50% off, ≤24h. Never for critical findings or stat/urgent."""
         requests = [{"custom_id": item.custom_id, "params": self._build_payload(item.request, model_id)} for item in items]
-        batch = await self._limiter.call(lambda: self._client.messages.batches.create(requests=requests))
+        batch: Any = await self._limiter.call(lambda: self._client.messages.batches.create(requests=requests))
         log.info("batch_submitted", batch_id=batch.id, item_count=len(items), model_id=model_id)
         return str(batch.id)
 
     async def poll_batch(self, batch_id: str) -> str:
-        batch = await self._limiter.call(lambda: self._client.messages.batches.retrieve(batch_id))
+        batch: Any = await self._limiter.call(lambda: self._client.messages.batches.retrieve(batch_id))
         return str(batch.processing_status)
 
     async def fetch_batch_results(self, batch_id: str) -> dict[str, LLMResponse]:
         """Keyed by `custom_id`."""
         results: dict[str, LLMResponse] = {}
-        stream = await self._limiter.call(lambda: self._client.messages.batches.results(batch_id))
+        stream: Any = await self._limiter.call(lambda: self._client.messages.batches.results(batch_id))
         async for entry in _aiter(stream):
             custom_id = getattr(entry, "custom_id", None)
             if custom_id is None:

@@ -273,12 +273,7 @@ def test_a_draft_with_verification_findings_opens(review_fixture) -> None:
     """open_draft read a `field_key` column that does not exist, so any draft with a finding crashed the review screen."""
     f = review_fixture
     with tenant_session(f["tenant_id"], url=f["db"]) as session:
-        session.add_all(
-            [
-                VerificationFinding(tenant_id=f["tenant_id"], report_draft_id=f["draft_id"], report_field_value_id=f["kidney_value_id"], check_id="laterality_mismatch", check_type=CheckType.RULE, severity=Severity.WARN, message="laterality disagrees with the transcript"),
-                VerificationFinding(tenant_id=f["tenant_id"], report_draft_id=f["draft_id"], check_id="whole_report", check_type=CheckType.LLM_CRITIC, severity=Severity.INFO, message="reads fine"),
-            ]
-        )
+        session.add_all([VerificationFinding(tenant_id=f["tenant_id"], report_draft_id=f["draft_id"], report_field_value_id=f["kidney_value_id"], check_id="laterality_mismatch", check_type=CheckType.RULE, severity=Severity.WARN, message="laterality disagrees with the transcript"), VerificationFinding(tenant_id=f["tenant_id"], report_draft_id=f["draft_id"], check_id="whole_report", check_type=CheckType.LLM_CRITIC, severity=Severity.INFO, message="reads fine")])
         session.flush()
         view = review_session.open_draft(session, tenant_id=f["tenant_id"], draft_id=f["draft_id"], reviewer=f["radiologist"])
         assert {(x["check_id"], x["field_key"]) for x in view.findings} == {("laterality_mismatch", "kidney"), ("whole_report", None)}

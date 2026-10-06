@@ -175,7 +175,7 @@ def corpus_hours(session: Session, *, tenant_id: uuid.UUID) -> CorpusHours:
 def gold_partition_progress(session: Session, *, tenant_id: uuid.UUID) -> dict[str, tuple[int, int]]:
     """`{partition: (annotated, target)}` — the critical path, as a number."""
     rows = session.execute(select(VerbatimTranscript.capture_device_class, func.count()).where(VerbatimTranscript.tenant_id == tenant_id).group_by(VerbatimTranscript.capture_device_class)).all()
-    counts = dict(rows)
+    counts: dict[str, int] = {cls: int(n) for cls, n in rows}
     current = sum(n for cls, n in counts.items() if cls != CaptureDeviceClass.LEGACY)
     return {"current": (current, CURRENT_GOLD_TARGET), "legacy": (counts.get(CaptureDeviceClass.LEGACY, 0), LEGACY_GOLD_TARGET)}
 
