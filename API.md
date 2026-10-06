@@ -864,3 +864,438 @@ ADT/ORM feed that does not exist yet.
 ## 3.2 The missing link
 
 **Capture does not start the pipeline.** `/ingest/recordings` validates the
+audio, stores the object, writes the row, records the audit entry, and returns.
+No run is enqueued.
+
+Nothing under `api/` imports `pipeline/`. The only callers of
+`build_v1_graph()` and `new_run()` are in `tests/db/test_pipeline_v1.py`, and
+`workers/` is empty. The largest module in the repository — the product
+itself — is unreachable over HTTP.
+
+Everything below assumes a `report_draft` already exists. To see how one is
+made, read that test file, not a request trace.
+
+## 3.3 Take work from the queue
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| GET | `/review/queue?limit=` | `radiologist`, `transcriptionist`, `lab_admin`, `auditor` | [`review.py:68`](radreport/api/routes/review.py#L68) |
+| GET | `/review/queue/stats` | `radiologist`, `transcriptionist`, `lab_admin`, `auditor` | [`review.py:79`](radreport/api/routes/review.py#L79) |
+
+Ordered priority → critical alert → flagged-field count → oldest, and
+**filtered to what the caller's role may actually complete**. A transcriptionist
+does not see drafts only a radiologist can finish.
+
+Each item: `draft_id`, `template_code`, `template_display_name`, `priority`,
+`confidence`, `flagged_field_count`, `status`, `has_critical_alert`,
+`requires_radiologist`, `waiting_minutes`.
+
+`stats` is for the header and carries no clinical content: `total`,
+`awaiting_radiologist`, `awaiting_assistant`, `with_critical_alert`,
+`oldest_waiting_minutes`, `median_flagged_fields`.
+
+## 3.4 Open a draft
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| GET | `/review/drafts/{draft_id}` | `radiologist`, `transcriptionist`, `auditor` | [`review.py:91`](radreport/api/routes/review.py#L91) |
+| GET | `/review/drafts/{draft_id}/audio` | `radiologist`, `transcriptionist`, `auditor` | [`review.py:137`](radreport/api/routes/review.py#L137) |
+
+Returns `draft_id`, `status`, `rendered_text`, `overall_confidence`,
+`fields[]`, `findings`, and a `signing` preflight:
+
+```json
+{
+  "signing": {
+    "may_sign": false,
+    "blocking_findings": [],
+    "unacknowledged_alerts": ["..."],
+    "ungrounded_fields": []
+  }
+}
+```
+
+Render `may_sign` from this rather than inferring it — the same four refusals
+are re-checked server-side at sign time and come back as `409`.
+
+Each field carries `fill_source` (`dictated` \| `template_default` \|
+`blanket_normal` \| `inferred` \| `human`), `system_asserted`, `is_grounded`,
+`is_flagged`, `is_critical`, `confidence`, `flag_reasons[]` and `provenance[]`.
+**`system_asserted` is the most important visual distinction on the screen**: it
+marks a value no human said out loud.
+
+Audio responses carry `Cache-Control: private, no-store` — it is PHI and must
+not be cached by an intermediary. `503` if the object store is unreachable.
+
+## 3.5 Save edits
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/review/drafts/{draft_id}/revisions` | `radiologist`, `transcriptionist` | [`review.py:185`](radreport/api/routes/review.py#L185) |
+
+Body: `edits[]` (`field_value_id` plus any of `value_text`, `value_numeric`,
+`value_unit`, `value_enum`, `assertion_status`, `laterality`),
+`rendered_text`, `active_edit_seconds`, `wall_clock_seconds`.
+
+`active_edit_seconds` is **focus time**, measured by the review screen's
+blur/focus timer — not wall clock. The server clamps implausible values; check
+`clamped` in the response.
+
+Returns `revision_id`, `revision_number`, `active_edit_seconds`, `clamped`, and
+`edits[]` with a per-field `edit_type`, `error_category` and `has_audio_span`.
+Those categorised edit events are the training signal.
+
+## 3.6 Sign
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/review/drafts/{draft_id}/sign` | **`radiologist`** | [`review.py:198`](radreport/api/routes/review.py#L198) |
+
+No body. Returns `final_report_id`, `content_hash`, `path_type`, `signed_at`.
+
+`path_type` records how the report got here: `transcriptionist_reviewed`,
+`radiologist_only`, or `autonomous` (released with no human review, under a
+granted autonomy class — see [4.5](#45-autonomy)).
+
+Refused with `409` on any outstanding gate. The preflight in
+[3.4](#34-open-a-draft) tells you which.
+
+## 3.7 After signing
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/review/reports/{report_id}/addendum` | **`radiologist`** | [`review.py:214`](radreport/api/routes/review.py#L214) |
+| POST | `/review/alerts/{alert_id}/acknowledge` | **`radiologist`** | [`review.py:230`](radreport/api/routes/review.py#L230) |
+
+Addendum body: `rendered_text` and a non-empty `reason`. **The signed original
+is never modified** — an addendum is a new row that references it.
+
+Acknowledgement body: `{"outcome": "true_positive" | "false_positive"}`.
+Returns `is_breach`, which is whether the rule's SLA was missed. Unacknowledged
+alerts are one of the four things that block signing.
+
+## 3.8 The screens
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| GET | `/ui/queue` | `radiologist`, `transcriptionist`, `lab_admin`, `auditor` | [`review_ui.py:187`](radreport/api/routes/review_ui.py#L187) |
+| GET | `/ui/drafts/{draft_id}` | `radiologist`, `transcriptionist`, `auditor` | [`review_ui.py:99`](radreport/api/routes/review_ui.py#L99) |
+| GET | `/ui/static/{name}` | public | [`review_ui.py:27`](radreport/api/routes/review_ui.py#L27) |
+
+Server-rendered against the same functions as `/review`, no bundler and no
+build step. `static` serves exactly `review.js` and `review.css` (the admin
+panel uses the stylesheet too); anything else is `404`.
+
+---
+
+# Phase 4 — Operate it
+
+**16 routes.** The lab is signing reports. Now: is the output good, can it
+leave the building, and can any of the review be removed?
+
+## 4.1 Grade the output
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/review/reports/{report_id}/grade` | **`radiologist`** | [`review.py:246`](radreport/api/routes/review.py#L246) |
+| GET | `/review/metrics/cse-rate` | **`radiologist`** | [`review.py:257`](radreport/api/routes/review.py#L257) |
+
+Body: `grade` and an optional `note`. Grades are `G0`–`G4`
+([`SeverityGrade`](radreport/core/types.py#L264)); `G3` and `G4` are clinically
+significant errors ([`CSE_GRADES`](radreport/core/types.py#L274)), and `is_cse`
+says so. `previous_grade` comes back when a report is re-graded.
+
+`cse-rate` returns `graded`, `cse_count`, `rate` and `is_reportable` — the
+denominator travels with the number, because a rate over six reports is not a
+rate.
+
+**This is the evidence autonomy is granted on.** No grading, no grants.
+
+## 4.2 Ask whether the draft helped
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/review/drafts/{draft_id}/usefulness` | `radiologist`, `transcriptionist` | [`review.py:273`](radreport/api/routes/review.py#L273) |
+| GET | `/review/metrics/usefulness` | `radiologist`, `transcriptionist`, `lab_admin`, `auditor` | [`review.py:284`](radreport/api/routes/review.py#L284) |
+
+Body: `was_useless` and an optional `reason`. The rollup returns `reported`,
+`useless`, `rate`, `is_alarming`.
+
+A one-click verdict that is actually recorded — the early warning for
+reviewers disengaging, which a quality metric computed from edits would miss.
+
+## 4.3 Send it to the hospital system
+
+| Method | Path | Who | Returns | Source |
+|---|---|---|---|---|
+| GET | `/ga/export/{report_id}/hl7` | `radiologist`, `lab_admin` | `application/hl7-v2` | [`ga.py:102`](radreport/api/routes/ga.py#L102) |
+| GET | `/ga/export/{report_id}/fhir` | `radiologist`, `lab_admin` | FHIR R4 `DiagnosticReport` | [`ga.py:114`](radreport/api/routes/ga.py#L114) |
+
+HL7 v2 `ORU^R01`, MLLP-framed; FHIR R4 `DiagnosticReport` with a transaction
+bundle. A report that amends another is marked as a correction in both.
+
+**Export refuses rather than guesses.** A report with no accession number is
+`412`, not a message with an empty field. FHIR references the patient
+(`Patient/{pseudonym}`) instead of inlining demographics — identity stays out
+of anything this system originates.
+
+## 4.4 Watch for drift
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| GET | `/ga/drift?baseline_days=60&window_days=14` | `lab_admin`, `radiologist`, `auditor` | [`ga.py:144`](radreport/api/routes/ga.py#L144) |
+
+PSI of a recent window against an **explicit** baseline window, plus
+`significant[]` naming the metrics that moved. Both windows are parameters, so
+the comparison is never against "whatever happened to be there".
+
+## 4.5 Autonomy
+
+Two sides. The lab can watch and revoke; only a product admin can open accrual
+and grant.
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| GET | `/ga/autonomy/{class_code}` | `lab_admin`, `radiologist`, `auditor` | [`ga.py:45`](radreport/api/routes/ga.py#L45) |
+| POST | `/ga/autonomy/{class_code}/revoke` | `radiologist`, `lab_admin` | [`ga.py:71`](radreport/api/routes/ga.py#L71) |
+| GET | `/ga/autonomy-coverage?days=30` | `radiologist`, `lab_admin`, `auditor` | [`ga.py:82`](radreport/api/routes/ga.py#L82) |
+| GET | `/admin/api/labs/{tenant_id}/autonomy/{class_code}` | `product_admin`, `support` | [`admin_api.py:219`](radreport/api/routes/admin_api.py#L219) |
+| POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/open-accrual` | **`product_admin`** | [`admin_api.py:229`](radreport/api/routes/admin_api.py#L229) |
+| POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/grant` | **`product_admin`** | [`admin_api.py:239`](radreport/api/routes/admin_api.py#L239) |
+| POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/revoke` | **`product_admin`** | [`admin_api.py:255`](radreport/api/routes/admin_api.py#L255) |
+
+The sequence is **observe → decide → measure**, and each step is a separate
+call on purpose.
+
+The two reads are the same observation, from either side, and grant nothing:
+`class_code`, `baseline_cse_rate`, `graded_n`, `required_n`, `observed_cse`,
+`observed_rate`, `posterior_prob_ni`, `meets_volume`, `would_support_grant`.
+That last field is named in the conditional deliberately — observing and
+deciding are separate steps, and these endpoints are only the observation.
+
+`open-accrual` starts collecting evidence (`409` if it is already open).
+`grant` is the Bayesian sequential decision: `412` if the evidence does not
+support it. Returns `granted_at` and the `cusum_threshold` that will police it
+from then on.
+
+**Granting and revoking are deliberately asymmetric.** Only a product admin may
+grant — a lab must not grant itself autonomy over its own reports. Either side
+may revoke at any time, with a mandatory non-empty `reason`.
+
+`autonomy-coverage` closes the loop: `window_days`, `signed`, `reviewed`,
+`released_without_review`, `share`, `target`, `meets_target`. A grant that
+removes no review is not worth its risk.
+
+## 4.6 Retrain the engines
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/admin/api/labs/{tenant_id}/adaptation/gates` | **`product_admin`** | [`admin_api.py:270`](radreport/api/routes/admin_api.py#L270) |
+| POST | `/admin/api/labs/{tenant_id}/adaptation/require-gates` | **`product_admin`** | [`admin_api.py:279`](radreport/api/routes/admin_api.py#L279) |
+
+Body: `{"recording_ids": [...], "target": "asr_global"}` — also `asr_speaker`,
+`utterance_classifier`, `router`. Up to 1 MiB.
+
+Six gates over a candidate training corpus. `gates` **reports** and names
+`blocked_by[]`; `require-gates` is the raising form for a training entry point
+and is `412`. Two of the six are unimplemented and **fail closed**, so
+`require-gates` will currently refuse a corpus that should pass.
+
+This is where [1.5](#15-voice-and-the-two-consents) and
+[2.4](#24-verbatim-annotation-s4) are cashed in: training consent and
+`includes_disfluencies` decide which recordings are even eligible to be named
+here.
+
+---
+
+# Appendix A — Index by prefix
+
+For lookup once you know where you are going. **Who** and **Limit** are copied
+from [`access_policy.xml`](radreport/api/access_policy.xml), which wins if this
+table disagrees. Body caps: KiB = 1,024 bytes, MiB = 1,048,576 bytes; routes
+with no cap take no body.
+
+Role shorthand: **PA** `product_admin`, **S** `support`, **R** `radiologist`,
+**T** `transcriptionist`, **LA** `lab_admin`, **A** `auditor`.
+
+### Public (10)
+
+| Method | Path | Limit | Phase | Source |
+|---|---|---|---|---|
+| GET | `/health` | public | [0](#phase-0--is-the-service-up) | [`app.py:48`](radreport/api/app.py#L48) |
+| GET | `/ready` | public | [0](#phase-0--is-the-service-up) | [`app.py:53`](radreport/api/app.py#L53) |
+| GET | `/ui/static/{name}` | public | [3.8](#38-the-screens) | [`review_ui.py:27`](radreport/api/routes/review_ui.py#L27) |
+| GET | `/openapi.json` | public · local/test/development only | [0](#phase-0--is-the-service-up) | FastAPI |
+| GET | `/docs` | public · local/test/development only | [0](#phase-0--is-the-service-up) | FastAPI |
+| GET | `/docs/oauth2-redirect` | public · local/test/development only | [0](#phase-0--is-the-service-up) | FastAPI |
+| GET | `/redoc` | public · local/test/development only | [0](#phase-0--is-the-service-up) | FastAPI |
+| GET | `/admin/login` | public | [I](#product-admins--platform_user-by-session-cookie) | [`admin_panel.py:143`](radreport/api/routes/admin_panel.py#L143) |
+| POST | `/admin/login` | login · 4 KiB | [I](#product-admins--platform_user-by-session-cookie) | [`admin_panel.py:168`](radreport/api/routes/admin_panel.py#L168) |
+| POST | `/admin/logout` | public · 4 KiB | [I](#product-admins--platform_user-by-session-cookie) | [`admin_panel.py:192`](radreport/api/routes/admin_panel.py#L192) |
+
+### `/admin` — admin panel pages, HTML (21)
+
+| Method | Path | Who | Limit | Phase | Source |
+|---|---|---|---|---|---|
+| GET | `/admin` | PA, S | admin-read | [I](#product-admins--platform_user-by-session-cookie) | [`admin_panel.py:202`](radreport/api/routes/admin_panel.py#L202) |
+| GET | `/admin/labs` | PA, S | admin-read | [1.1](#11-register-the-lab) | [`admin_panel.py:207`](radreport/api/routes/admin_panel.py#L207) |
+| POST | `/admin/labs` | PA | admin-write · 64 KiB | [1.1](#11-register-the-lab) | [`admin_panel.py:269`](radreport/api/routes/admin_panel.py#L269) |
+| GET | `/admin/labs/{tenant_id}` | PA, S | admin-read | [1.1](#11-register-the-lab) | [`admin_panel.py:285`](radreport/api/routes/admin_panel.py#L285) |
+| POST | `/admin/labs/{tenant_id}/status` | PA | admin-write · 4 KiB | [1.3](#13-the-lifecycle-status-machine) | [`admin_panel.py:349`](radreport/api/routes/admin_panel.py#L349) |
+| GET | `/admin/labs/{tenant_id}/readiness` | PA, S | admin-read | [2.8](#28-readiness-and-the-gate-to-pilot) | [`admin_panel.py:359`](radreport/api/routes/admin_panel.py#L359) |
+| POST | `/admin/labs/{tenant_id}/assign` | PA | admin-write · 4 KiB | [2.7](#27-configure-the-engines) | [`admin_panel.py:404`](radreport/api/routes/admin_panel.py#L404) |
+| POST | `/admin/labs/{tenant_id}/assignments/{assignment_id}/activate` | PA | admin-write · 4 KiB | [2.7](#27-configure-the-engines) | [`admin_panel.py:414`](radreport/api/routes/admin_panel.py#L414) |
+| GET | `/admin/providers` | PA, S | admin-read | [2.7](#27-configure-the-engines) | [`admin_panel.py:425`](radreport/api/routes/admin_panel.py#L425) |
+| POST | `/admin/providers` | PA | admin-write · 4 KiB | [2.7](#27-configure-the-engines) | [`admin_panel.py:502`](radreport/api/routes/admin_panel.py#L502) |
+| POST | `/admin/models` | PA | admin-write · 4 KiB | [2.7](#27-configure-the-engines) | [`admin_panel.py:512`](radreport/api/routes/admin_panel.py#L512) |
+| GET | `/admin/labs/{tenant_id}/onboarding` | PA, S | admin-read | [2.8](#28-readiness-and-the-gate-to-pilot) | [`admin_panel.py:523`](radreport/api/routes/admin_panel.py#L523) |
+| POST | `/admin/labs/{tenant_id}/onboarding/roster` | PA | admin-upload · 50 MiB | [1.4](#14-add-the-people) | [`admin_panel.py:590`](radreport/api/routes/admin_panel.py#L590) |
+| POST | `/admin/labs/{tenant_id}/onboarding/templates` | PA | admin-upload · 50 MiB | [2.1](#21-templates-s1) | [`admin_panel.py:601`](radreport/api/routes/admin_panel.py#L601) |
+| POST | `/admin/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals` | PA | admin-write · 4 KiB | [2.1](#21-templates-s1) | [`admin_panel.py:612`](radreport/api/routes/admin_panel.py#L612) |
+| POST | `/admin/labs/{tenant_id}/onboarding/steps/{step}` | PA | admin-write · 4 KiB | [2.0](#20-the-step-runner) | [`admin_panel.py:622`](radreport/api/routes/admin_panel.py#L622) |
+| GET | `/admin/users` | PA, S | admin-read | [I](#platform-users) | [`admin_panel.py:634`](radreport/api/routes/admin_panel.py#L634) |
+| POST | `/admin/users` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_panel.py:689`](radreport/api/routes/admin_panel.py#L689) |
+| POST | `/admin/users/{user_id}/deactivate` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_panel.py:710`](radreport/api/routes/admin_panel.py#L710) |
+| POST | `/admin/users/{user_id}/reactivate` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_panel.py:715`](radreport/api/routes/admin_panel.py#L715) |
+| POST | `/admin/users/{user_id}/password` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_panel.py:720`](radreport/api/routes/admin_panel.py#L720) |
+
+### `/admin/api` — admin panel, JSON (24)
+
+| Method | Path | Who | Limit | Phase | Source |
+|---|---|---|---|---|---|
+| GET | `/admin/api/labs` | PA, S | admin-read | [1.2](#12-read-a-lab-back) | [`admin_api.py:62`](radreport/api/routes/admin_api.py#L62) |
+| POST | `/admin/api/labs` | PA | admin-write · 64 KiB | [1.1](#11-register-the-lab) | [`admin_api.py:80`](radreport/api/routes/admin_api.py#L80) |
+| GET | `/admin/api/labs/{tenant_id}/readiness` | PA, S | admin-read | [2.8](#28-readiness-and-the-gate-to-pilot) | [`admin_api.py:96`](radreport/api/routes/admin_api.py#L96) |
+| POST | `/admin/api/labs/{tenant_id}/status` | PA | admin-write · 4 KiB | [1.3](#13-the-lifecycle-status-machine) | [`admin_api.py:107`](radreport/api/routes/admin_api.py#L107) |
+| GET | `/admin/api/labs/{tenant_id}/steps` | PA, S | admin-read | [2.7](#27-configure-the-engines) | [`admin_api.py:120`](radreport/api/routes/admin_api.py#L120) |
+| POST | `/admin/api/labs/{tenant_id}/assignments` | PA | admin-write · 4 KiB | [2.7](#27-configure-the-engines) | [`admin_api.py:131`](radreport/api/routes/admin_api.py#L131) |
+| POST | `/admin/api/labs/{tenant_id}/assignments/{assignment_id}/activate` | PA | admin-write · 4 KiB | [2.7](#27-configure-the-engines) | [`admin_api.py:141`](radreport/api/routes/admin_api.py#L141) |
+| GET | `/admin/api/labs/{tenant_id}/onboarding` | PA, S | admin-read | [2.8](#28-readiness-and-the-gate-to-pilot) | [`admin_api.py:154`](radreport/api/routes/admin_api.py#L154) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/roster` | PA | admin-upload · 50 MiB | [1.4](#14-add-the-people) | [`admin_api.py:160`](radreport/api/routes/admin_api.py#L160) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/templates` | PA | admin-upload · 50 MiB | [2.1](#21-templates-s1) | [`admin_api.py:169`](radreport/api/routes/admin_api.py#L169) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/corpus` | PA | admin-upload · 100 MiB | [2.2](#22-feed-the-historical-reports-s2) | [`admin_api.py:194`](radreport/api/routes/admin_api.py#L194) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals` | PA | admin-write · 4 KiB | [2.1](#21-templates-s1) | [`admin_api.py:200`](radreport/api/routes/admin_api.py#L200) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/steps/{step}` | PA | admin-write · 4 KiB | [2.0](#20-the-step-runner) | [`admin_api.py:209`](radreport/api/routes/admin_api.py#L209) |
+| GET | `/admin/api/labs/{tenant_id}/autonomy/{class_code}` | PA, S | admin-read | [4.5](#45-autonomy) | [`admin_api.py:219`](radreport/api/routes/admin_api.py#L219) |
+| POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/open-accrual` | PA | admin-write · 4 KiB | [4.5](#45-autonomy) | [`admin_api.py:229`](radreport/api/routes/admin_api.py#L229) |
+| POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/grant` | PA | admin-write · 4 KiB | [4.5](#45-autonomy) | [`admin_api.py:239`](radreport/api/routes/admin_api.py#L239) |
+| POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/revoke` | PA | admin-write · 4 KiB | [4.5](#45-autonomy) | [`admin_api.py:255`](radreport/api/routes/admin_api.py#L255) |
+| POST | `/admin/api/labs/{tenant_id}/adaptation/gates` | PA | admin-write · 1 MiB | [4.6](#46-retrain-the-engines) | [`admin_api.py:270`](radreport/api/routes/admin_api.py#L270) |
+| POST | `/admin/api/labs/{tenant_id}/adaptation/require-gates` | PA | admin-write · 1 MiB | [4.6](#46-retrain-the-engines) | [`admin_api.py:279`](radreport/api/routes/admin_api.py#L279) |
+| GET | `/admin/api/users` | PA, S | admin-read | [I](#platform-users) | [`admin_api.py:303`](radreport/api/routes/admin_api.py#L303) |
+| POST | `/admin/api/users` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_api.py:317`](radreport/api/routes/admin_api.py#L317) |
+| POST | `/admin/api/users/{user_id}/deactivate` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_api.py:335`](radreport/api/routes/admin_api.py#L335) |
+| POST | `/admin/api/users/{user_id}/reactivate` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_api.py:341`](radreport/api/routes/admin_api.py#L341) |
+| POST | `/admin/api/users/{user_id}/password` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_api.py:351`](radreport/api/routes/admin_api.py#L351) |
+
+### `/ingest` — capture (1)
+
+| Method | Path | Who | Limit | Phase | Source |
+|---|---|---|---|---|---|
+| POST | `/ingest/recordings` | R, LA | lab-upload · 512 MiB | [3.1](#31-capture) | [`ingest.py:38`](radreport/api/routes/ingest.py#L38) |
+
+### `/onboarding` — lab-side onboarding (17)
+
+| Method | Path | Who | Limit | Phase | Source |
+|---|---|---|---|---|---|
+| POST | `/onboarding/radiologists/{radiologist_id}/voice-enrollment` | LA, R | lab-write · 64 KiB | [1.5](#15-voice-and-the-two-consents) | [`onboarding.py:69`](radreport/api/routes/onboarding.py#L69) |
+| POST | `/onboarding/radiologists/{radiologist_id}/training-consent` | LA, R | lab-write · 4 KiB | [1.5](#15-voice-and-the-two-consents) | [`onboarding.py:88`](radreport/api/routes/onboarding.py#L88) |
+| GET | `/onboarding/templates/candidates` | LA, R | lab-read | [2.1](#21-templates-s1) | [`onboarding.py:112`](radreport/api/routes/onboarding.py#L112) |
+| POST | `/onboarding/templates/candidates/{candidate_id}/review` | R | lab-write · 1 MiB | [2.1](#21-templates-s1) | [`onboarding.py:129`](radreport/api/routes/onboarding.py#L129) |
+| POST | `/onboarding/merge-proposals/{proposal_id}/decide` | R | lab-write · 4 KiB | [2.1](#21-templates-s1) | [`onboarding.py:145`](radreport/api/routes/onboarding.py#L145) |
+| POST | `/onboarding/batches/{batch_id}/apply` | R | lab-write · 4 KiB | [2.1](#21-templates-s1) | [`onboarding.py:157`](radreport/api/routes/onboarding.py#L157) |
+| POST | `/onboarding/batches/{batch_id}/revert` | R | lab-write · 4 KiB | [2.1](#21-templates-s1) | [`onboarding.py:175`](radreport/api/routes/onboarding.py#L175) |
+| POST | `/onboarding/corpus/mappings/{mapping_id}/verify` | R | lab-write · 4 KiB | [2.2](#22-feed-the-historical-reports-s2) | [`onboarding.py:190`](radreport/api/routes/onboarding.py#L190) |
+| GET | `/onboarding/corpus/histogram` | LA, R | lab-read | [2.2](#22-feed-the-historical-reports-s2) | [`onboarding.py:203`](radreport/api/routes/onboarding.py#L203) |
+| GET | `/onboarding/corpus/referrer-prior` | LA, R | lab-read | [2.2](#22-feed-the-historical-reports-s2) | [`onboarding.py:210`](radreport/api/routes/onboarding.py#L210) |
+| POST | `/onboarding/collision-findings/{finding_id}/resolve` | R | lab-write · 4 KiB | [2.3](#23-mine-the-vocabulary-s3) | [`onboarding.py:222`](radreport/api/routes/onboarding.py#L222) |
+| GET | `/onboarding/verbatim/queue` | T, LA, R | lab-read | [2.4](#24-verbatim-annotation-s4) | [`onboarding.py:235`](radreport/api/routes/onboarding.py#L235) |
+| POST | `/onboarding/verbatim` | T | lab-write · 1 MiB | [2.4](#24-verbatim-annotation-s4) | [`onboarding.py:254`](radreport/api/routes/onboarding.py#L254) |
+| GET | `/onboarding/boilerplate/export` | LA, R | lab-read | [2.5](#25-rank-the-normals-s5) | [`onboarding.py:267`](radreport/api/routes/onboarding.py#L267) |
+| POST | `/onboarding/boilerplate/{candidate_id}/promote` | R | lab-write · 4 KiB | [2.5](#25-rank-the-normals-s5) | [`onboarding.py:279`](radreport/api/routes/onboarding.py#L279) |
+| POST | `/onboarding/critical-rules` | R | lab-write · 64 KiB | [2.6](#26-author-the-safety-rules-s6) | [`onboarding.py:304`](radreport/api/routes/onboarding.py#L304) |
+| POST | `/onboarding/critical-rules/{rule_id}/approve` | R | lab-write · 4 KiB | [2.6](#26-author-the-safety-rules-s6) | [`onboarding.py:316`](radreport/api/routes/onboarding.py#L316) |
+
+### `/review` — the human loop (12)
+
+| Method | Path | Who | Limit | Phase | Source |
+|---|---|---|---|---|---|
+| GET | `/review/queue` | R, T, LA, A | lab-read | [3.3](#33-take-work-from-the-queue) | [`review.py:68`](radreport/api/routes/review.py#L68) |
+| GET | `/review/queue/stats` | R, T, LA, A | lab-read | [3.3](#33-take-work-from-the-queue) | [`review.py:79`](radreport/api/routes/review.py#L79) |
+| GET | `/review/drafts/{draft_id}` | R, T, A | lab-read | [3.4](#34-open-a-draft) | [`review.py:91`](radreport/api/routes/review.py#L91) |
+| GET | `/review/drafts/{draft_id}/audio` | R, T, A | lab-read | [3.4](#34-open-a-draft) | [`review.py:137`](radreport/api/routes/review.py#L137) |
+| POST | `/review/drafts/{draft_id}/revisions` | R, T | lab-write · 1 MiB | [3.5](#35-save-edits) | [`review.py:185`](radreport/api/routes/review.py#L185) |
+| POST | `/review/drafts/{draft_id}/sign` | R | lab-write · 4 KiB | [3.6](#36-sign) | [`review.py:198`](radreport/api/routes/review.py#L198) |
+| POST | `/review/reports/{report_id}/addendum` | R | lab-write · 1 MiB | [3.7](#37-after-signing) | [`review.py:214`](radreport/api/routes/review.py#L214) |
+| POST | `/review/alerts/{alert_id}/acknowledge` | R | lab-write · 4 KiB | [3.7](#37-after-signing) | [`review.py:230`](radreport/api/routes/review.py#L230) |
+| POST | `/review/reports/{report_id}/grade` | R | lab-write · 4 KiB | [4.1](#41-grade-the-output) | [`review.py:246`](radreport/api/routes/review.py#L246) |
+| GET | `/review/metrics/cse-rate` | R | lab-read | [4.1](#41-grade-the-output) | [`review.py:257`](radreport/api/routes/review.py#L257) |
+| POST | `/review/drafts/{draft_id}/usefulness` | R, T | lab-write · 4 KiB | [4.2](#42-ask-whether-the-draft-helped) | [`review.py:273`](radreport/api/routes/review.py#L273) |
+| GET | `/review/metrics/usefulness` | R, T, LA, A | lab-read | [4.2](#42-ask-whether-the-draft-helped) | [`review.py:284`](radreport/api/routes/review.py#L284) |
+
+### `/ui` — review screens, HTML (2, plus the public static route)
+
+| Method | Path | Who | Limit | Phase | Source |
+|---|---|---|---|---|---|
+| GET | `/ui/drafts/{draft_id}` | R, T, A | lab-read | [3.8](#38-the-screens) | [`review_ui.py:99`](radreport/api/routes/review_ui.py#L99) |
+| GET | `/ui/queue` | R, T, LA, A | lab-read | [3.8](#38-the-screens) | [`review_ui.py:187`](radreport/api/routes/review_ui.py#L187) |
+
+### `/ga` — lab-side autonomy, export and drift (6)
+
+| Method | Path | Who | Limit | Phase | Source |
+|---|---|---|---|---|---|
+| GET | `/ga/autonomy/{class_code}` | LA, R, A | lab-read | [4.5](#45-autonomy) | [`ga.py:45`](radreport/api/routes/ga.py#L45) |
+| POST | `/ga/autonomy/{class_code}/revoke` | R, LA | lab-write · 4 KiB | [4.5](#45-autonomy) | [`ga.py:71`](radreport/api/routes/ga.py#L71) |
+| GET | `/ga/autonomy-coverage` | R, LA, A | lab-read | [4.5](#45-autonomy) | [`ga.py:82`](radreport/api/routes/ga.py#L82) |
+| GET | `/ga/export/{report_id}/hl7` | R, LA | lab-read | [4.3](#43-send-it-to-the-hospital-system) | [`ga.py:102`](radreport/api/routes/ga.py#L102) |
+| GET | `/ga/export/{report_id}/fhir` | R, LA | lab-read | [4.3](#43-send-it-to-the-hospital-system) | [`ga.py:114`](radreport/api/routes/ga.py#L114) |
+| GET | `/ga/drift` | LA, R, A | lab-read | [4.4](#44-watch-for-drift) | [`ga.py:144`](radreport/api/routes/ga.py#L144) |
+
+---
+
+# Appendix B — Known gaps
+
+Things a client developer will look for and not find, in the phase where they
+will look.
+
+**Everywhere — lab users have no real authentication.** `X-User-Id` /
+`X-Tenant-Id` is a development affordance: the middleware now checks the user
+exists, is active, belongs to that tenant and holds an allowed role, but anyone
+who knows the two ids can still act as that user. There is no token issuance
+for lab users, and nothing replaces the headers in production yet.
+
+**Everywhere — rate limits are per process.** The counters live in each
+worker's memory, so with *n* workers a caller gets up to *n* times the
+configured rate, and a restart resets them.
+
+**Everywhere — the body cap reads the declared length.** A request is refused
+with `413` when its `Content-Length` is over the cap; a body sent without a
+`Content-Length` (chunked) is not measured by the middleware.
+
+**Phase 1 — no `GET /admin/api/labs/{tenant_id}`.** Single-lab status comes
+only from filtering `GET /admin/api/labs`, from the `POST .../status` response,
+or from the `/admin/labs/{id}` page.
+
+**Phase 1 — no endpoint exposes the legal next statuses.**
+[`_ALLOWED_TRANSITIONS`](radreport/core/tenancy.py#L162) reaches the lab page's
+status form but no JSON response, so an API client either hard-codes the table
+or discovers the boundary by eating a `409`.
+
+**Phase 1 — no per-user CRUD for lab users, and no branding endpoint.** The
+roster CSV is the only way a lab user is created or changed, and it never
+deletes. `tenant_branding` is inserted empty at registration and never written
+again.
+
+**Phase 2 — the corpus has no upload form.** It is loaded through
+`POST /admin/api/labs/{tenant_id}/onboarding/corpus` only. The page's step
+buttons also run with default options; `min_frequency` and `verified_only` are
+API-only.
+
+**Phase 3 — nothing creates a `Study` or a `Patient`.** Yet
+[`/ingest/recordings`](radreport/api/routes/ingest.py#L38) requires a
+`study_id`. Outside tests, neither type is instantiated anywhere in
+`radreport/`.
+
+**Phase 3 — no HTTP trigger for the pipeline.** Nothing under `api/` imports
+`pipeline/`; `workers/` is empty. Capture stores audio and returns, and no
+draft ever appears. See [3.2](#32-the-missing-link).
