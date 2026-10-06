@@ -235,3 +235,15 @@ def test_the_old_routes_are_gone() -> None:
     client = TestClient(create_app(), follow_redirects=False)
     for path in ("/console/labs", "/admin/tenants", "/onboarding/roster", "/onboarding/status", "/ga/autonomy/x/grant"):
         assert client.get(path).status_code == 404, path
+
+
+def test_the_step_routes_accept_exactly_the_steps_the_code_runs() -> None:
+    """The step name is a path parameter whose pattern repeats `STEPS`; the two must not drift."""
+    from radreport.admin.onboarding_steps import STEPS
+
+    for rule_id in ("admin.lab.onboarding.step", "admin.api.lab.onboarding.step"):
+        rule = next(r for r in load_policy().routes if r.id == rule_id)
+        step = rule.param("path", "step")
+        assert step is not None and step.pattern is not None
+        listed = set(step.pattern.pattern.replace("\\-", "-").split("|"))
+        assert listed == set(STEPS), f"{rule_id}: policy lists {sorted(listed ^ set(STEPS))} differently from STEPS"

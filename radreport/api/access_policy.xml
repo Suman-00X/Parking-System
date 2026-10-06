@@ -139,7 +139,7 @@
       <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
     <route id="admin.lab.onboarding.step" method="POST" path="/admin/labs/{tenant_id}/onboarding/steps/{step}" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
-      <param name="step" in="path" type="string" required="true" pattern="derive\-map|lexicon\-mine|collision\-audit|mine\-variants|boilerplate\-mine|critical\-rules\-seed"/>
+      <param name="step" in="path" type="string" required="true" pattern="derive\-map|lexicon\-mine|collision\-audit|mine\-variants|boilerplate\-mine|critical\-rules\-seed|acceptance\-assemble|acceptance\-freeze"/>
       <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
     <route id="admin.providers.page" method="GET" path="/admin/providers" roles="product_admin,support" rate-limit="admin-read">
@@ -235,7 +235,7 @@
       <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
     <route id="admin.api.lab.onboarding.step" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/steps/{step}" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
-      <param name="step" in="path" type="string" required="true" pattern="derive\-map|lexicon\-mine|collision\-audit|mine\-variants|boilerplate\-mine|critical\-rules\-seed"/>
+      <param name="step" in="path" type="string" required="true" pattern="derive\-map|lexicon\-mine|collision\-audit|mine\-variants|boilerplate\-mine|critical\-rules\-seed|acceptance\-assemble|acceptance\-freeze"/>
       <param name="tenant_id" in="path" type="uuid" required="true"/>
       <param name="min_frequency" in="json" type="int" pattern="[1-9]\d{0,3}"/>
       <param name="verified_only" in="json" type="bool"/>
