@@ -10,7 +10,9 @@ input_check.py then checks the parameters.
 
 from __future__ import annotations
 
+import datetime as dt
 import math
+import random
 import re
 import threading
 import time
@@ -42,6 +44,7 @@ log = get_logger(__name__)
 POLICY_PATH: Final[Path] = Path(__file__).with_name("access_policy.xml")
 REALMS: Final[frozenset[str]] = frozenset({"public", "admin", "lab"})
 RATE_KEYS: Final[frozenset[str]] = frozenset({"ip", "principal"})
+RATE_STORES: Final[frozenset[str]] = frozenset({"memory", "shared"})
 PARAM_LOCATIONS: Final[frozenset[str]] = frozenset({"path", "query", "form", "file", "json"})
 PARAM_TYPES: Final[frozenset[str]] = frozenset({"string", "uuid", "int", "number", "bool", "object", "array", "file"})
 #: Applied to a string parameter that declares no max-length of its own.
@@ -62,6 +65,8 @@ class RateLimit:
     requests: int
     window_seconds: int
     key: str
+    store: str = "memory"
+    """memory: this worker's own sliding window. shared: a Postgres counter every worker sees."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +205,10 @@ def parse_policy(text: str) -> AccessPolicy:
             raise PolicyError(f"<rate-limit id={limit_id!r}> needs an id and key of ip or principal")
         if limit_id in limits:
             raise PolicyError(f"rate limit {limit_id!r} is declared twice")
-        limits[limit_id] = RateLimit(id=limit_id, requests=_int(element, "requests") or 0, window_seconds=_int(element, "window-seconds") or 0, key=key)
+        store = element.get("store", "memory")
+        if store not in RATE_STORES:
+            raise PolicyError(f"<rate-limit id={limit_id!r}> store must be one of {sorted(RATE_STORES)}")
+        limits[limit_id] = RateLimit(id=limit_id, requests=_int(element, "requests") or 0, window_seconds=_int(element, "window-seconds") or 0, key=key, store=store)
 
     rules: list[RouteRule] = []
     seen_ids: set[str] = set()
@@ -315,6 +323,35 @@ class RateLimiter:
             del self._hits[key]
 
 
+def _count_in_postgres(limit_id: str, who: str, window_start: dt.datetime) -> int:
+    """Add one hit to a shared window and return the new count, atomically."""
+    from sqlalchemy import text
+
+    from radreport.db.session import system_session
+
+    with system_session() as session:
+        hits = session.execute(text("INSERT INTO rate_limit_counter (limit_id, who, window_start, hits) VALUES (:l, :w, :s, 1) ON CONFLICT (limit_id, who, window_start) DO UPDATE SET hits = rate_limit_counter.hits + 1 RETURNING hits"), {"l": limit_id, "w": who, "s": window_start}).scalar_one()
+        if random.random() < 0.001:
+            # Old windows are useless; sweep them now and then instead of on a schedule.
+            session.execute(text("DELETE FROM rate_limit_counter WHERE window_start < now() - interval '1 day'"))
+        return int(hits)
+
+
+class SharedRateLimiter:
+    """A fixed-window counter in Postgres, so a limit holds across every worker and restart."""
+
+    def __init__(self, counter: Callable[[str, str, dt.datetime], int] = _count_in_postgres, clock: Callable[[], float] = time.time) -> None:
+        self._counter = counter
+        self._clock = clock
+
+    def hit(self, limit: RateLimit, who: str) -> float | None:
+        """Count one request; return the seconds to wait if it is over the limit, else None."""
+        now = self._clock()
+        start = now - (now % limit.window_seconds)
+        hits = self._counter(limit.id, who, dt.datetime.fromtimestamp(start, dt.UTC))
+        return start + limit.window_seconds - now if hits > limit.requests else None
+
+
 @dataclass(frozen=True, slots=True)
 class Identity:
     realm: str
@@ -343,10 +380,11 @@ def _deny(status_code: int, detail: str, *, headers: dict[str, str] | None = Non
 class AccessMiddleware(BaseHTTPMiddleware):
     """Authenticate, authorize and rate-limit each request from the policy, before routing."""
 
-    def __init__(self, app: Callable, *, policy: AccessPolicy, limiter: RateLimiter | None = None, admin_resolver: Callable[[str | None], AuthenticatedAdmin | None] = _admin_from_cookie) -> None:
+    def __init__(self, app: Callable, *, policy: AccessPolicy, limiter: RateLimiter | None = None, admin_resolver: Callable[[str | None], AuthenticatedAdmin | None] = _admin_from_cookie, shared_limiter: SharedRateLimiter | None = None) -> None:
         super().__init__(app)
         self.policy = policy
         self.limiter = limiter or RateLimiter()
+        self.shared_limiter = shared_limiter or SharedRateLimiter()
         self.admin_resolver = admin_resolver
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -365,7 +403,7 @@ class AccessMiddleware(BaseHTTPMiddleware):
 
         ip = request.client.host if request.client else "unknown"
         if rule.rate_limit is not None and rule.rate_limit.key == "ip":
-            if (refused := self._limit(rule, f"ip:{ip}")) is not None:
+            if (refused := await self._limit(rule, f"ip:{ip}")) is not None:
                 return refused
 
         if rule.realm == "public":
@@ -376,7 +414,7 @@ class AccessMiddleware(BaseHTTPMiddleware):
                 return resolved
             identity = resolved
             if rule.rate_limit is not None and rule.rate_limit.key == "principal":
-                if (refused := self._limit(rule, identity.key)) is not None:
+                if (refused := await self._limit(rule, identity.key)) is not None:
                     return refused
 
         request.state.identity = identity
@@ -398,9 +436,12 @@ class AccessMiddleware(BaseHTTPMiddleware):
         log.warning("cross_site_request_refused", route=rule.id, origin=origin)
         return _deny(403, "cross-site request refused")
 
-    def _limit(self, rule: RouteRule, who: str) -> Response | None:
+    async def _limit(self, rule: RouteRule, who: str) -> Response | None:
         assert rule.rate_limit is not None
-        wait = self.limiter.hit(rule.rate_limit, who)
+        if rule.rate_limit.store == "shared":
+            wait = await run_in_threadpool(self.shared_limiter.hit, rule.rate_limit, who)
+        else:
+            wait = self.limiter.hit(rule.rate_limit, who)
         if wait is None:
             return None
         log.warning("rate_limited", route=rule.id, limit=rule.rate_limit.id, who=who)

@@ -116,6 +116,8 @@ UNTENANTED_TABLES: Final[frozenset[str]] = frozenset(
         "platform_user",  # belongs to no tenant
         # A product admin's login session.
         "admin_session",
+        # Request counts for the rate limits every worker must share; keyed by caller, not lab.
+        "rate_limit_counter",
         "alembic_version",
     }
 )

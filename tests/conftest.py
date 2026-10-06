@@ -103,3 +103,16 @@ def clean_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_shared_rate_limits(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Shared rate-limit counters live in the database, so one test's sign-ins would throttle the next."""
+    if "migrated_db" in request.fixturenames:
+        from sqlalchemy import text
+
+        from radreport.db.session import system_session
+
+        with system_session(request.getfixturevalue("migrated_db")) as session:
+            session.execute(text("DELETE FROM rate_limit_counter"))
+    yield

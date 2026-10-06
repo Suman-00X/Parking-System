@@ -12,13 +12,14 @@ from radreport.db.models.onboarding import BoilerplateCandidate, CollisionAuditF
 from radreport.db.models.orchestration import AuditLog, PipelineRun, StageExecution
 from radreport.db.models.reporting import AutonomyObservation, CriticalFindingAlert, CriticalFindingRule, ProvenanceSpan, ReportDraft, ReportFieldValue, RoutingDecision, VerificationFinding
 from radreport.db.models.review import DraftUsefulnessReport, EditEvent, FinalReport, ReportRevision
-from radreport.db.models.tenancy import PlatformUser, Tenant, TenantBranding, TrainingConsentEventLog
+from radreport.db.models.tenancy import PlatformUser, RateLimitCounter, Tenant, TenantBranding, TrainingConsentEventLog
 
 __all__ = [
     "Base",
     # tenancy
     "Tenant",
     "PlatformUser",
+    "RateLimitCounter",
     "TenantBranding",
     "TrainingConsentEventLog",
     # identity

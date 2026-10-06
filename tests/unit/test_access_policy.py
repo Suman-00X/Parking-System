@@ -287,3 +287,33 @@ def test_a_forged_login_from_another_site_is_refused() -> None:
     client = TestClient(create_app(), follow_redirects=False)
     response = client.post("/admin/login", data={"email": "a@b.c", "password": "x" * 12}, headers={"Origin": "https://evil.example"})
     assert response.status_code == 403
+
+
+# ========================================================== shared limits ===
+def test_a_shared_limit_counts_in_fixed_windows() -> None:
+    from radreport.api.access import SharedRateLimiter
+
+    counts: dict[tuple[str, str, object], int] = {}
+
+    def counter(limit_id: str, who: str, window_start: object) -> int:
+        counts[(limit_id, who, window_start)] = counts.get((limit_id, who, window_start), 0) + 1
+        return counts[(limit_id, who, window_start)]
+
+    now = [1_000_040.0]  # 20 s into the window that starts at 1_000_020
+    limiter = SharedRateLimiter(counter=counter, clock=lambda: now[0])
+    limit = RateLimit(id="login", requests=2, window_seconds=60, key="ip", store="shared")
+    assert limiter.hit(limit, "ip:1") is None
+    assert limiter.hit(limit, "ip:1") is None
+    assert limiter.hit(limit, "ip:1") == pytest.approx(40.0), "wait until the window ends"
+    now[0] += 40
+    assert limiter.hit(limit, "ip:1") is None, "a new window starts a new count"
+
+
+def test_sign_in_limits_are_shared_and_throughput_limits_are_not() -> None:
+    limits = load_policy().rate_limits
+    assert {lid for lid, limit in limits.items() if limit.store == "shared"} == {"login", "token-refresh"}
+
+
+def test_an_unknown_store_is_refused() -> None:
+    with pytest.raises(PolicyError, match="store must be"):
+        parse_policy('<access-policy version="1"><rate-limits><rate-limit id="x" requests="1" window-seconds="1" key="ip" store="redis"/></rate-limits></access-policy>')
