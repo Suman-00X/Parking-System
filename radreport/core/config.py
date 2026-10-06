@@ -1,7 +1,8 @@
 """All runtime settings, read from the environment, including the pinned model identifiers.
 
-Defines: the settings groups (StorageSettings, AudioGateSettings, LLMSettings, ASRSettings,
-ObservabilitySettings, DemoAccount) gathered into one Settings object, reached through get_settings.
+Defines: the settings groups (DatabaseSettings, StorageSettings, AudioGateSettings, LLMSettings,
+ASRSettings, ObservabilitySettings, DemoAccount) gathered into one Settings object, reached through
+get_settings.
 """
 
 from __future__ import annotations
@@ -10,6 +11,29 @@ from functools import lru_cache
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class DatabaseSettings(BaseModel):
+    """Connection pool and query-logging behaviour for every engine the app opens."""
+
+    pool_size: int = Field(default=30, ge=1, le=500)
+    """Connections each worker keeps open. Workers x (pool_size + max_overflow) must stay under Postgres max_connections, or behind PgBouncer."""
+
+    max_overflow: int = Field(default=10, ge=0, le=500)
+    """Extra connections a worker may open under a burst; closed again when returned."""
+
+    pool_timeout_seconds: float = Field(default=10.0, gt=0)
+    """How long a request waits for a free connection before failing, instead of queueing forever."""
+
+    pool_recycle_seconds: int = 1800
+    echo: bool = False
+    """Log every statement. Meant for tests and local debugging only."""
+
+    slow_query_ms: float = Field(default=100.0, ge=0)
+    """A statement slower than this is logged as slow_query, with its timing and the route that ran it."""
+
+    pgbouncer: bool = False
+    """Connect through PgBouncer in transaction mode: server-side prepared statements are turned off, since the next transaction may land on another server connection."""
 
 
 class StorageSettings(BaseModel):
@@ -97,6 +121,7 @@ class Settings(BaseSettings):
     environment: str = "local"
     database_url: str = "postgresql+psycopg://radreport:radreport@localhost:5433/radreport"
     test_database_url: str | None = None
+    db: DatabaseSettings = Field(default_factory=DatabaseSettings)
 
     storage: StorageSettings = Field(default_factory=StorageSettings)
     audio: AudioGateSettings = Field(default_factory=AudioGateSettings)

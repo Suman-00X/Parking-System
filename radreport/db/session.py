@@ -11,6 +11,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
+from typing import Any
 
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -23,17 +24,20 @@ from radreport.core.tenancy import PRINCIPAL_GUC, TENANT_GUC, Principal, current
 ACTING_PLATFORM_USER = "acting_platform_user_id"
 
 
+def engine_options() -> dict[str, Any]:
+    """The pool and driver options every engine is created with, from settings."""
+    db = get_settings().db
+    options: dict[str, Any] = {"pool_pre_ping": True, "pool_size": db.pool_size, "max_overflow": db.max_overflow, "pool_timeout": db.pool_timeout_seconds, "pool_recycle": db.pool_recycle_seconds, "echo": db.echo, "future": True}
+    if db.pgbouncer:
+        # Transaction pooling hands each transaction any server connection, so a prepared statement may not exist there.
+        options["connect_args"] = {"prepare_threshold": None}
+    return options
+
+
 @lru_cache(maxsize=4)
 def get_engine(url: str | None = None) -> Engine:
-    settings = get_settings()
-    return create_engine(
-        url or settings.database_url,
-        pool_pre_ping=True,
-        # Tenant scope lives in `SET LOCAL`, so a connection handed back to the
-        # pool carries nothing. Still, keep sessions short.
-        pool_recycle=1800,
-        future=True,
-    )
+    # Tenant scope lives in `SET LOCAL`, so a connection handed back to the pool carries nothing.
+    return create_engine(url or get_settings().database_url, **engine_options())
 
 
 def get_sessionmaker(url: str | None = None) -> sessionmaker[Session]:
