@@ -96,9 +96,9 @@ def recount_blocking_issues(session: Session, batch: ImportBatch) -> int:
 
 
 def revert_batch(session: Session, batch: ImportBatch, *, actor_id: uuid.UUID | None = None) -> ImportBatch:
-    """The onboarding rollback: stamp `reverted_at`."""
-    if batch.status != ImportStatus.APPLIED:
-        raise BatchStateError(str(batch.id), batch.status, "reverted")
+    """The onboarding rollback: stamp `reverted_at`. Callers undo the batch's effects alongside."""
+    if batch.status != ImportStatus.APPLIED or batch.reverted_at is not None:
+        raise BatchStateError(str(batch.id), "reverted" if batch.reverted_at else batch.status, "reverted")
 
     batch.reverted_at = dt.datetime.now(dt.UTC)
     session.add(AuditLog(tenant_id=batch.tenant_id, actor_id=actor_id, actor_type=ActorType.USER if actor_id else ActorType.SYSTEM, action="import_batch_reverted", entity_type="import_batch", entity_id=batch.id, before={"applied_at": str(batch.applied_at)}, after={"reverted_at": str(batch.reverted_at), "stage": batch.stage}))

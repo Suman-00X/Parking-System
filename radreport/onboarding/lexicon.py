@@ -13,7 +13,7 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from radreport.core.logging import get_logger
@@ -251,6 +251,15 @@ def run_collision_audit(session: Session, *, tenant_id: uuid.UUID, batch: Import
 
     log.info("s3_collision_audit_complete", tenant_id=str(tenant_id), candidates=len(candidates), new_findings=len(written), new_blocking=blocking)
     return written
+
+
+def pending_blocking_collisions(session: Session, *, tenant_id: uuid.UUID, labels: set[str], batch_id: uuid.UUID | None = None) -> int:
+    """Unresolved block-severity findings touching any of `labels` (or filed under `batch_id`), whoever recorded them."""
+    lowered = {label.lower() for label in labels if label}
+    involved = or_(func.lower(CollisionAuditFinding.label_a).in_(lowered), func.lower(CollisionAuditFinding.label_b).in_(lowered))
+    if batch_id is not None:
+        involved = or_(involved, CollisionAuditFinding.import_batch_id == batch_id)
+    return session.execute(select(func.count()).select_from(CollisionAuditFinding).where(CollisionAuditFinding.tenant_id == tenant_id, CollisionAuditFinding.severity == CollisionSeverity.BLOCK, CollisionAuditFinding.resolution == CollisionResolution.PENDING, involved)).scalar_one()
 
 
 def _pair_key(a: str, b: str) -> tuple[str, str]:

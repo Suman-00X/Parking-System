@@ -24,8 +24,8 @@ from radreport.db.models.knowledge import Template, TemplateField, TemplateVersi
 from radreport.db.models.onboarding import ImportArtifact, ImportBatch, TemplateImportCandidate, TemplateMergeProposal
 from radreport.db.models.orchestration import AuditLog
 from radreport.knowledge.phonetics import CollisionCandidate, double_metaphone
-from radreport.onboarding.batches import ArtifactUpload, open_batch, record_counts, register_artifact, transition
-from radreport.onboarding.lexicon import run_collision_audit
+from radreport.onboarding.batches import ArtifactUpload, open_batch, record_counts, register_artifact, revert_batch, transition
+from radreport.onboarding.lexicon import pending_blocking_collisions, run_collision_audit
 from radreport.onboarding.template_parse import ParsedTemplate, UnsupportedDocument, parse_template
 
 log = get_logger(__name__)
@@ -254,6 +254,10 @@ def apply_templates(session: Session, *, tenant_id: uuid.UUID, batch: ImportBatc
     # live before a single row is written.
     incoming = [CollisionCandidate(label=c.proposed_spoken_study_code or "", maps_to=c.proposed_code) for c in candidates if c.proposed_spoken_study_code]
     run_collision_audit(session, tenant_id=tenant_id, batch=batch, extra_candidates=incoming)
+    # Counted by label, not by batch: the audit records a pair once, so a collision found earlier
+    # (by the lab-wide audit or another batch) would otherwise not hold this batch back.
+    batch.blocking_issue_count = pending_blocking_collisions(session, tenant_id=tenant_id, labels={c.label for c in incoming}, batch_id=batch.id)
+    session.flush()
     if batch.blocking_issue_count:
         raise BatchBlocked(str(batch.id), batch.blocking_issue_count)
 
@@ -353,7 +357,9 @@ def _routing_card(template: Template, schema: dict[str, Any], sections: list[str
 
 
 def revert_applied_templates(session: Session, *, tenant_id: uuid.UUID, batch: ImportBatch, actor_id: uuid.UUID | None = None) -> list[TemplateVersion]:
-    """The rollback: re-point `is_current` at the previous version."""
+    """The rollback: re-point `is_current` at the previous version, and mark the batch reverted."""
+    # First, so a batch that was never applied, or was already reverted, is refused before anything moves.
+    revert_batch(session, batch, actor_id=actor_id)
     promoted = list(session.execute(select(TemplateVersion).join(TemplateImportCandidate, TemplateImportCandidate.promoted_template_version_id == TemplateVersion.id).where(TemplateImportCandidate.tenant_id == tenant_id, TemplateImportCandidate.import_batch_id == batch.id)).scalars().all())
 
     restored: list[TemplateVersion] = []

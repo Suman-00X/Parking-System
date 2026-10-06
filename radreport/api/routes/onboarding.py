@@ -178,7 +178,10 @@ def revert_batch(batch_id: uuid.UUID, session: DbSession, principal: CurrentPrin
     tenant_id = _tenant_of(principal, session)
     actor = _require_role(session, principal, UserRole.RADIOLOGIST)
     batch = _get_batch(session, tenant_id, batch_id)
-    restored = templates.revert_applied_templates(session, tenant_id=tenant_id, batch=batch, actor_id=actor)
+    try:
+        restored = templates.revert_applied_templates(session, tenant_id=tenant_id, batch=batch, actor_id=actor)
+    except BatchStateError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     return {"restored_versions": len(restored)}
 
 
