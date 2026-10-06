@@ -558,8 +558,9 @@ granted after the first import. A `radiologist` row also gets a
 `radiologist_profile` created on first sight, carrying language and
 subspecialty.
 
-The batch records no submitting lab user; who uploaded it is in the
-`admin_org_selected` audit row the request wrote.
+A batch run from the admin panel records the product admin in
+`submitted_by_platform_user_id` (`submitted_by` stays for lab users), and the
+onboarding overview's `recent_batches` shows both.
 
 ## 1.5 Voice and the two consents
 
