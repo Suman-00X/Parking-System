@@ -997,8 +997,9 @@ and the access policy landed.
 ### `api/app.py` — the FastAPI application
 Assembles the routers and puts the access check in front of all of them.
 
-- `create_app()` mounts every router, runs `verify_coverage()` against the
-  policy — the app refuses to start on a mismatch — and installs `AccessMiddleware`
+- `create_app()` mounts every router, runs `verify_coverage()` and `verify_params()`
+  against the policy — the app refuses to start on a mismatch — and installs
+  `AccessMiddleware` in front of `InputValidationMiddleware`
 - `current_revision()` / `head_revision()` so a schema drift is visible at boot
 
 ### `api/access_policy.xml` — who may call what
@@ -1008,9 +1009,21 @@ an edit here, not in code.
 - `<roles>` — `product_admin` and `support` (admin realm); `lab_admin`,
   `radiologist`, `transcriptionist`, `auditor` (lab realm)
 - `<rate-limits>` — named sliding-window limits, keyed by caller or by IP
-- `<routes realm="public|admin|lab">` — method, path, `<allow role>` list,
+- `<routes realm="public|admin|lab">` — method, path, `roles="a,b"`,
   `rate-limit`, `max-body-bytes`, and `environments` for the dev-only docs routes
+- `<param>` per accepted parameter — `in` (path/query/form/file/json), `type`,
+  `required`, `pattern`, `max-length`, `multiple`
 - A role may only be allowed on a route of its own realm; the parser refuses the file otherwise
+
+### `api/input_check.py` — the parameter allowlist
+Runs right after the access middleware, so only for a caller already let through.
+
+- `handler_params()` / `verify_params()` — read what each handler really accepts
+  (path, query, form, file, JSON model fields) and refuse to start if the policy differs
+- `InputValidationMiddleware` — unknown, repeated, malformed or missing parameter
+  `400`; body counted while it is spooled (memory, then disk past 1 MiB) so a
+  chunked body is capped too `413`; the handler gets the spooled body unchanged
+- Errors name the parameter, never its value
 
 ### `api/access.py` — the access middleware
 Every request passes through it before any handler runs, so a route cannot be

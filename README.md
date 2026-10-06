@@ -224,11 +224,14 @@ change nothing. From it a product admin can:
 ### Who may call what
 
 Every route is listed in **`radreport/api/access_policy.xml`** with the roles
-allowed to call it, its rate limit and its request-size cap. A middleware checks
-each request against that file before any handler runs: an unlisted route is
-refused, a wrong role gets 403, too many requests get 429. The app refuses to
-start if the file and the routes disagree. To give `support` a new permission,
-add an `<allow role="support"/>` to that route. Rate limits are counted in each
+allowed to call it (`roles="a,b"`), its rate limit, its request-size cap and
+every parameter it accepts (`<param>` with location, type, required, pattern and
+length). Two middlewares check each request against that file before any handler
+runs: an unlisted route is refused, a wrong role gets 403, too many requests get
+429, and an unknown, repeated, malformed or missing parameter gets 400. The app
+refuses to start if the file disagrees with the routes or with the parameters
+the handlers accept. To give `support` a new permission, add it to that route's
+`roles=`. Rate limits are counted in each
 worker process's memory, so with `WORKERS=N` the effective limit is up to N
 times the configured one.
 
@@ -418,7 +421,8 @@ Each has a test that fails loudly.
   unfed safety monitor is worse than none: it reports as coverage.
 - **`api/access_policy.xml` + `api/access.py`** — the only place a route's
   roles are decided. A new route that is not added to the XML makes the app
-  refuse to start; a role added to an `<allow>` takes effect everywhere at once.
+  refuse to start, and so does a handler parameter the XML does not declare;
+  a role added to a route's `roles=` takes effect everywhere at once.
   Admin identity comes only from the session cookie: the old
   `X-Platform-User-Id` header made the admin realm spoofable and is gone.
 - **`api/deps.py:admin_lab_session`** — an admin acting on a lab must go

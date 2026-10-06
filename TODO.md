@@ -729,3 +729,82 @@ ROI: Positive by month 6–9 ✅
   - Integration: Update `evaluate_gates()` to read from env at startup
   - **Why:** Allows ops to tune thresholds for different labs/pilot stages without code changes
   - Example usage: `ADAPTER_HOURS_THRESHOLD=15.0 python -m radreport.main` (lab with less data)
+
+---
+
+# Scale & System Design Roadmap (2026-10-06)
+
+What exists today: monthly partitions on `asr_segment`, `edit_event` and
+`audit_log` (migration 0003), Anthropic prompt caching, and in-process
+`lru_cache`s. Everything below is missing. Ordered by value for effort; the
+queue and outbox come first because the crash test depends on them.
+
+## Easy — fits the product, no paid infrastructure
+
+- [ ] **Postgres job queue** (1 day)
+  - New `job` table; workers claim with `SELECT ... FOR UPDATE SKIP LOCKED`
+  - Upload enqueues a `run_pipeline` job instead of running it in the request
+  - Visibility timeout + attempt count + dead-letter state for poison jobs
+  - Fill the empty `radreport/workers/` package with the worker loop
+  - Jobs are tenant-scoped: the worker must `bind_tenant` before touching rows
+  - Test: two workers never claim the same job; a killed worker's job is reclaimed
+
+- [ ] **Transactional outbox** (half day)
+  - New `outbox_event` table written in the same transaction as the change
+  - Events: `recording.ingested`, `draft.ready`, `report.signed`, `autonomy.revoked`
+  - A relay publishes unsent rows and marks them sent; consumers must be idempotent
+  - Test: crash between commit and publish → event still delivered exactly once per consumer
+
+- [ ] **Redis cache** (1 day)
+  - Cache tenant config, model assignments and admin sessions; TTL + explicit invalidation on write
+  - In-memory fallback when `RADREPORT_REDIS_URL` is unset, so local dev and tests need no Redis
+  - Upstash free tier for the hosted demo
+  - Cache keys must include `tenant_id` — a missing one is a cross-lab leak that RLS cannot catch
+  - Builds on "Add Request-Scoped Caching" and "LLM Response Caching" above
+
+- [ ] **Bloom filter** (half day)
+  - Pure Python, no dependency; sized from expected items + target false-positive rate
+  - Uses: duplicate-recording pre-check on `content_hash` before the DB lookup; unknown-term pre-check in lexicon matching
+  - A "maybe" still goes to the database — the filter only skips work on a definite "no"
+  - Per tenant, rebuilt on startup from the DB
+  - Test: no false negatives; measured false-positive rate within target
+
+- [ ] **Extend partitioning** (1 day)
+  - **Bug:** 0003 creates partitions 12 months ahead at migration time and nothing
+    creates more. After that, rows fall into `<table>_default`, pruning stops, and
+    creating that month's partition later fails because the default holds its rows.
+  - Add a scheduled job calling `ensure_month_partition` for the next 3 months (runs on the job queue above)
+  - Partition `pipeline_run` by month and `recording` by tenant (hash) — see "Partition Large Tables" above
+  - Archive / detach partitions older than the retention window
+
+## Doable with caveats
+
+- [ ] **Kafka event streaming** (1–2 days)
+  - Redpanda (Kafka-compatible, lighter) in `docker-compose.yml`
+  - Outbox relay publishes to topics; consumers: HL7/FHIR export, critical alerts, metering, analytics
+  - One `EventBus` interface with Postgres and Kafka implementations, chosen by config
+  - **Caveat:** no lasting free hosted Kafka found (Confluent offers trial credits only).
+    The hosted demo runs the Postgres implementation; Kafka runs locally and in the crash-test demo.
+  - Partition topics by `tenant_id` so one lab's events stay in order
+
+- [ ] **Sharding by lab** (3–4 days)
+  - Consistent-hash ring (virtual nodes) mapping `tenant_id` → shard; explicit override table for pinning a big lab
+  - Global database for untenanted tables (`platform_user`, model catalog, shard map); tenant tables on shards
+  - `db/session.py` resolves the shard before `bind_tenant`
+  - Migrations and RLS policies applied to every shard; `/ready` checks all of them
+  - Admin "list all labs" fans out to every shard and merges
+  - **Caveat:** demo with 2 databases on one Postgres server; moving a lab between shards is out of scope
+  - Test: adding a shard moves only ~1/N of labs; isolation tests pass on each shard
+
+- [ ] **Read replicas** (1 day code + replica setup)
+  - `read_session()` alongside the write session; route dashboards, cost views and exports only
+  - Never route the review screen or anything read right after a write (replication lag breaks read-your-writes)
+  - Falls back to the primary when no replica URL is configured
+  - **Caveat:** a real replica needs a second Postgres with streaming replication — fine locally, rarely free when hosted
+  - Builds on "Add Read Replicas" above
+
+## Configuration, not code
+
+- [ ] **CDN via Cloudflare free plan** (1 hour)
+  - Cache `/ui/static/*` and the features page; set long `Cache-Control` on static assets
+  - **Never cache audio.** Serve it through short-lived signed S3 URLs instead of streaming through the app

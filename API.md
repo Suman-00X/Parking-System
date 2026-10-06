@@ -59,44 +59,74 @@ once; every phase below assumes them.
 
 ## The access policy
 
-Every route, and who may call it, is declared in one file:
+Every route, who may call it and exactly which parameters it accepts are declared in one file:
 [`api/access_policy.xml`](radreport/api/access_policy.xml). It is read once at
 startup by [`load_policy`](radreport/api/access.py#L191), and
 [`AccessMiddleware`](radreport/api/access.py#L297) checks every request against
 it **before any route handler runs**.
 
-Each `<route>` names a method, a path, a realm, the roles allowed to call it, a
-rate limit and, for anything that takes a body, a maximum body size:
+Each `<route>` names a method, a path, a realm, the roles allowed to call it
+(`roles=`, comma-separated), a rate limit, for anything that takes a body a
+maximum body size, and one `<param>` per accepted parameter:
 
 ```xml
 <route id="admin.lab.status" method="POST" path="/admin/labs/{tenant_id}/status"
-       rate-limit="admin-write" max-body-bytes="4096">
-  <allow role="product_admin"/>
+       roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+  <param name="tenant_id" in="path" type="uuid" required="true"/>
+  <param name="status" in="form" type="string" required="true"
+         pattern="provisioning|onboarding|pilot|live|suspended|offboarded"/>
 </route>
 ```
+
+A `<param>` has `in=` `path` | `query` | `form` | `file` | `json` (a top-level
+key of a JSON object body), `type=` `string` | `uuid` | `int` | `number` |
+`bool` | `object` | `array` | `file`, `required="true"` when mandatory,
+`pattern=` (must match the whole value), `max-length=` (characters for a string,
+items for an array, files for a file field; a string without one gets 2000) and
+`multiple="true"` for a repeatable query key or a list of files.
 
 The middleware, in order:
 
 | Step | Refusal |
 |---|---|
 | Match the method and path to a `<route>`. Unlisted, or limited by `environments` to other deployments (the docs routes) | `404 Not Found` |
-| Compare the declared `Content-Length` with `max-body-bytes` | `413` |
+| Compare the declared `Content-Length` with `max-body-bytes` (a fast early refusal) | `413` |
 | Count the request against an IP-keyed rate limit | `429` with `Retry-After` |
 | Identify the caller for the route's realm (below) | `401`, or a `303` to `/admin/login` |
 | Count it against a caller-keyed rate limit | `429` with `Retry-After` |
 | Check the caller's role is one the route allows | `403` |
+
+Then [`InputValidationMiddleware`](radreport/api/input_check.py) checks the
+parameters, still before any handler runs, and only for a caller already let
+through, so nothing is read for a stranger:
+
+| Step | Refusal |
+|---|---|
+| Path and query: every key declared, none repeated unless `multiple`, each value of its type and pattern, every required one present | `400` |
+| Read the body into a spool (memory up to 1 MiB, then a temporary file), counting bytes as they arrive, so a chunked body without a `Content-Length` is capped too. A route without `max-body-bytes` may carry 64 KiB | `413` |
+| A route with no body parameters refuses any body; a JSON route needs `application/json` and an object; a form route needs urlencoded or multipart | `400` |
+| Every JSON key, form field and file field declared, of its type, pattern and length, with no file count over `max-length`, nothing required missing | `400` |
+
+The `400` names the parameter but never repeats its value, and a parameter
+name that is not plain text is not repeated either. The body the handler then
+reads is the spooled copy, byte for byte. This matters most for JSON: Pydantic
+silently drops unknown keys, so without the policy a smuggled `"status": "live"`
+on registration would be ignored rather than refused.
 
 The identified caller is left on `request.state.identity`; handlers read it
 through [`current_admin`](radreport/api/deps.py#L39) and
 [`current_principal`](radreport/api/deps.py#L50).
 
 **The app refuses to start if the policy and the routes disagree.**
-[`verify_coverage`](radreport/api/access.py#L210) fails `create_app()` when a
-served route is not in the file, or the file lists a route that is not served.
-A new route without a policy entry cannot ship by accident.
+[`verify_coverage`](radreport/api/access.py) fails `create_app()` when a
+served route is not in the file, or the file lists a route that is not served;
+[`verify_params`](radreport/api/input_check.py) fails it when a handler accepts
+a parameter its route does not declare, or the reverse, or when `required` or
+`type` differ. A new route or parameter without a policy entry cannot ship by
+accident.
 
 **Adding a role or a permission is an edit to the XML**, not to code: declare
-the `<role>` under its realm, and add an `<allow role="..."/>` to each route it
+the `<role>` under its realm, and add it to the `roles=` of each route it
 may call. A role must belong to the route's realm, so an admin role can never be
 allowed onto a lab route or the reverse — the parser refuses the file.
 
@@ -141,7 +171,7 @@ that is not a UUID is `401 malformed principal headers`
 The middleware then looks the user up **inside that tenant**, under its RLS
 binding. An unknown user, an inactive one, or one who belongs to a different
 tenant is `401 unknown or inactive user`. The user's **stored** roles are
-checked against the route's `<allow>` list — `403` if none match. Handlers keep
+checked against the route's `roles=` — `403` if none match. Handlers keep
 their own finer checks on top (a radiologist-only gate, say).
 
 **This is still not real authentication.** Anyone who knows a user id and its
@@ -1267,10 +1297,6 @@ for lab users, and nothing replaces the headers in production yet.
 **Everywhere — rate limits are per process.** The counters live in each
 worker's memory, so with *n* workers a caller gets up to *n* times the
 configured rate, and a restart resets them.
-
-**Everywhere — the body cap reads the declared length.** A request is refused
-with `413` when its `Content-Length` is over the cap; a body sent without a
-`Content-Length` (chunked) is not measured by the middleware.
 
 **Phase 1 — no `GET /admin/api/labs/{tenant_id}`.** Single-lab status comes
 only from filtering `GET /admin/api/labs`, from the `POST .../status` response,
