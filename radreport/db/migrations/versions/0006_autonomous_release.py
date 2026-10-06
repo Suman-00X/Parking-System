@@ -54,14 +54,15 @@ def upgrade() -> None:
 
     # Rebuilt unconditionally — the old two-value definition and the new
     # three-value one share a name, so existence does not tell them apart.
+    # op.f: the name is already final; without it the naming convention prefixes it a second time.
     if _has_constraint("ck_final_report_path_type_valid"):
-        op.drop_constraint("ck_final_report_path_type_valid", "final_report", type_="check")
-    op.create_check_constraint("ck_final_report_path_type_valid", "final_report", sa.text(_path_type_in(PathType.values())))
+        op.drop_constraint(op.f("ck_final_report_path_type_valid"), "final_report", type_="check")
+    op.create_check_constraint(op.f("ck_final_report_path_type_valid"), "final_report", sa.text(_path_type_in(PathType.values())))
 
     # Added after the column, so existing rows — all of which have a revision
     # and a human path_type — already satisfy it and no backfill is needed.
     if not _has_constraint("ck_final_report_autonomous_iff_unreviewed"):
-        op.create_check_constraint("ck_final_report_autonomous_iff_unreviewed", "final_report", sa.text(_AUTONOMOUS_CHECK))
+        op.create_check_constraint(op.f("ck_final_report_autonomous_iff_unreviewed"), "final_report", sa.text(_AUTONOMOUS_CHECK))
 
     if not _has_index("ix_final_report_path"):
         op.create_index("ix_final_report_path", "final_report", ["tenant_id", "path_type", "signed_at"])
@@ -77,10 +78,10 @@ def downgrade() -> None:
     if _has_index("ix_final_report_path"):
         op.drop_index("ix_final_report_path", table_name="final_report")
     if _has_constraint("ck_final_report_autonomous_iff_unreviewed"):
-        op.drop_constraint("ck_final_report_autonomous_iff_unreviewed", "final_report", type_="check")
+        op.drop_constraint(op.f("ck_final_report_autonomous_iff_unreviewed"), "final_report", type_="check")
     if _has_constraint("ck_final_report_path_type_valid"):
-        op.drop_constraint("ck_final_report_path_type_valid", "final_report", type_="check")
-    op.create_check_constraint("ck_final_report_path_type_valid", "final_report", sa.text(_path_type_in(_OLD_PATH_TYPES)))
+        op.drop_constraint(op.f("ck_final_report_path_type_valid"), "final_report", type_="check")
+    op.create_check_constraint(op.f("ck_final_report_path_type_valid"), "final_report", sa.text(_path_type_in(_OLD_PATH_TYPES)))
     op.alter_column("final_report", "final_revision_id", nullable=False)
     if _has_constraint("fk_autonomy_class_id_tenant"):
         op.drop_constraint("fk_autonomy_class_id_tenant", "final_report", type_="foreignkey")

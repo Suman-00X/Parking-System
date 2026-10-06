@@ -1,42 +1,15 @@
 # TODO Roadmap (2026-10-05)
 
-## BLOCKING: `alembic upgrade head` fails on a fresh database (CRITICAL)
+## Migrations: every step must be guarded
 
-**Found 2026-10-05 while verifying Phase 6's migration 0006.** Pre-existing and
-unrelated to that change, but it blocks the entire `tests/db` suite — those
-tests run `command.upgrade(config, "head")` in the `migrated_db` fixture, so
-none of them can run until this is fixed.
-
-### The cause
-Revision **0001** builds the schema with `Base.metadata.create_all`, which reads
-the **live models**. Every later hand-written migration then tries to re-apply a
-change the models already express. First failure:
-
-```
-0004_template_version_spoken_code.py
-  ALTER TABLE template_version DROP CONSTRAINT uq_template_version_tenant_id_spoken_study_code
-  -> psycopg.errors.UndefinedObject: constraint ... does not exist
-```
-
-The constraint is already absent from `Base.metadata`, so 0001 never created it.
-**0005 has the same shape** — it drops `task_key_valid`, while the real
-constraint name under the `ck_%(table_name)s_%(constraint_name)s` naming
-convention is `ck_task_model_assignment_task_key_valid`. Both are latent until
-someone migrates from scratch.
-
-### Options (a decision, not a mechanical fix)
-- [ ] **Freeze 0001.** Transcribe the schema as it stood at 0001 into explicit
-      `op.create_table` calls so it stops tracking the models. Correct, and the
-      one that makes every future migration behave. ~57 tables of work.
-- [ ] **Make 0002–0005 idempotent**, guarding each step on the current database
-      state (`pg_constraint` / `information_schema`). Cheaper, and what 0006
-      already does — see `_has_column` / `_has_constraint` there. Leaves the
-      underlying drift in place.
-- [ ] **Squash to a new baseline.** Drop 0001–0005, emit one revision from
-      today's models. Simplest, but only if no deployed database is mid-chain.
-
-Also fix 0005's two `drop_constraint("task_key_valid", ...)` calls to use the
-convention-qualified name regardless of which option is chosen.
+Fixed 2026-10-07: `alembic upgrade head` now runs from an empty database and from
+a database stopped at 0005, and the full test suite passes on both as the
+non-owner role. Revision 0001 still builds the schema from the **live models**, so
+on a fresh database later revisions find their changes already applied. The rule
+that keeps this working: **every step in a new migration checks the database
+first** (`_has_column`, `_has_table`, `_has_constraint`, `_has_index`, `_has_policy`
+in 0004–0007 are the pattern), and a constraint named in full is wrapped in
+`op.f(...)` so the naming convention does not prefix it a second time.
 
 ---
 
