@@ -700,9 +700,12 @@ batch that is not this lab's is `404`.
 
 This is the report feeding step, and everything downstream depends on it.
 
-The corpus load is **API only** — it arrives as structured records, so the
-onboarding page points at the API rather than offering a form. It takes
-`{"records": [...], "trigger": "..."}`, up to 100 MiB. Each record:
+The corpus loads two ways. The onboarding page takes a file, `POST
+/admin/labs/{tenant_id}/onboarding/corpus`: a CSV with one report per row and a
+`report_text` column, or a JSON array of the same records. Bad rows (empty
+text, malformed age or date, an unknown column) are skipped and counted in the
+notice rather than failing the whole file. The API takes
+`{"records": [...], "trigger": "..."}`. Both accept up to 100 MiB. Each record:
 `report_text` (required) plus `external_report_id`,
 `radiologist_employee_code`, `referring_doctor`, `patient_sex`,
 `patient_age_years`, `is_deidentified`. Returns `batch_id`, `loaded`,
@@ -1355,10 +1358,9 @@ roster CSV is the only way a lab user is created or changed, and it never
 deletes. `tenant_branding` is inserted empty at registration and never written
 again.
 
-**Phase 2 — the corpus has no upload form.** It is loaded through
-`POST /admin/api/labs/{tenant_id}/onboarding/corpus` only. The page's step
-buttons also run with default options; `min_frequency` and `verified_only` are
-API-only.
+**Phase 2 — step options are API-only.** The page's step buttons run with
+default options; `min_frequency` and `verified_only` can only be set through the
+API.
 
 **Phase 3 — nothing creates a `Study` or a `Patient`.** Yet
 [`/ingest/recordings`](radreport/api/routes/ingest.py#L38) requires a
