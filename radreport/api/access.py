@@ -18,11 +18,11 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import FastAPI
@@ -272,9 +272,11 @@ def _served_routes(app: FastAPI) -> Iterator[tuple[str, str]]:
         if isinstance(route, Route):
             for method in route.methods or ():
                 yield method, route.path
-        elif hasattr(route, "effective_route_contexts"):
-            # Newer FastAPI wraps each included router; its contexts carry the full prefixed path.
-            for context in route.effective_route_contexts():
+        else:
+            # Newer FastAPI wraps each included router in a private route type; its contexts carry
+            # the full prefixed path. Looked up with getattr because BaseRoute does not declare it.
+            contexts: Callable[[], Iterable[Any]] | None = getattr(route, "effective_route_contexts", None)
+            for context in contexts() if contexts is not None else ():
                 for method in context.methods or ():
                     yield method, context.path
 
@@ -309,7 +311,7 @@ class RateLimiter:
             self._calls += 1
             if self._calls % self._SWEEP_EVERY == 0:
                 self._sweep(now)
-            _window, hits = self._hits.setdefault((limit.id, who), (limit.window_seconds, deque()))
+            hits = self._hits.setdefault((limit.id, who), (limit.window_seconds, deque()))[1]
             while hits and hits[0] <= cutoff:
                 hits.popleft()
             if len(hits) >= limit.requests:

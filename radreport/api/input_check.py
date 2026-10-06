@@ -14,7 +14,7 @@ import types
 import typing
 import uuid
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Iterator, MutableMapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, MutableMapping
 from dataclasses import dataclass
 from enum import Enum
 from tempfile import SpooledTemporaryFile
@@ -119,7 +119,9 @@ def _walk(dependant: Any) -> Iterator[Any]:
 def _contexts(app: FastAPI) -> Iterator[tuple[str, str, Any]]:
     """(method, full path, dependant) for every API route, looking inside included routers."""
     for route in app.routes:
-        candidates: list[Any] = list(route.effective_route_contexts()) if hasattr(route, "effective_route_contexts") else [route]
+        # Newer FastAPI wraps each included router; getattr because BaseRoute does not declare the method.
+        contexts: Callable[[], Iterable[Any]] | None = getattr(route, "effective_route_contexts", None)
+        candidates: list[Any] = list(contexts()) if contexts is not None else [route]
         for context in candidates:
             dependant = getattr(context, "dependant", None)
             if dependant is None:
