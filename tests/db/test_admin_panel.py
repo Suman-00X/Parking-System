@@ -561,3 +561,21 @@ def test_an_admin_changes_their_own_password(admin_fixture) -> None:
 def test_support_may_change_only_its_own_password(admin_fixture) -> None:
     client, _cookie = _signed_in(_support_account(admin_fixture["db"]))
     assert client.post("/admin/api/account/password", json={"current_password": PASSWORD, "new_password": "support's new passphrase"}).status_code == 204
+
+
+def test_registering_a_lab_leaves_no_empty_batch_behind(admin_fixture) -> None:
+    """The placeholder roster batch it used to create sat in `uploading` forever; the first import opens its own."""
+    from radreport.db.models.onboarding import ImportBatch
+    from radreport.db.session import tenant_session
+
+    client, _cookie = _signed_in(admin_fixture["email"])
+    created = client.post("/admin/api/labs", json={"name": "Fresh Lab", "slug": f"fresh-{uuid.uuid4().hex[:6]}", "admin_email": "lead@fresh.example", "admin_display_name": "Lead", "admin_employee_code": "L-1"})
+    assert created.status_code == 201
+    tenant_id = uuid.UUID(created.json()["id"])
+    try:
+        with tenant_session(tenant_id, url=admin_fixture["db"]) as session:
+            assert session.query(ImportBatch).filter_by(tenant_id=tenant_id).count() == 0
+    finally:
+        from tests.conftest import _purge_tenants
+
+        _purge_tenants(admin_fixture["db"], [tenant_id])
