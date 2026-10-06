@@ -601,7 +601,9 @@ def onboarding_page(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin,
         if can_upload
         else ""
     )
-    steps = "<h2>Run a step</h2>" + "".join(f'<form class="inline" method="post" action="{base}/steps/{key}"><button type="submit">{_esc(label)}</button></form> ' for key, (label, _fn) in onboarding_steps.STEPS.items()) + "<p class='meta'>Clinical approvals (template candidates, merges, collision findings, critical rules) are made by the lab's radiologists on the lab side, not here.</p>" if can_run else ""
+    #: The extra inputs a step's button carries; every other step runs with no options.
+    step_options = {"lexicon-mine": ' <input name="min_frequency" type="number" min="1" max="9999" placeholder="min. frequency" style="width:9em">', "boilerplate-mine": ' <label style="display:inline"><input type="checkbox" name="verified_only" value="1"> verified mappings only</label>'}
+    steps = "<h2>Run a step</h2>" + "".join(f'<form class="inline" method="post" action="{base}/steps/{key}"><button type="submit">{_esc(label)}</button>{step_options.get(key, "")}</form> ' for key, (label, _fn) in onboarding_steps.STEPS.items()) + "<p class='meta'>Clinical approvals (template candidates, merges, collision findings, critical rules) are made by the lab's radiologists on the lab side, not here.</p>" if can_run else ""
     return _page(
         f"Onboarding — {name}",
         f"""{_messages(error, notice)}
@@ -674,10 +676,16 @@ def merge_proposals(tenant_id: uuid.UUID, batch_id: uuid.UUID, request: Request,
 
 
 @router.post("/labs/{tenant_id}/onboarding/steps/{step}")
-def run_onboarding_step(tenant_id: uuid.UUID, step: str, request: Request, admin: CurrentAdmin) -> Response:
+def run_onboarding_step(tenant_id: uuid.UUID, step: str, request: Request, admin: CurrentAdmin, min_frequency: Annotated[int | None, Form()] = None, verified_only: Annotated[str | None, Form()] = None) -> Response:
+    """Run one step from its button; the two steps with options read them from the form."""
+    options: dict[str, object] = {}
+    if min_frequency is not None:
+        options["min_frequency"] = min_frequency
+    if verified_only:
+        options["verified_only"] = True
     try:
         with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
-            result = onboarding_steps.run_step(session, tenant_id, step)
+            result = onboarding_steps.run_step(session, tenant_id, step, options)
     except StepRefused as exc:
         return _redirect(f"/admin/labs/{tenant_id}/onboarding", error=exc.reason)
     label = onboarding_steps.STEPS[step][0]

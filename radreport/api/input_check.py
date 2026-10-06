@@ -243,6 +243,9 @@ def _check_fields(rule: RouteRule, location: str, fields: dict[str, list[str]]) 
         if len(values) > 1 and not param.multiple:
             return f"{_shown(name)} may appear only once"
         for value in values:
+            if value == "" and not param.required:
+                # A browser sends every blank optional field as an empty value; that means "not given".
+                continue
             if (problem := _check_text(param, value)) is not None:
                 return f"{_shown(name)} {problem}"
     for param in rule.params:

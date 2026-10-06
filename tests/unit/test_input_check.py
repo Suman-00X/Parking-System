@@ -211,3 +211,9 @@ def test_an_open_json_body_accepts_only_its_declared_keys() -> None:
     client = TestClient(app)
     assert client.post("/opts", json={"level": 3}).json() == {"level": 3}
     assert client.post("/opts", json={"level": 3, "other": 1}).status_code == 400
+
+
+def test_a_blank_optional_field_counts_as_not_given(client: TestClient) -> None:
+    """Browsers send every blank optional input; an empty optional value is absent, not malformed."""
+    assert client.post("/form", data={"name": "ada", "age": ""}).status_code == 200
+    assert client.post("/form", data={"name": ""}).status_code == 422, "a required field present but empty passes the policy and is FastAPI's to refuse"

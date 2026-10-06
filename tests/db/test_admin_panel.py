@@ -579,3 +579,28 @@ def test_registering_a_lab_leaves_no_empty_batch_behind(admin_fixture) -> None:
         from tests.conftest import _purge_tenants
 
         _purge_tenants(admin_fixture["db"], [tenant_id])
+
+
+def test_step_options_can_be_set_from_the_page(admin_fixture, monkeypatch) -> None:
+    """min_frequency and verified_only used to be API-only."""
+    from radreport.admin import onboarding_steps
+
+    seen: list[dict] = []
+    original = onboarding_steps.run_step
+
+    def spy(session, tenant_id, step, options=None):
+        seen.append(dict(options or {}))
+        return original(session, tenant_id, step, options)
+
+    monkeypatch.setattr(onboarding_steps, "run_step", spy)
+    f = admin_fixture
+    client, _cookie = _signed_in(f["email"])
+    base = f"/admin/labs/{f['tenant_id']}/onboarding/steps"
+    page = client.get(f"/admin/labs/{f['tenant_id']}/onboarding")
+    assert 'name="min_frequency"' in page.text and 'name="verified_only"' in page.text
+
+    assert client.post(f"{base}/lexicon-mine", data={"min_frequency": ""}).status_code == 303, "a blank number box runs with the default"
+    assert client.post(f"{base}/lexicon-mine", data={"min_frequency": "4"}).status_code == 303
+    assert client.post(f"{base}/boilerplate-mine", data={"verified_only": "1"}).status_code == 303
+    assert seen == [{}, {"min_frequency": 4}, {"verified_only": True}]
+    assert client.post(f"{base}/lexicon-mine", data={"min_frequency": "0"}).status_code == 400
