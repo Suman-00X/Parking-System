@@ -4,7 +4,7 @@ from radreport.db.base import Base
 from radreport.db.models.adaptation import ModelAdaptationRun, TrainingCorpusSnapshot, VerbatimTranscript
 from radreport.db.models.asr import AsrRun, AsrSegment, Transcript, TranscriptUtterance
 from radreport.db.models.evaluation import EvalItem, EvalResult, EvalRun, EvalSet
-from radreport.db.models.identity import AppUser, Patient, RadiologistProfile, Study
+from radreport.db.models.identity import AppUser, LabRefreshToken, Patient, RadiologistProfile, Study
 from radreport.db.models.ingestion import Recording
 from radreport.db.models.knowledge import AutonomyClass, LexiconSet, LexiconSurfaceVariant, LexiconTerm, SpeakerTermBias, Template, TemplateField, TemplateVersion
 from radreport.db.models.modelconfig import ModelDefinition, ModelProvider, TaskModelAssignment, TaskModelAssignmentLog
@@ -23,6 +23,7 @@ __all__ = [
     "TrainingConsentEventLog",
     # identity
     "AppUser",
+    "LabRefreshToken",
     "RadiologistProfile",
     "Patient",
     "Study",

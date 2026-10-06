@@ -9,8 +9,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from radreport.admin.auth import SESSION_COOKIE, AuthenticatedAdmin
-from radreport.api.access import AccessMiddleware, LabUser, PolicyError, RateLimit, RateLimiter, load_policy, parse_policy, verify_coverage
+from radreport.api.access import AccessMiddleware, PolicyError, RateLimit, RateLimiter, load_policy, parse_policy, verify_coverage
 from radreport.api.app import create_app
+from radreport.auth.lab import issue_access_token
 from radreport.core.types import PlatformRole, UserRole
 
 ROLES = """
@@ -52,10 +53,9 @@ def _admin(token: str | None) -> AuthenticatedAdmin | None:
     return AuthenticatedAdmin(platform_user_id=uuid.uuid5(uuid.NAMESPACE_DNS, role), display_name=role, role=role, session_id=uuid.uuid4()) if role else None
 
 
-def _lab_user(tenant_id: uuid.UUID, user_id: uuid.UUID) -> LabUser | None:
-    if tenant_id != LAB_TENANT:
-        return None
-    return {RADIOLOGIST: LabUser(True, frozenset({UserRole.RADIOLOGIST})), AUDITOR: LabUser(True, frozenset({UserRole.AUDITOR}))}.get(user_id)
+def _bearer(user_id: uuid.UUID, *roles: str) -> dict[str, str]:
+    token, _ = issue_access_token(user_id=user_id, tenant_id=LAB_TENANT, roles=list(roles))
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ def client() -> TestClient:
     app = FastAPI()
     for method, path in (("GET", "/open"), ("GET", "/devonly"), ("GET", "/admin/things"), ("POST", "/admin/things"), ("GET", "/admin/api/things/{thing_id}"), ("POST", "/lab/sign"), ("GET", "/unlisted")):
         app.add_api_route(path, lambda: {"ok": True}, methods=[method])
-    app.add_middleware(AccessMiddleware, policy=parse_policy(POLICY), admin_resolver=_admin, lab_user_resolver=_lab_user)
+    app.add_middleware(AccessMiddleware, policy=parse_policy(POLICY), admin_resolver=_admin)
     return TestClient(app, follow_redirects=False)
 
 
@@ -204,12 +204,16 @@ def test_the_rate_limit_answers_429_with_retry_after(client: TestClient) -> None
     assert int(refused.headers["retry-after"]) >= 1
 
 
-def test_a_lab_route_checks_headers_user_and_role(client: TestClient) -> None:
+def test_a_lab_route_needs_a_valid_bearer_token_with_the_role(client: TestClient) -> None:
     assert client.post("/lab/sign").status_code == 401
-    assert client.post("/lab/sign", headers={"X-User-Id": "not-a-uuid", "X-Tenant-Id": str(LAB_TENANT)}).status_code == 401
-    assert client.post("/lab/sign", headers={"X-User-Id": str(RADIOLOGIST), "X-Tenant-Id": str(uuid.uuid4())}).status_code == 401
-    assert client.post("/lab/sign", headers={"X-User-Id": str(AUDITOR), "X-Tenant-Id": str(LAB_TENANT)}).status_code == 403
-    assert client.post("/lab/sign", headers={"X-User-Id": str(RADIOLOGIST), "X-Tenant-Id": str(LAB_TENANT)}).status_code == 200
+    assert client.post("/lab/sign", headers={"Authorization": "Bearer not-a-token"}).status_code == 401
+    assert client.post("/lab/sign", headers={"Authorization": "Basic abc"}).status_code == 401
+    assert client.post("/lab/sign", headers=_bearer(AUDITOR, UserRole.AUDITOR)).status_code == 403
+    assert client.post("/lab/sign", headers=_bearer(RADIOLOGIST, UserRole.RADIOLOGIST)).status_code == 200
+
+
+def test_the_old_identity_headers_grant_nothing(client: TestClient) -> None:
+    assert client.post("/lab/sign", headers={"X-User-Id": str(RADIOLOGIST), "X-Tenant-Id": str(LAB_TENANT)}).status_code == 401
 
 
 def test_an_admin_cookie_does_not_open_a_lab_route(client: TestClient) -> None:

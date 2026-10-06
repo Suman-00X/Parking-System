@@ -7,7 +7,7 @@
     file does not list, lists one it does not serve, or a handler accepts a parameter that its
     route here does not declare (or the reverse).
   - realm="public": no sign-in. realm="admin": the admin panel's session cookie.
-    realm="lab": a lab user (currently the X-User-Id / X-Tenant-Id headers).
+    realm="lab": a lab user's bearer access token, from POST /auth/login.
   - roles="a,b": the roles that may call the route, comma-separated; each must belong to the
     route's realm. Handlers keep their own finer checks on top of this.
   - <param>: one accepted parameter. in= path | query | form | file | json (a top-level key of a
@@ -42,6 +42,7 @@
     <rate-limit id="lab-read" requests="300" window-seconds="60" key="principal"/>
     <rate-limit id="lab-write" requests="120" window-seconds="60" key="principal"/>
     <rate-limit id="lab-upload" requests="30" window-seconds="60" key="principal"/>
+    <rate-limit id="token-refresh" requests="30" window-seconds="60" key="ip"/>
   </rate-limits>
 
   <!-- ====================================================== public -->
@@ -61,6 +62,17 @@
     <route id="admin.login" method="POST" path="/admin/login" rate-limit="login" max-body-bytes="4096" description="Admin panel sign-in.">
       <param name="email" in="form" type="string" required="true" pattern="[^@\s]{1,64}@[^@\s]{1,255}" max-length="320"/>
       <param name="password" in="form" type="string" required="true" max-length="1024"/>
+    </route>
+    <route id="auth.login" method="POST" path="/auth/login" rate-limit="login" max-body-bytes="4096" description="Lab user sign-in; returns an access token and a refresh token.">
+      <param name="lab" in="json" type="string" required="true" pattern="[a-z0-9][a-z0-9-]{1,62}"/>
+      <param name="email" in="json" type="string" required="true" pattern="[^@\s]{1,64}@[^@\s]{1,255}" max-length="320"/>
+      <param name="password" in="json" type="string" required="true" max-length="1024"/>
+    </route>
+    <route id="auth.refresh" method="POST" path="/auth/refresh" rate-limit="token-refresh" max-body-bytes="4096" description="Trade a refresh token for a new pair.">
+      <param name="refresh_token" in="json" type="string" required="true" pattern="[0-9a-fA-F\-]{36}\.[A-Za-z0-9_\-]{32,100}" max-length="140"/>
+    </route>
+    <route id="auth.logout" method="POST" path="/auth/logout" rate-limit="token-refresh" max-body-bytes="4096" description="End the sign-in a refresh token belongs to.">
+      <param name="refresh_token" in="json" type="string" required="true" pattern="[0-9a-fA-F\-]{36}\.[A-Za-z0-9_\-]{32,100}" max-length="140"/>
     </route>
     <route id="admin.logout" method="POST" path="/admin/logout" rate-limit="public" max-body-bytes="4096" description="Admin panel sign-out; harmless without a session."/>
   </routes>
@@ -87,6 +99,11 @@
       <param name="tenant_id" in="path" type="uuid" required="true"/>
       <param name="error" in="query" type="string" max-length="500"/>
       <param name="notice" in="query" type="string" max-length="500"/>
+    </route>
+    <route id="admin.lab.user.password" method="POST" path="/admin/labs/{tenant_id}/users/{user_id}/password" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="user_id" in="path" type="uuid" required="true"/>
+      <param name="password" in="form" type="string" required="true" max-length="1024"/>
     </route>
     <route id="admin.lab.readiness.page" method="GET" path="/admin/labs/{tenant_id}/readiness" roles="product_admin,support" rate-limit="admin-read">
       <param name="tenant_id" in="path" type="uuid" required="true"/>
@@ -223,6 +240,14 @@
       <param name="min_frequency" in="json" type="int" pattern="[1-9]\d{0,3}"/>
       <param name="verified_only" in="json" type="bool"/>
     </route>
+    <route id="admin.api.lab.users" method="GET" path="/admin/api/labs/{tenant_id}/users" roles="product_admin,support" rate-limit="admin-read">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+    </route>
+    <route id="admin.api.lab.user.password" method="POST" path="/admin/api/labs/{tenant_id}/users/{user_id}/password" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="user_id" in="path" type="uuid" required="true"/>
+      <param name="password" in="json" type="string" required="true" max-length="1024"/>
+    </route>
     <route id="admin.api.lab.autonomy.read" method="GET" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}" roles="product_admin,support" rate-limit="admin-read">
       <param name="class_code" in="path" type="string" required="true" pattern="[A-Za-z0-9_.\-]{1,64}"/>
       <param name="tenant_id" in="path" type="uuid" required="true"/>
@@ -271,6 +296,10 @@
 
   <!-- ====================================================== ingest -->
   <routes realm="lab">
+    <route id="auth.password" method="POST" path="/auth/password" roles="lab_admin,radiologist,transcriptionist,auditor" rate-limit="lab-write" max-body-bytes="4096" description="Replace your own password; ends every sign-in.">
+      <param name="current_password" in="json" type="string" required="true" max-length="1024"/>
+      <param name="new_password" in="json" type="string" required="true" max-length="1024"/>
+    </route>
     <route id="ingest.recording" method="POST" path="/ingest/recordings" roles="radiologist,lab_admin" rate-limit="lab-upload" max-body-bytes="536870912">
       <param name="capture_device_class" in="form" type="string" pattern="legacy|dictation_mic_ptt|headset"/>
       <param name="device_id" in="form" type="string" pattern="[A-Za-z0-9._:\-]{1,128}"/>

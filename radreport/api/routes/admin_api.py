@@ -2,7 +2,8 @@
 
 Order: labs (list_labs, register_lab_json, readiness, change_status) -> models per step
 (steps, propose, activate) -> onboarding (onboarding_status, upload_roster, upload_templates,
-upload_corpus, merge_proposals, run_onboarding_step) -> autonomy and adaptation (get_accrual,
+upload_corpus, merge_proposals, run_onboarding_step) -> lab users' sign-in (list_lab_users,
+set_lab_user_password) -> autonomy and adaptation (get_accrual,
 open_accrual, grant_autonomy, revoke_autonomy, adaptation_gates, require_adaptation_gates) ->
 platform users (list_users, create_user, deactivate_user, reactivate_user, reset_user_password).
 """
@@ -19,14 +20,17 @@ from sqlalchemy import select
 from radreport.adaptation.gates import AdaptationBlocked, evaluate_gates, require_gates
 from radreport.adapters.llm.registry import activate_assignment
 from radreport.admin import onboarding_steps, users
+from radreport.admin.auth import MIN_PASSWORD_LENGTH
 from radreport.admin.modelconfig import ConfigRefused, propose_assignment, step_configuration
 from radreport.admin.onboarding_steps import StepRefused
 from radreport.api.deps import AdminLabDb, CurrentAdmin
+from radreport.auth import lab as lab_auth
 from radreport.autonomy import accrual, grant
 from radreport.autonomy.grant import GrantRefused
 from radreport.core.errors import ModelResolutionError, UngatedActivation
 from radreport.core.tenancy import TenantTransitionError
 from radreport.core.types import AdaptationTarget, ImportTrigger
+from radreport.db.models.identity import AppUser
 from radreport.db.models.tenancy import PlatformUser, Tenant
 from radreport.db.session import system_session
 from radreport.onboarding import corpus
@@ -213,6 +217,46 @@ def run_onboarding_step(tenant_id: uuid.UUID, step: str, session: AdminLabDb, op
         return onboarding_steps.run_step(session, tenant_id, step, options)
     except StepRefused as exc:
         raise _refused(exc) from exc
+
+
+# ======================================================= lab users' sign-in ===
+class LabUserOut(BaseModel):
+    id: uuid.UUID
+    employee_code: str
+    display_name: str
+    email: str | None
+    roles: list[str]
+    is_active: bool
+    can_sign_in: bool
+    last_login_at: str | None
+
+
+def lab_user_out(user: AppUser) -> LabUserOut:
+    return LabUserOut(id=user.id, employee_code=user.employee_code, display_name=user.display_name, email=user.email, roles=list(user.roles or ()), is_active=bool(user.is_active), can_sign_in=bool(user.password_hash and user.email and user.is_active), last_login_at=user.last_login_at.isoformat() if user.last_login_at else None)
+
+
+@router.get("/labs/{tenant_id}/users", response_model=list[LabUserOut])
+def list_lab_users(tenant_id: uuid.UUID, session: AdminLabDb) -> list[LabUserOut]:
+    """The lab's staff accounts and whether each can sign in."""
+    return [lab_user_out(u) for u in session.execute(select(AppUser).where(AppUser.tenant_id == tenant_id).order_by(AppUser.display_name)).scalars().all()]
+
+
+class LabPasswordRequest(BaseModel):
+    password: str
+
+
+@router.post("/labs/{tenant_id}/users/{user_id}/password", response_model=LabUserOut)
+def set_lab_user_password(tenant_id: uuid.UUID, user_id: uuid.UUID, body: LabPasswordRequest, session: AdminLabDb, admin: CurrentAdmin) -> LabUserOut:
+    """Set a lab user's password and sign them out everywhere."""
+    if len(body.password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"a password must be at least {MIN_PASSWORD_LENGTH} characters")
+    user = session.get(AppUser, user_id)
+    if user is None or user.tenant_id != tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no lab user {user_id}")
+    try:
+        return lab_user_out(lab_auth.set_password(session, user_id=user_id, password=body.password, actor_id=admin.platform_user_id, actor_is_platform=True))
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
 
 # =================================================== autonomy, adaptation ===

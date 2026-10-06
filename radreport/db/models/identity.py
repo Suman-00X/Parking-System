@@ -1,7 +1,7 @@
 """Tables for the people and the clinical context a report belongs to.
 
-Defines: staff accounts (AppUser), a radiologist's dictation settings (RadiologistProfile), and
-who the report is about (Patient, Study).
+Defines: staff accounts (AppUser) and their sign-in refresh tokens (LabRefreshToken), a
+radiologist's dictation settings (RadiologistProfile), and who the report is about (Patient, Study).
 """
 
 from __future__ import annotations
@@ -39,6 +39,30 @@ class AppUser(Base, TenantScoped, TimestampMixin):
     email: Mapped[str | None] = mapped_column(Text, nullable=True)
     roles: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    """scrypt, as `scrypt$n$r$p$salt$hash`. NULL means the user cannot sign in yet."""
+
+    last_login_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class LabRefreshToken(Base, TenantScoped):
+    """One refresh token for a signed-in lab user; only its hash is stored."""
+
+    __tablename__ = "lab_refresh_token"
+    __table_args__ = tenant_table_args(tenant_fk("app_user_id", "app_user", ondelete="CASCADE"), Index("ix_lab_refresh_token_hash", "token_hash", unique=True), Index("ix_lab_refresh_token_user", "tenant_id", "app_user_id", "expires_at"), Index("ix_lab_refresh_token_family", "tenant_id", "family_id"))
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    app_user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    family_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    """Every token rotated from one sign-in shares it, so a replayed old token revokes the whole chain."""
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class RadiologistProfile(Base, TenantScoped, TimestampMixin):

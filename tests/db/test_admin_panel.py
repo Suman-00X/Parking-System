@@ -506,6 +506,9 @@ def test_a_lab_route_refuses_a_lab_user_without_the_role(admin_fixture) -> None:
         auditor_id = auditor.id
 
     client = TestClient(create_app(), follow_redirects=False)
-    headers = {"X-User-Id": str(auditor_id), "X-Tenant-Id": str(f["tenant_id"])}
+    from radreport.auth.lab import issue_access_token
+
+    token, _ = issue_access_token(user_id=auditor_id, tenant_id=f["tenant_id"], roles=[UserRole.AUDITOR])
+    headers = {"Authorization": f"Bearer {token}"}
     assert client.post(f"/onboarding/critical-rules/{uuid.uuid4()}/approve", headers=headers).status_code == 403
     assert client.get("/review/queue", headers=headers).status_code == 200

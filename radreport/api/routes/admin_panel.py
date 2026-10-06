@@ -1,7 +1,7 @@
 """The admin panel's pages, rendered on the server.
 
 Order: sign in (login_page, login_submit, logout_submit) -> manage labs (home, labs_page,
-create_lab, lab_page, change_status, lab_readiness_page) -> configure models per step
+create_lab, lab_page, set_lab_user_password, change_status, lab_readiness_page) -> configure models per step
 (assign_step, activate_step, providers_page, add_provider, add_model) -> onboard a lab
 (onboarding_page, upload_roster, upload_templates, merge_proposals, run_onboarding_step) ->
 manage platform users (users_page, create_user, deactivate_user, reactivate_user, reset_password).
@@ -26,11 +26,13 @@ from radreport.admin.modelconfig import ConfigRefused, available_models, create_
 from radreport.admin.onboarding_steps import StepRefused
 from radreport.api.access import load_policy
 from radreport.api.deps import CurrentAdmin, admin_lab_session, client_ip
-from radreport.api.routes.admin_api import SLUG_PATTERN
+from radreport.api.routes.admin_api import SLUG_PATTERN, lab_user_out
+from radreport.auth import lab as lab_auth
 from radreport.core.config import get_settings
 from radreport.core.errors import ModelResolutionError, UngatedActivation
 from radreport.core.tenancy import TenantTransitionError, allowed_transitions
 from radreport.core.types import CheckStatus, ImportBatchType, PlatformRole, ProviderKind, TenantStatus
+from radreport.db.models.identity import AppUser
 from radreport.db.models.modelconfig import ModelDefinition, ModelProvider
 from radreport.db.models.tenancy import Tenant
 from radreport.db.session import system_session
@@ -316,6 +318,17 @@ def lab_page(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, error:
 
         targets = sorted(allowed_transitions(tenant.status))
         name, slug, current, consent = tenant.name, tenant.slug, tenant.status, tenant.training_pooling_consent
+        staff = [lab_user_out(u) for u in session.execute(sa.select(AppUser).where(AppUser.tenant_id == tenant_id).order_by(AppUser.display_name)).scalars().all()]
+
+    can_set_password = _can(admin, "POST", f"/admin/labs/{tenant_id}/users/{uuid.UUID(int=0)}/password")
+    staff_rows = "".join(
+        f"""<tr><td>{_esc(u.display_name)}<div class="meta">{_esc(u.email or "no email")} · {_esc(u.employee_code)}</div></td>
+            <td>{_esc(", ".join(u.roles))}</td>
+            <td>{"can sign in" if u.can_sign_in else "<span class='tag flag'>cannot sign in</span>"}</td>
+            <td>{_esc(u.last_login_at[:16].replace("T", " ") if u.last_login_at else "never")}</td>
+            <td>{f'<form class="inline" method="post" action="/admin/labs/{tenant_id}/users/{u.id}/password"><input name="password" type="password" minlength="{auth.MIN_PASSWORD_LENGTH}" placeholder="new password" required autocomplete="new-password"> <button type="submit" class="linkish">set password</button></form>' if can_set_password and u.email else ""}</td></tr>"""
+        for u in staff
+    )
 
     unconfigured = sum(1 for s in steps if not s.is_configured)
     warning = f"<div class='banner blocked'>{unconfigured} step(s) have no active model. A pipeline run will fail at the first of them.</div>" if unconfigured else ""
@@ -341,9 +354,32 @@ def lab_page(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, error:
  {"".join(rows)}
  </table>
  <p class="meta">A proposal does not go live. Activation requires a gold-set
- <code>eval_run</code> for that model; without one it is refused.</p>""",
+ <code>eval_run</code> for that model; without one it is refused.</p>
+ <h2>Lab staff</h2>
+ <table>
+ <tr><th>Name</th><th>Roles</th><th>Sign-in</th><th>Last sign-in</th><th></th></tr>
+ {staff_rows or '<tr><td colspan="5" class="meta">No staff yet; import a roster from the onboarding page.</td></tr>'}
+ </table>
+ <p class="meta">Lab staff sign in at <code>POST /auth/login</code> with this lab's slug
+ (<code>{_esc(slug)}</code>), their email and password. Setting a password signs that person out everywhere.</p>""",
         admin=admin,
     )
+
+
+@router.post("/labs/{tenant_id}/users/{user_id}/password")
+def set_lab_user_password(tenant_id: uuid.UUID, user_id: uuid.UUID, request: Request, admin: CurrentAdmin, password: Annotated[str, Form()]) -> Response:
+    if len(password) < auth.MIN_PASSWORD_LENGTH:
+        return _redirect(f"/admin/labs/{tenant_id}", error=f"a password must be at least {auth.MIN_PASSWORD_LENGTH} characters")
+    try:
+        with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
+            user = session.get(AppUser, user_id)
+            if user is None or user.tenant_id != tenant_id:
+                return _redirect(f"/admin/labs/{tenant_id}", error="no such lab user")
+            lab_auth.set_password(session, user_id=user_id, password=password, actor_id=admin.platform_user_id, actor_is_platform=True)
+            who = user.display_name
+    except ValueError as exc:
+        return _redirect(f"/admin/labs/{tenant_id}", error=str(exc))
+    return _redirect(f"/admin/labs/{tenant_id}", notice=f"Password set for {who}; their sessions were ended")
 
 
 @router.post("/labs/{tenant_id}/status")

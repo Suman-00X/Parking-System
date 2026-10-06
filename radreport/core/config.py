@@ -73,6 +73,14 @@ class ObservabilitySettings(BaseModel):
     json_logs: bool = True
 
 
+class LabAuthSettings(BaseModel):
+    token_secret: str = ""
+    """Signs lab users' access tokens. Required outside local/test/development (RADREPORT_LAB_AUTH__TOKEN_SECRET)."""
+
+    access_ttl_minutes: int = 15
+    refresh_ttl_days: int = 14
+
+
 class DemoAccount(BaseModel):
     """A sign-in listed on the login page's test-credentials tab, for public demo deployments only."""
 
@@ -95,6 +103,7 @@ class Settings(BaseSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     asr: ASRSettings = Field(default_factory=ASRSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+    lab_auth: LabAuthSettings = Field(default_factory=LabAuthSettings)
 
     # Provider API keys are deliberately **not** settings.
 

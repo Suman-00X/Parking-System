@@ -13,7 +13,6 @@ import math
 import re
 import threading
 import time
-import uuid
 import xml.etree.ElementTree as ET
 from collections import deque
 from collections.abc import Callable, Iterator
@@ -31,6 +30,7 @@ from starlette.routing import Route
 
 from radreport.admin import auth
 from radreport.admin.auth import AuthenticatedAdmin
+from radreport.auth.lab import TokenInvalid, verify_access_token
 from radreport.core.config import get_settings
 from radreport.core.logging import get_logger
 from radreport.core.tenancy import Principal
@@ -324,12 +324,6 @@ class Identity:
     principal: Principal | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class LabUser:
-    is_active: bool
-    roles: frozenset[str]
-
-
 def _admin_from_cookie(token: str | None) -> AuthenticatedAdmin | None:
     """Resolve an admin session cookie against the database."""
     from radreport.db.session import system_session
@@ -340,18 +334,6 @@ def _admin_from_cookie(token: str | None) -> AuthenticatedAdmin | None:
         return auth.authenticate(session, token)
 
 
-def _lab_user_from_db(tenant_id: uuid.UUID, user_id: uuid.UUID) -> LabUser | None:
-    """Look up a lab user inside their own tenant."""
-    from radreport.db.models.identity import AppUser
-    from radreport.db.session import tenant_session
-
-    with tenant_session(tenant_id) as session:
-        user = session.get(AppUser, user_id)
-        if user is None or user.tenant_id != tenant_id:
-            return None
-        return LabUser(is_active=bool(user.is_active), roles=frozenset(user.roles or ()))
-
-
 def _deny(status_code: int, detail: str, *, headers: dict[str, str] | None = None) -> Response:
     return JSONResponse({"detail": detail}, status_code=status_code, headers=headers)
 
@@ -359,12 +341,11 @@ def _deny(status_code: int, detail: str, *, headers: dict[str, str] | None = Non
 class AccessMiddleware(BaseHTTPMiddleware):
     """Authenticate, authorize and rate-limit each request from the policy, before routing."""
 
-    def __init__(self, app: Callable, *, policy: AccessPolicy, limiter: RateLimiter | None = None, admin_resolver: Callable[[str | None], AuthenticatedAdmin | None] = _admin_from_cookie, lab_user_resolver: Callable[[uuid.UUID, uuid.UUID], LabUser | None] = _lab_user_from_db) -> None:
+    def __init__(self, app: Callable, *, policy: AccessPolicy, limiter: RateLimiter | None = None, admin_resolver: Callable[[str | None], AuthenticatedAdmin | None] = _admin_from_cookie) -> None:
         super().__init__(app)
         self.policy = policy
         self.limiter = limiter or RateLimiter()
         self.admin_resolver = admin_resolver
-        self.lab_user_resolver = lab_user_resolver
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
@@ -421,19 +402,15 @@ class AccessMiddleware(BaseHTTPMiddleware):
         return Identity(realm="admin", key=f"admin:{admin.platform_user_id}", roles=frozenset({admin.role}), admin=admin)
 
     def _identify_lab_user(self, rule: RouteRule, request: Request) -> Identity | Response:
-        raw_user, raw_tenant = request.headers.get("x-user-id"), request.headers.get("x-tenant-id")
-        if not raw_user or not raw_tenant:
-            return _deny(401, "missing principal headers")
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            return _deny(401, "sign in at /auth/login and send Authorization: Bearer <access token>", headers={"WWW-Authenticate": "Bearer"})
         try:
-            user_id, tenant_id = uuid.UUID(raw_user), uuid.UUID(raw_tenant)
-        except ValueError:
-            return _deny(401, "malformed principal headers")
-
-        user = self.lab_user_resolver(tenant_id, user_id)
-        if user is None or not user.is_active:
-            return _deny(401, "unknown or inactive user")
-        if not user.roles & rule.roles:
-            log.warning("access_refused", route=rule.id, realm="lab", roles=sorted(user.roles), user_id=str(user_id))
+            claims = verify_access_token(token.strip())
+        except TokenInvalid:
+            return _deny(401, "access token is invalid or expired; refresh it at /auth/refresh", headers={"WWW-Authenticate": 'Bearer error="invalid_token"'})
+        if not claims.roles & rule.roles:
+            log.warning("access_refused", route=rule.id, realm="lab", roles=sorted(claims.roles), user_id=str(claims.user_id))
             return _deny(403, f"this route requires one of: {', '.join(sorted(rule.roles))}")
-        principal = Principal(id=user_id, kind="app_user", tenant_id=tenant_id)
-        return Identity(realm="lab", key=f"user:{user_id}", roles=user.roles, principal=principal)
+        principal = Principal(id=claims.user_id, kind="app_user", tenant_id=claims.tenant_id)
+        return Identity(realm="lab", key=f"user:{claims.user_id}", roles=claims.roles, principal=principal)
