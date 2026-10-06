@@ -90,6 +90,7 @@ The middleware, in order:
 | Step | Refusal |
 |---|---|
 | Match the method and path to a `<route>`. Unlisted, or limited by `environments` to other deployments (the docs routes) | `404 Not Found` |
+| A write (anything but GET/HEAD/OPTIONS) to an `/admin` route whose `Origin`, or failing that `Referer`, is not this host or a `RADREPORT_TRUSTED_ORIGINS` entry. A request carrying neither header is a script, not a forged browser request, and passes | `403 cross-site request refused` |
 | Compare the declared `Content-Length` with `max-body-bytes` (a fast early refusal) | `413` |
 | Count the request against an IP-keyed rate limit | `429` with `Retry-After` |
 | Identify the caller for the route's realm (below) | `401`, or a `303` to `/admin/login` |

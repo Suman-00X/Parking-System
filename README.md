@@ -257,6 +257,7 @@ Settings are read from the environment and `.env`, prefixed `RADREPORT_`, with
 | `RADREPORT_ENVIRONMENT` | `local` / `test` / `development` serve the API docs (`/docs`, `/openapi.json`) and send the admin cookie without `Secure`. Anything else hides the docs and requires HTTPS for the cookie. |
 | `RADREPORT_STORAGE__*` | S3-compatible audio store; SSE-KMS in a real deployment. |
 | `RADREPORT_LAB_AUTH__TOKEN_SECRET` | Signs lab users' access tokens. **Required outside local/test/development** (32+ random characters); the app refuses to start without it. |
+| `RADREPORT_TRUSTED_ORIGINS` | JSON list of extra origins allowed to send admin writes, for a public hostname in front of a proxy, e.g. `["https://admin.example.com"]`. A cross-site admin write from anywhere else is refused (CSRF). |
 | `RADREPORT_SEED_ADMIN_PASSWORD` | Read only by `make seed`, to set the first product admin's password. |
 | `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, … | **Unprefixed, and not settings.** Each provider row names the variable it reads, so a second account is a second variable plus a second provider in the admin panel — no code change. |
 
