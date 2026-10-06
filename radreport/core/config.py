@@ -26,8 +26,8 @@ class DatabaseSettings(BaseModel):
     """How long a request waits for a free connection before failing, instead of queueing forever."""
 
     pool_recycle_seconds: int = 1800
-    echo: bool = False
-    """Log every statement. Meant for tests and local debugging only."""
+    echo: bool | None = None
+    """Log every statement. Unset means on in the test environment only."""
 
     slow_query_ms: float = Field(default=100.0, ge=0)
     """A statement slower than this is logged as slow_query, with its timing and the route that ran it."""

@@ -2,8 +2,8 @@
 
 Order: create_app assembles the app, refuses to start if the access policy disagrees with the
 routes or their parameters, and installs AccessMiddleware (who may call) in front of
-InputValidationMiddleware (with what); current_revision and head_revision report whether the
-database schema is up to date.
+InputValidationMiddleware (with what), all inside QueryMetricsMiddleware (how many statements);
+current_revision and head_revision report whether the database schema is up to date.
 """
 
 from __future__ import annotations
@@ -17,10 +17,11 @@ from sqlalchemy import text
 
 from radreport.api.access import AccessMiddleware, RateLimiter, load_policy, verify_coverage
 from radreport.api.input_check import InputValidationMiddleware, verify_params
-from radreport.api.routes import admin_api, admin_panel, auth, ga, ingest, onboarding, review, review_ui
+from radreport.api.routes import admin_api, admin_panel, auth, ga, ingest, onboarding, ops, review, review_ui
 from radreport.auth.lab import require_token_secret
 from radreport.core.config import get_settings
 from radreport.core.logging import configure_logging
+from radreport.db.instrumentation import QueryMetricsMiddleware
 from radreport.db.session import get_engine, system_session
 
 
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(ingest.router)
     app.include_router(admin_api.router)
+    app.include_router(ops.router)
     app.include_router(onboarding.router)
     app.include_router(review.router)
     app.include_router(review_ui.router)
@@ -89,6 +91,8 @@ def create_app() -> FastAPI:
     # Added last runs first: the caller is identified and authorized before any body is read.
     app.add_middleware(InputValidationMiddleware)
     app.add_middleware(AccessMiddleware, policy=policy, limiter=RateLimiter())
+    # Outermost, so the statements the access check itself runs are counted against the request too.
+    app.add_middleware(QueryMetricsMiddleware)
     return app
 
 

@@ -309,6 +309,7 @@
       <param name="new_password" in="json" type="string" required="true" max-length="1024"/>
     </route>
     <route id="admin.api.users.list" method="GET" path="/admin/api/users" roles="product_admin,support" rate-limit="admin-read"/>
+    <route id="admin.api.ops.queries" method="GET" path="/admin/api/ops/queries" roles="product_admin,support" rate-limit="admin-read" description="Statement timings and statements per request, for this worker."/>
     <route id="admin.api.users.create" method="POST" path="/admin/api/users" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
       <param name="display_name" in="json" type="string" required="true" max-length="200"/>
       <param name="email" in="json" type="string" required="true" pattern="[^@\s]{1,64}@[^@\s]{1,255}" max-length="320"/>

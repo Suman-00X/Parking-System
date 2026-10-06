@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from radreport.core.config import get_settings
 from radreport.core.errors import CrossTenantAccess, NoTenantContext
 from radreport.core.tenancy import PRINCIPAL_GUC, TENANT_GUC, Principal, current_tenant_id_or_none, tenant_scope
+from radreport.db import instrumentation
 
 #: `session.info` key naming the product admin acting through a session, if any.
 ACTING_PLATFORM_USER = "acting_platform_user_id"
@@ -27,7 +28,7 @@ ACTING_PLATFORM_USER = "acting_platform_user_id"
 def engine_options() -> dict[str, Any]:
     """The pool and driver options every engine is created with, from settings."""
     db = get_settings().db
-    options: dict[str, Any] = {"pool_pre_ping": True, "pool_size": db.pool_size, "max_overflow": db.max_overflow, "pool_timeout": db.pool_timeout_seconds, "pool_recycle": db.pool_recycle_seconds, "echo": db.echo, "future": True}
+    options: dict[str, Any] = {"pool_pre_ping": True, "pool_size": db.pool_size, "max_overflow": db.max_overflow, "pool_timeout": db.pool_timeout_seconds, "pool_recycle": db.pool_recycle_seconds, "echo": db.echo if db.echo is not None else get_settings().environment == "test", "future": True}
     if db.pgbouncer:
         # Transaction pooling hands each transaction any server connection, so a prepared statement may not exist there.
         options["connect_args"] = {"prepare_threshold": None}
@@ -36,6 +37,7 @@ def engine_options() -> dict[str, Any]:
 
 @lru_cache(maxsize=4)
 def get_engine(url: str | None = None) -> Engine:
+    instrumentation.install()
     # Tenant scope lives in `SET LOCAL`, so a connection handed back to the pool carries nothing.
     return create_engine(url or get_settings().database_url, **engine_options())
 

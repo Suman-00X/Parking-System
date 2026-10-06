@@ -9,7 +9,7 @@
 #               without FORCE — either would make the isolation tests pass
 #               vacuously)
 
-.PHONY: help install up down migrate migrate-owner revision seed seed-local admin admin-password \
+.PHONY: help install up down migrate migrate-owner revision seed seed-local admin admin-password pg-observe \
         run dev stop restart status logs test test-unit lint fmt check clean
 
 PORT ?= 8000
@@ -54,6 +54,11 @@ admin:  ## Create the first product admin interactively: make admin EMAIL=you@ex
 
 admin-password:  ## Set or reset an admin panel password: make admin-password EMAIL=you@example.com
 	.venv/bin/python -m radreport.admin.cli set-password --email $(EMAIL)
+
+pg-observe:  ## Turn on the slow-query log and pg_stat_statements (superuser; needs a Postgres restart)
+	psql "$(subst +psycopg,,$(OWNER_URL))" -f ops/postgres/observability.sql
+	psql "$(subst +psycopg,,$(OWNER_URL))" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements"
+	@echo "now restart Postgres, e.g. 'brew services restart postgresql@16' or 'docker compose restart db'"
 
 # ---------------------------------------------------------------- server ----
 dev:  ## Run the API in the foreground with auto-reload (Ctrl-C to stop)
