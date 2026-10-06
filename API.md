@@ -355,6 +355,9 @@ the list but change nothing.
 | POST | `/admin/api/users/{user_id}/deactivate` | `product_admin` | [`admin_api.py:335`](radreport/api/routes/admin_api.py#L335) |
 | POST | `/admin/api/users/{user_id}/reactivate` | `product_admin` | [`admin_api.py:341`](radreport/api/routes/admin_api.py#L341) |
 | POST | `/admin/api/users/{user_id}/password` | `product_admin` | [`admin_api.py:351`](radreport/api/routes/admin_api.py#L351) |
+| GET | `/admin/account` | `product_admin`, `support` — **HTML** | [`admin_panel.py`](radreport/api/routes/admin_panel.py) |
+| POST | `/admin/account/password` | `product_admin`, `support` | [`admin_panel.py`](radreport/api/routes/admin_panel.py) |
+| POST | `/admin/api/account/password` | `product_admin`, `support` | [`admin_api.py`](radreport/api/routes/admin_api.py) |
 
 Create takes `email`, `display_name`, `role` (`product_admin` \| `support`) and
 `password` (at least 12 characters) — as form fields on the page, as JSON on the
@@ -365,6 +368,10 @@ The rules live in [`admin/users.py`](radreport/admin/users.py):
 
 - **You cannot deactivate your own account**, and **you cannot deactivate the
   last active product admin** — add another first.
+- **Anyone may change their own password** — `support` included, since it is
+  their own account and not configuration — with `current_password` and
+  `new_password`. A wrong current password is refused (`403` on the API), and
+  the attempts share the sign-in rate limit.
 - **Deactivation and password reset end every live session** of that account.
   Resetting your own password from the panel signs you out and sends you back to
   the login page.
