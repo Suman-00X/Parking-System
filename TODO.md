@@ -13,14 +13,6 @@ in 0004–0007 are the pattern), and a constraint named in full is wrapped in
 
 ---
 
-## Review UI sign-in
-
-Lab users now sign in at `POST /auth/login` and send `Authorization: Bearer
-<token>` (done 2026-10-06; see `radreport/auth/lab.py`). The review screens under
-`/ui/*` are opened by a browser, which cannot attach that header, so they still
-cannot be used without a client that does. Needs a browser sign-in page that keeps
-the tokens safely (httponly cookies, with an Origin check against CSRF).
-
 ## Throughput rate limits are per worker
 
 The sign-in limits are shared in Postgres (done 2026-10-07). The throughput limits

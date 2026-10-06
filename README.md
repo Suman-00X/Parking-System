@@ -227,8 +227,9 @@ Lab staff sign in with `POST /auth/login` (`{"lab": "<slug>", "email", "password
 and send `Authorization: Bearer <access token>` on every lab request. Access tokens
 last 15 minutes and are checked without a database hit; refresh tokens last 14
 days, are single-use, stored only as hashes, and a replayed one revokes that whole
-sign-in. A product admin sets a lab user's first password from the lab's page in
-the admin panel. Admins keep server-side sessions instead: they are few, use only
+sign-in. In a browser, `/ui/login` keeps the same tokens in httponly cookies and
+renews them silently. A product admin sets a lab user's first password from the
+lab's page in the admin panel. Admins keep server-side sessions instead: they are few, use only
 a browser, and need revocation to be instant.
 
 ### Who may call what

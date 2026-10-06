@@ -196,6 +196,13 @@ Authorization: Bearer <access_token>      on every lab-realm request
   access tokens at once; an access token already issued keeps working until it
   expires, at most 15 minutes. That is the price of not hitting the database on
   every request.
+- **From a browser:** `/ui/login` is a sign-in form that keeps the same two tokens
+  in `httponly` cookies — the access token site-wide, the refresh token sent only
+  to `/ui`. A review page whose access cookie has expired goes to `/ui/refresh`,
+  which renews the pair and sends the browser back, or to `/ui/login` if it
+  cannot; `POST /ui/logout` ends the sign-in. Writes authenticated by the cookie
+  get the same cross-site `Origin` check as the admin panel, and `next=` only
+  ever points at a `/ui/...` page.
 - **Every failed sign-in answers the same `401 invalid lab, email or password`**,
   whether the lab, the email or the password was wrong, and takes the same time.
 - The signing secret is `RADREPORT_LAB_AUTH__TOKEN_SECRET`. Outside
@@ -1329,10 +1336,6 @@ Role shorthand: **PA** `product_admin`, **S** `support`, **R** `radiologist`,
 
 Things a client developer will look for and not find, in the phase where they
 will look.
-
-**Everywhere — the review screen has no sign-in page.** Lab users sign in through
-`POST /auth/login` and send a bearer token, which a plain browser opening `/ui/*`
-cannot do yet.
 
 **Everywhere — throughput limits are per worker.** Only the sign-in limits are
 shared; with *n* workers the others allow up to *n* times their figure, and a
