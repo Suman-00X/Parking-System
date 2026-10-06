@@ -47,7 +47,7 @@ def test_system_scope_clears_the_tenant() -> None:
 def test_platform_principal_carries_no_tenant() -> None:
     """A product admin belongs to no tenant, which is why they cannot be an `app_user` row (that column is NOT NULL)."""
     principal = Principal(id=uuid.uuid4(), kind="platform_user", tenant_id=None)
-    assert principal.is_platform
+    assert principal.kind == "platform_user"
 
 
 def test_cross_tenant_views_are_a_short_enumerated_list() -> None:

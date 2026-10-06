@@ -1,7 +1,8 @@
 """Adding and retiring the product admins and support accounts who sign in to the admin panel.
 
 Order: list who has access (list_platform_users) -> add an account (create_platform_user) ->
-switch one off or back on (set_active) -> replace a password (reset_password).
+switch one off or back on (set_active) -> replace a password (reset_password), or your own
+(change_own_password).
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from radreport.admin.auth import hash_password, revoke_all_sessions, set_password
+from radreport.admin.auth import hash_password, revoke_all_sessions, set_password, verify_password
 from radreport.core.logging import get_logger
 from radreport.core.types import ActorType, PlatformRole
 from radreport.db.models.orchestration import AuditLog
@@ -95,5 +96,18 @@ def reset_password(session: Session, *, user_id: uuid.UUID, password: str, actor
         raise UserChangeRefused("not_found", f"no platform user {user_id}")
     try:
         return set_password(session, email=user.email, password=password, actor_id=actor_id)
+    except ValueError as exc:
+        raise UserChangeRefused("weak_password", str(exc)) from exc
+
+
+def change_own_password(session: Session, *, user_id: uuid.UUID, current: str, new: str) -> PlatformUser:
+    """An admin replaces their own password, proving the current one first; every session ends."""
+    user = session.get(PlatformUser, user_id)
+    if user is None or not verify_password(current, user.password_hash):
+        raise UserChangeRefused("wrong_password", "your current password is wrong")
+    if current == new:
+        raise UserChangeRefused("same_password", "choose a password different from the current one")
+    try:
+        return set_password(session, email=user.email, password=new, actor_id=user.id)
     except ValueError as exc:
         raise UserChangeRefused("weak_password", str(exc)) from exc

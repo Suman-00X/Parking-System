@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, Index, String, Text, text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, PrimaryKeyConstraint, String, Text, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -82,6 +82,19 @@ class AdminSession(Base):
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
     ip_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     """Recorded for the audit trail, not for authorisation."""
+
+
+class RateLimitCounter(Base):
+    """Requests counted per (limit, caller, window), shared by every worker for the limits that need it."""
+
+    __tablename__ = "rate_limit_counter"
+    # UNLOGGED: a count that is lost in a crash only resets some limits; skipping the WAL keeps each hit cheap.
+    __table_args__ = (PrimaryKeyConstraint("limit_id", "who", "window_start"), Index("ix_rate_limit_counter_window", "window_start"), {"prefixes": ["UNLOGGED"]})
+
+    limit_id: Mapped[str] = mapped_column(Text, nullable=False)
+    who: Mapped[str] = mapped_column(Text, nullable=False)
+    window_start: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hits: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
 
 
 class TrainingConsentEventLog(Base):

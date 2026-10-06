@@ -14,7 +14,7 @@ import uuid
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, DateTime, ForeignKeyConstraint, Index, Integer, Numeric, SmallInteger, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, Numeric, SmallInteger, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -37,6 +37,9 @@ class ImportBatch(Base, TenantScoped, TimestampMixin):
 
     status: Mapped[str] = mapped_column(String(24), nullable=False, server_default=ImportStatus.UPLOADING)
     submitted_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    submitted_by_platform_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("platform_user.id", ondelete="RESTRICT"), nullable=True)
+    """Set instead of `submitted_by` when a product admin ran the step from the admin panel."""
+
     approved_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     """Approval is a clinical act."""
 

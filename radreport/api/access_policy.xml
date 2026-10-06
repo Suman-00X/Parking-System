@@ -1,17 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Who may call which route. Read once at startup by radreport/api/access.py; every
-  request is checked against it before any route handler runs.
+  Who may call which route, and with exactly which parameters. Read once at startup by
+  radreport/api/access.py; every request is checked against it before any route handler runs.
 
-  - A route that is not listed here is refused (404), and the app refuses to start
-    if it serves a route this file does not list, or lists one it does not serve.
+  - A route not listed here is refused (404). The app refuses to start if it serves a route this
+    file does not list, lists one it does not serve, or a handler accepts a parameter that its
+    route here does not declare (or the reverse).
   - realm="public": no sign-in. realm="admin": the admin panel's session cookie.
-    realm="lab": a lab user (currently the X-User-Id / X-Tenant-Id headers).
-  - <allow role="..."/> names each role that may call the route; a role must belong
-    to the route's realm. Handlers keep their own finer checks on top of this.
-  - rate-limit names a <rate-limit>; its counter is shared by every route that uses
-    it, per caller (key="principal") or per client address (key="ip").
-  - max-body-bytes refuses a larger declared Content-Length with 413.
+    realm="lab": a lab user's bearer access token, from POST /auth/login.
+  - roles="a,b": the roles that may call the route, comma-separated; each must belong to the
+    route's realm. Handlers keep their own finer checks on top of this.
+  - <param>: one accepted parameter. in= path | query | form | file | json (a top-level key of a
+    JSON object body). type= string | uuid | int | number | bool | object | array | file.
+    required="true" makes it mandatory. pattern= must match the whole value. max-length= is
+    characters for a string, items for an array, files for a file. A string with no max-length
+    gets 2000. Anything undeclared, repeated, malformed or missing is refused with 400, before
+    the handler runs; the error names the parameter but never repeats its value.
+  - rate-limit names a <rate-limit>; its counter is shared by every route that uses it, per
+    caller (key="principal") or per client address (key="ip"). store="shared" keeps the count
+    in Postgres (an unlogged table, one upsert per request) so it holds across every worker and
+    restart; store="memory", the default when omitted, counts in each worker's own memory.
+  - max-body-bytes caps the request body (413); it is counted as the body arrives, so a body
+    sent without a Content-Length is capped too. A route without it may carry at most 64 KiB.
   - environments limits a route to those deployment environments; elsewhere it 404s.
 -->
 <access-policy version="1">
@@ -26,351 +36,458 @@
   </roles>
 
   <rate-limits>
-    <rate-limit id="login" requests="5" window-seconds="60" key="ip"/>
-    <rate-limit id="public" requests="120" window-seconds="60" key="ip"/>
-    <rate-limit id="admin-read" requests="300" window-seconds="60" key="principal"/>
-    <rate-limit id="admin-write" requests="60" window-seconds="60" key="principal"/>
-    <rate-limit id="admin-upload" requests="10" window-seconds="60" key="principal"/>
-    <rate-limit id="lab-read" requests="300" window-seconds="60" key="principal"/>
-    <rate-limit id="lab-write" requests="120" window-seconds="60" key="principal"/>
-    <rate-limit id="lab-upload" requests="30" window-seconds="60" key="principal"/>
+    <rate-limit id="login" requests="5" window-seconds="60" key="ip" store="shared"/>
+    <rate-limit id="public" requests="120" window-seconds="60" key="ip" store="shared"/>
+    <rate-limit id="admin-read" requests="300" window-seconds="60" key="principal" store="shared"/>
+    <rate-limit id="admin-write" requests="60" window-seconds="60" key="principal" store="shared"/>
+    <rate-limit id="admin-upload" requests="10" window-seconds="60" key="principal" store="shared"/>
+    <rate-limit id="lab-read" requests="300" window-seconds="60" key="principal" store="shared"/>
+    <rate-limit id="lab-write" requests="120" window-seconds="60" key="principal" store="shared"/>
+    <rate-limit id="lab-upload" requests="30" window-seconds="60" key="principal" store="shared"/>
+    <rate-limit id="token-refresh" requests="30" window-seconds="60" key="ip" store="shared"/>
   </rate-limits>
 
-  <!-- ============================================================ public -->
+  <!-- ====================================================== public -->
   <routes realm="public">
     <route id="ops.health" method="GET" path="/health" rate-limit="public" description="Liveness."/>
     <route id="ops.ready" method="GET" path="/ready" rate-limit="public" description="Readiness of dependencies."/>
-    <route id="ui.static" method="GET" path="/ui/static/{name}" rate-limit="public" description="Stylesheets and scripts."/>
+    <route id="ui.static" method="GET" path="/ui/static/{name}" rate-limit="public" description="Stylesheets and scripts.">
+      <param name="name" in="path" type="string" required="true" pattern="review\.(js|css)" max-length="200"/>
+    </route>
     <route id="docs.openapi" method="GET" path="/openapi.json" rate-limit="public" environments="local test development"/>
     <route id="docs.swagger" method="GET" path="/docs" rate-limit="public" environments="local test development"/>
     <route id="docs.swagger-redirect" method="GET" path="/docs/oauth2-redirect" rate-limit="public" environments="local test development"/>
     <route id="docs.redoc" method="GET" path="/redoc" rate-limit="public" environments="local test development"/>
-    <route id="admin.login.page" method="GET" path="/admin/login" rate-limit="public" description="Admin panel sign-in form."/>
-    <route id="admin.login" method="POST" path="/admin/login" rate-limit="login" max-body-bytes="4096" description="Admin panel sign-in."/>
+    <route id="admin.login.page" method="GET" path="/admin/login" rate-limit="public" description="Admin panel sign-in form.">
+      <param name="error" in="query" type="string" max-length="500"/>
+    </route>
+    <route id="admin.login" method="POST" path="/admin/login" rate-limit="login" max-body-bytes="4096" description="Admin panel sign-in.">
+      <param name="email" in="form" type="string" required="true" pattern="[^@\s]{1,64}@[^@\s]{1,255}" max-length="320"/>
+      <param name="password" in="form" type="string" required="true" max-length="1024"/>
+    </route>
+    <route id="auth.login" method="POST" path="/auth/login" rate-limit="login" max-body-bytes="4096" description="Lab user sign-in; returns an access token and a refresh token.">
+      <param name="lab" in="json" type="string" required="true" pattern="[a-z0-9][a-z0-9-]{1,62}"/>
+      <param name="email" in="json" type="string" required="true" pattern="[^@\s]{1,64}@[^@\s]{1,255}" max-length="320"/>
+      <param name="password" in="json" type="string" required="true" max-length="1024"/>
+    </route>
+    <route id="auth.refresh" method="POST" path="/auth/refresh" rate-limit="token-refresh" max-body-bytes="4096" description="Trade a refresh token for a new pair.">
+      <param name="refresh_token" in="json" type="string" required="true" pattern="[0-9a-fA-F\-]{36}\.[A-Za-z0-9_\-]{32,100}" max-length="140"/>
+    </route>
+    <route id="auth.logout" method="POST" path="/auth/logout" rate-limit="token-refresh" max-body-bytes="4096" description="End the sign-in a refresh token belongs to.">
+      <param name="refresh_token" in="json" type="string" required="true" pattern="[0-9a-fA-F\-]{36}\.[A-Za-z0-9_\-]{32,100}" max-length="140"/>
+    </route>
+    <route id="ui.login.page" method="GET" path="/ui/login" rate-limit="public" description="Lab user browser sign-in form.">
+      <param name="error" in="query" type="string" max-length="500"/>
+      <param name="next" in="query" type="string" pattern="/ui/[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*" max-length="300"/>
+    </route>
+    <route id="ui.login" method="POST" path="/ui/login" rate-limit="login" max-body-bytes="4096" description="Lab user browser sign-in; sets httponly token cookies.">
+      <param name="lab" in="form" type="string" required="true" pattern="[a-z0-9][a-z0-9-]{1,62}"/>
+      <param name="email" in="form" type="string" required="true" pattern="[^@\s]{1,64}@[^@\s]{1,255}" max-length="320"/>
+      <param name="password" in="form" type="string" required="true" max-length="1024"/>
+      <param name="next" in="form" type="string" pattern="/ui/[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*" max-length="300"/>
+    </route>
+    <route id="ui.refresh" method="GET" path="/ui/refresh" rate-limit="token-refresh" description="Renew the browser's token cookies from its refresh cookie.">
+      <param name="next" in="query" type="string" pattern="/ui/[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*" max-length="300"/>
+    </route>
+    <route id="ui.logout" method="POST" path="/ui/logout" rate-limit="token-refresh" max-body-bytes="4096" description="End the browser's sign-in."/>
     <route id="admin.logout" method="POST" path="/admin/logout" rate-limit="public" max-body-bytes="4096" description="Admin panel sign-out; harmless without a session."/>
   </routes>
 
-  <!-- ============================================== admin panel (HTML) -->
+  <!-- ========================================== admin panel (HTML) -->
   <routes realm="admin">
-    <route id="admin.home" method="GET" path="/admin" rate-limit="admin-read">
-      <allow role="product_admin"/>
-      <allow role="support"/>
+    <route id="admin.home" method="GET" path="/admin" roles="product_admin,support" rate-limit="admin-read"/>
+    <route id="admin.labs.page" method="GET" path="/admin/labs" roles="product_admin,support" rate-limit="admin-read">
+      <param name="error" in="query" type="string" max-length="500"/>
+      <param name="notice" in="query" type="string" max-length="500"/>
+      <param name="show" in="query" type="string" pattern="all"/>
     </route>
-    <route id="admin.labs.page" method="GET" path="/admin/labs" rate-limit="admin-read">
-      <allow role="product_admin"/>
-      <allow role="support"/>
+    <route id="admin.labs.create" method="POST" path="/admin/labs" roles="product_admin" rate-limit="admin-write" max-body-bytes="65536">
+      <param name="admin_display_name" in="form" type="string" required="true" max-length="200"/>
+      <param name="admin_email" in="form" type="string" required="true" pattern="[^@\s]{1,64}@[^@\s]{1,255}" max-length="320"/>
+      <param name="admin_employee_code" in="form" type="string" required="true" max-length="64"/>
+      <param name="name" in="form" type="string" required="true" max-length="200"/>
+      <param name="patient_notice_version" in="form" type="string" max-length="500"/>
+      <param name="slug" in="form" type="string" required="true" pattern="[a-z0-9][a-z0-9-]{1,62}"/>
+      <param name="training_consent_ref" in="form" type="string" max-length="500"/>
+      <param name="training_pooling_consent" in="form" type="string" pattern="1|on|true"/>
     </route>
-    <route id="admin.labs.create" method="POST" path="/admin/labs" rate-limit="admin-write" max-body-bytes="65536">
-      <allow role="product_admin"/>
+    <route id="admin.lab.page" method="GET" path="/admin/labs/{tenant_id}" roles="product_admin,support" rate-limit="admin-read">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="error" in="query" type="string" max-length="500"/>
+      <param name="notice" in="query" type="string" max-length="500"/>
     </route>
-    <route id="admin.lab.page" method="GET" path="/admin/labs/{tenant_id}" rate-limit="admin-read">
-      <allow role="product_admin"/>
-      <allow role="support"/>
+    <route id="admin.lab.user.password" method="POST" path="/admin/labs/{tenant_id}/users/{user_id}/password" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="user_id" in="path" type="uuid" required="true"/>
+      <param name="password" in="form" type="string" required="true" max-length="1024"/>
     </route>
-    <route id="admin.lab.readiness.page" method="GET" path="/admin/labs/{tenant_id}/readiness" rate-limit="admin-read">
-      <allow role="product_admin"/>
-      <allow role="support"/>
+    <route id="admin.lab.readiness.page" method="GET" path="/admin/labs/{tenant_id}/readiness" roles="product_admin,support" rate-limit="admin-read">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.lab.status" method="POST" path="/admin/labs/{tenant_id}/status" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.lab.status" method="POST" path="/admin/labs/{tenant_id}/status" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="status" in="form" type="string" required="true" pattern="provisioning|onboarding|pilot|live|suspended|offboarded"/>
     </route>
-    <route id="admin.lab.assign" method="POST" path="/admin/labs/{tenant_id}/assign" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.lab.assign" method="POST" path="/admin/labs/{tenant_id}/assign" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="model_definition_id" in="form" type="uuid" required="true"/>
+      <param name="task_key" in="form" type="string" required="true" pattern="asr_primary|asr_secondary|extraction|self_correction|verification|routing_pick|utterance_classification|routing_shortlist|roundtrip_check|compose"/>
     </route>
-    <route id="admin.lab.assignment.activate" method="POST" path="/admin/labs/{tenant_id}/assignments/{assignment_id}/activate" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.lab.assignment.activate" method="POST" path="/admin/labs/{tenant_id}/assignments/{assignment_id}/activate" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="assignment_id" in="path" type="uuid" required="true"/>
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.lab.onboarding.page" method="GET" path="/admin/labs/{tenant_id}/onboarding" rate-limit="admin-read">
-      <allow role="product_admin"/>
-      <allow role="support"/>
+    <route id="admin.lab.onboarding.page" method="GET" path="/admin/labs/{tenant_id}/onboarding" roles="product_admin,support" rate-limit="admin-read">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="error" in="query" type="string" max-length="500"/>
+      <param name="notice" in="query" type="string" max-length="500"/>
     </route>
-    <route id="admin.lab.onboarding.roster" method="POST" path="/admin/labs/{tenant_id}/onboarding/roster" rate-limit="admin-upload" max-body-bytes="52428800">
-      <allow role="product_admin"/>
+    <route id="admin.lab.onboarding.roster" method="POST" path="/admin/labs/{tenant_id}/onboarding/roster" roles="product_admin" rate-limit="admin-upload" max-body-bytes="52428800">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="file" in="file" type="file" required="true"/>
     </route>
-    <route id="admin.lab.onboarding.templates" method="POST" path="/admin/labs/{tenant_id}/onboarding/templates" rate-limit="admin-upload" max-body-bytes="52428800">
-      <allow role="product_admin"/>
+    <route id="admin.lab.onboarding.templates" method="POST" path="/admin/labs/{tenant_id}/onboarding/templates" roles="product_admin" rate-limit="admin-upload" max-body-bytes="52428800">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="files" in="file" type="file" required="true" multiple="true" max-length="200"/>
     </route>
-    <route id="admin.lab.onboarding.merge-proposals" method="POST" path="/admin/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.lab.onboarding.corpus" method="POST" path="/admin/labs/{tenant_id}/onboarding/corpus" roles="product_admin" rate-limit="admin-upload" max-body-bytes="104857600">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="file" in="file" type="file" required="true"/>
     </route>
-    <route id="admin.lab.onboarding.step" method="POST" path="/admin/labs/{tenant_id}/onboarding/steps/{step}" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.lab.onboarding.merge-proposals" method="POST" path="/admin/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="batch_id" in="path" type="uuid" required="true"/>
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.providers.page" method="GET" path="/admin/providers" rate-limit="admin-read">
-      <allow role="product_admin"/>
-      <allow role="support"/>
+    <route id="admin.lab.onboarding.step" method="POST" path="/admin/labs/{tenant_id}/onboarding/steps/{step}" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="step" in="path" type="string" required="true" pattern="derive\-map|lexicon\-mine|collision\-audit|mine\-variants|boilerplate\-mine|critical\-rules\-seed|acceptance\-assemble|acceptance\-freeze"/>
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="min_frequency" in="form" type="int" pattern="[1-9]\d{0,3}"/>
+      <param name="verified_only" in="form" type="string" pattern="1|on|true"/>
     </route>
-    <route id="admin.providers.create" method="POST" path="/admin/providers" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.providers.page" method="GET" path="/admin/providers" roles="product_admin,support" rate-limit="admin-read">
+      <param name="error" in="query" type="string" max-length="500"/>
+      <param name="notice" in="query" type="string" max-length="500"/>
     </route>
-    <route id="admin.models.create" method="POST" path="/admin/models" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.providers.create" method="POST" path="/admin/providers" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="api_key_env_var" in="form" type="string" pattern="[A-Z_][A-Z0-9_]{0,127}"/>
+      <param name="default_endpoint" in="form" type="string" pattern="https?://\S{1,2040}" max-length="2048"/>
+      <param name="kind" in="form" type="string" required="true" pattern="cloud_api|local_openai_compatible"/>
+      <param name="name" in="form" type="string" required="true" max-length="200"/>
     </route>
-    <route id="admin.users.page" method="GET" path="/admin/users" rate-limit="admin-read">
-      <allow role="product_admin"/>
-      <allow role="support"/>
+    <route id="admin.models.create" method="POST" path="/admin/models" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="display_name" in="form" type="string" required="true" max-length="200"/>
+      <param name="endpoint_override" in="form" type="string" pattern="https?://\S{1,2040}" max-length="2048"/>
+      <param name="model_identifier" in="form" type="string" required="true" pattern="[A-Za-z0-9._:/\-]{1,200}"/>
+      <param name="provider_id" in="form" type="uuid" required="true"/>
     </route>
-    <route id="admin.users.create" method="POST" path="/admin/users" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.users.page" method="GET" path="/admin/users" roles="product_admin,support" rate-limit="admin-read">
+      <param name="error" in="query" type="string" max-length="500"/>
+      <param name="notice" in="query" type="string" max-length="500"/>
     </route>
-    <route id="admin.user.deactivate" method="POST" path="/admin/users/{user_id}/deactivate" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.users.create" method="POST" path="/admin/users" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="display_name" in="form" type="string" required="true" max-length="200"/>
+      <param name="email" in="form" type="string" required="true" pattern="[^@\s]{1,64}@[^@\s]{1,255}" max-length="320"/>
+      <param name="password" in="form" type="string" required="true" max-length="1024"/>
+      <param name="role" in="form" type="string" required="true" pattern="product_admin|support"/>
     </route>
-    <route id="admin.user.reactivate" method="POST" path="/admin/users/{user_id}/reactivate" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.user.deactivate" method="POST" path="/admin/users/{user_id}/deactivate" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="user_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.user.password" method="POST" path="/admin/users/{user_id}/password" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.user.reactivate" method="POST" path="/admin/users/{user_id}/reactivate" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="user_id" in="path" type="uuid" required="true"/>
+    </route>
+    <route id="admin.user.password" method="POST" path="/admin/users/{user_id}/password" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="user_id" in="path" type="uuid" required="true"/>
+      <param name="password" in="form" type="string" required="true" max-length="1024"/>
+    </route>
+    <route id="admin.account.page" method="GET" path="/admin/account" roles="product_admin,support" rate-limit="admin-read">
+      <param name="error" in="query" type="string" max-length="500"/>
+    </route>
+    <route id="admin.account.password" method="POST" path="/admin/account/password" roles="product_admin,support" rate-limit="login" max-body-bytes="4096" description="Change your own password; needs the current one.">
+      <param name="current_password" in="form" type="string" required="true" max-length="1024"/>
+      <param name="new_password" in="form" type="string" required="true" max-length="1024"/>
     </route>
   </routes>
 
-  <!-- ============================================== admin panel (JSON) -->
+  <!-- ========================================== admin panel (JSON) -->
   <routes realm="admin">
-    <route id="admin.api.labs.list" method="GET" path="/admin/api/labs" rate-limit="admin-read">
-      <allow role="product_admin"/>
-      <allow role="support"/>
+    <route id="admin.api.labs.list" method="GET" path="/admin/api/labs" roles="product_admin,support" rate-limit="admin-read"/>
+    <route id="admin.api.labs.create" method="POST" path="/admin/api/labs" roles="product_admin" rate-limit="admin-write" max-body-bytes="65536">
+      <param name="admin_display_name" in="json" type="string" required="true" max-length="200"/>
+      <param name="admin_email" in="json" type="string" required="true" pattern="[^@\s]{1,64}@[^@\s]{1,255}" max-length="320"/>
+      <param name="admin_employee_code" in="json" type="string" required="true" max-length="64"/>
+      <param name="name" in="json" type="string" required="true" max-length="200"/>
+      <param name="patient_notice_version" in="json" type="string" max-length="500"/>
+      <param name="slug" in="json" type="string" required="true" pattern="[a-z0-9][a-z0-9-]{1,62}"/>
+      <param name="training_consent_ref" in="json" type="string" max-length="500"/>
+      <param name="training_pooling_consent" in="json" type="bool" pattern="1|on|true"/>
     </route>
-    <route id="admin.api.labs.create" method="POST" path="/admin/api/labs" rate-limit="admin-write" max-body-bytes="65536">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.readiness" method="GET" path="/admin/api/labs/{tenant_id}/readiness" roles="product_admin,support" rate-limit="admin-read">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.api.lab.readiness" method="GET" path="/admin/api/labs/{tenant_id}/readiness" rate-limit="admin-read">
-      <allow role="product_admin"/>
-      <allow role="support"/>
+    <route id="admin.api.lab.status" method="POST" path="/admin/api/labs/{tenant_id}/status" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="status" in="json" type="string" required="true" pattern="provisioning|onboarding|pilot|live|suspended|offboarded"/>
     </route>
-    <route id="admin.api.lab.status" method="POST" path="/admin/api/labs/{tenant_id}/status" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.steps" method="GET" path="/admin/api/labs/{tenant_id}/steps" roles="product_admin,support" rate-limit="admin-read">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.api.lab.steps" method="GET" path="/admin/api/labs/{tenant_id}/steps" rate-limit="admin-read">
-      <allow role="product_admin"/>
-      <allow role="support"/>
+    <route id="admin.api.lab.assignments.propose" method="POST" path="/admin/api/labs/{tenant_id}/assignments" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="model_definition_id" in="json" type="uuid" required="true"/>
+      <param name="task_key" in="json" type="string" required="true" pattern="asr_primary|asr_secondary|extraction|self_correction|verification|routing_pick|utterance_classification|routing_shortlist|roundtrip_check|compose"/>
     </route>
-    <route id="admin.api.lab.assignments.propose" method="POST" path="/admin/api/labs/{tenant_id}/assignments" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.assignment.activate" method="POST" path="/admin/api/labs/{tenant_id}/assignments/{assignment_id}/activate" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="assignment_id" in="path" type="uuid" required="true"/>
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.api.lab.assignment.activate" method="POST" path="/admin/api/labs/{tenant_id}/assignments/{assignment_id}/activate" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.onboarding.status" method="GET" path="/admin/api/labs/{tenant_id}/onboarding" roles="product_admin,support" rate-limit="admin-read">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.api.lab.onboarding.status" method="GET" path="/admin/api/labs/{tenant_id}/onboarding" rate-limit="admin-read">
-      <allow role="product_admin"/>
-      <allow role="support"/>
+    <route id="admin.api.lab.onboarding.roster" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/roster" roles="product_admin" rate-limit="admin-upload" max-body-bytes="52428800">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="trigger" in="form" type="string" pattern="initial_onboarding|template_change|new_radiologist|periodic_remine|site_expansion"/>
+      <param name="file" in="file" type="file" required="true"/>
     </route>
-    <route id="admin.api.lab.onboarding.roster" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/roster" rate-limit="admin-upload" max-body-bytes="52428800">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.onboarding.templates" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/templates" roles="product_admin" rate-limit="admin-upload" max-body-bytes="52428800">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="trigger" in="form" type="string" pattern="initial_onboarding|template_change|new_radiologist|periodic_remine|site_expansion"/>
+      <param name="files" in="file" type="file" required="true" multiple="true" max-length="200"/>
     </route>
-    <route id="admin.api.lab.onboarding.templates" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/templates" rate-limit="admin-upload" max-body-bytes="52428800">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.onboarding.corpus" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/corpus" roles="product_admin" rate-limit="admin-upload" max-body-bytes="104857600">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="records" in="json" type="array" required="true" max-length="100000"/>
+      <param name="trigger" in="json" type="string" pattern="initial_onboarding|template_change|new_radiologist|periodic_remine|site_expansion"/>
     </route>
-    <route id="admin.api.lab.onboarding.corpus" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/corpus" rate-limit="admin-upload" max-body-bytes="104857600">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.onboarding.merge-proposals" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="batch_id" in="path" type="uuid" required="true"/>
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.api.lab.onboarding.merge-proposals" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.onboarding.step" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/steps/{step}" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="step" in="path" type="string" required="true" pattern="derive\-map|lexicon\-mine|collision\-audit|mine\-variants|boilerplate\-mine|critical\-rules\-seed|acceptance\-assemble|acceptance\-freeze"/>
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="min_frequency" in="json" type="int" pattern="[1-9]\d{0,3}"/>
+      <param name="verified_only" in="json" type="bool"/>
     </route>
-    <route id="admin.api.lab.onboarding.step" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/steps/{step}" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.users" method="GET" path="/admin/api/labs/{tenant_id}/users" roles="product_admin,support" rate-limit="admin-read">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.api.lab.autonomy.read" method="GET" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}" rate-limit="admin-read">
-      <allow role="product_admin"/>
-      <allow role="support"/>
+    <route id="admin.api.lab.user.password" method="POST" path="/admin/api/labs/{tenant_id}/users/{user_id}/password" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="user_id" in="path" type="uuid" required="true"/>
+      <param name="password" in="json" type="string" required="true" max-length="1024"/>
     </route>
-    <route id="admin.api.lab.autonomy.open-accrual" method="POST" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}/open-accrual" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.autonomy.read" method="GET" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}" roles="product_admin,support" rate-limit="admin-read">
+      <param name="class_code" in="path" type="string" required="true" pattern="[A-Za-z0-9_.\-]{1,64}"/>
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.api.lab.autonomy.grant" method="POST" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}/grant" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.autonomy.open-accrual" method="POST" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}/open-accrual" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="class_code" in="path" type="string" required="true" pattern="[A-Za-z0-9_.\-]{1,64}"/>
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.api.lab.autonomy.revoke" method="POST" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}/revoke" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.autonomy.grant" method="POST" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}/grant" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="class_code" in="path" type="string" required="true" pattern="[A-Za-z0-9_.\-]{1,64}"/>
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.api.lab.adaptation.gates" method="POST" path="/admin/api/labs/{tenant_id}/adaptation/gates" rate-limit="admin-write" max-body-bytes="1048576">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.autonomy.revoke" method="POST" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}/revoke" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="class_code" in="path" type="string" required="true" pattern="[A-Za-z0-9_.\-]{1,64}"/>
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="reason" in="json" type="string" required="true" max-length="500"/>
     </route>
-    <route id="admin.api.lab.adaptation.require-gates" method="POST" path="/admin/api/labs/{tenant_id}/adaptation/require-gates" rate-limit="admin-write" max-body-bytes="1048576">
-      <allow role="product_admin"/>
+    <route id="admin.api.lab.adaptation.gates" method="POST" path="/admin/api/labs/{tenant_id}/adaptation/gates" roles="product_admin" rate-limit="admin-write" max-body-bytes="1048576">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="recording_ids" in="json" type="array" required="true" max-length="100000"/>
+      <param name="target" in="json" type="string" pattern="asr_global|asr_speaker|utterance_classifier|router"/>
     </route>
-    <route id="admin.api.users.list" method="GET" path="/admin/api/users" rate-limit="admin-read">
-      <allow role="product_admin"/>
-      <allow role="support"/>
+    <route id="admin.api.lab.adaptation.require-gates" method="POST" path="/admin/api/labs/{tenant_id}/adaptation/require-gates" roles="product_admin" rate-limit="admin-write" max-body-bytes="1048576">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="recording_ids" in="json" type="array" required="true" max-length="100000"/>
+      <param name="target" in="json" type="string" pattern="asr_global|asr_speaker|utterance_classifier|router"/>
     </route>
-    <route id="admin.api.users.create" method="POST" path="/admin/api/users" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.api.account.password" method="POST" path="/admin/api/account/password" roles="product_admin,support" rate-limit="login" max-body-bytes="4096" description="Change your own password; needs the current one.">
+      <param name="current_password" in="json" type="string" required="true" max-length="1024"/>
+      <param name="new_password" in="json" type="string" required="true" max-length="1024"/>
     </route>
-    <route id="admin.api.user.deactivate" method="POST" path="/admin/api/users/{user_id}/deactivate" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.api.users.list" method="GET" path="/admin/api/users" roles="product_admin,support" rate-limit="admin-read"/>
+    <route id="admin.api.users.create" method="POST" path="/admin/api/users" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="display_name" in="json" type="string" required="true" max-length="200"/>
+      <param name="email" in="json" type="string" required="true" pattern="[^@\s]{1,64}@[^@\s]{1,255}" max-length="320"/>
+      <param name="password" in="json" type="string" required="true" max-length="1024"/>
+      <param name="role" in="json" type="string" required="true" pattern="product_admin|support"/>
     </route>
-    <route id="admin.api.user.reactivate" method="POST" path="/admin/api/users/{user_id}/reactivate" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.api.user.deactivate" method="POST" path="/admin/api/users/{user_id}/deactivate" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="user_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="admin.api.user.password" method="POST" path="/admin/api/users/{user_id}/password" rate-limit="admin-write" max-body-bytes="4096">
-      <allow role="product_admin"/>
+    <route id="admin.api.user.reactivate" method="POST" path="/admin/api/users/{user_id}/reactivate" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="user_id" in="path" type="uuid" required="true"/>
     </route>
-  </routes>
-
-  <!-- ======================================================== ingest -->
-  <routes realm="lab">
-    <route id="ingest.recording" method="POST" path="/ingest/recordings" rate-limit="lab-upload" max-body-bytes="536870912">
-      <allow role="radiologist"/>
-      <allow role="lab_admin"/>
-    </route>
-  </routes>
-
-  <!-- ========================================= onboarding (lab side) -->
-  <routes realm="lab">
-    <route id="onboarding.voice-enrollment" method="POST" path="/onboarding/radiologists/{radiologist_id}/voice-enrollment" rate-limit="lab-write" max-body-bytes="65536">
-      <allow role="lab_admin"/>
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.training-consent" method="POST" path="/onboarding/radiologists/{radiologist_id}/training-consent" rate-limit="lab-write" max-body-bytes="4096">
-      <allow role="lab_admin"/>
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.candidates" method="GET" path="/onboarding/templates/candidates" rate-limit="lab-read">
-      <allow role="lab_admin"/>
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.candidate.review" method="POST" path="/onboarding/templates/candidates/{candidate_id}/review" rate-limit="lab-write" max-body-bytes="1048576">
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.merge.decide" method="POST" path="/onboarding/merge-proposals/{proposal_id}/decide" rate-limit="lab-write" max-body-bytes="4096">
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.batch.apply" method="POST" path="/onboarding/batches/{batch_id}/apply" rate-limit="lab-write" max-body-bytes="4096">
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.batch.revert" method="POST" path="/onboarding/batches/{batch_id}/revert" rate-limit="lab-write" max-body-bytes="4096">
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.mapping.verify" method="POST" path="/onboarding/corpus/mappings/{mapping_id}/verify" rate-limit="lab-write" max-body-bytes="4096">
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.histogram" method="GET" path="/onboarding/corpus/histogram" rate-limit="lab-read">
-      <allow role="lab_admin"/>
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.referrer-prior" method="GET" path="/onboarding/corpus/referrer-prior" rate-limit="lab-read">
-      <allow role="lab_admin"/>
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.finding.resolve" method="POST" path="/onboarding/collision-findings/{finding_id}/resolve" rate-limit="lab-write" max-body-bytes="4096">
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.verbatim.queue" method="GET" path="/onboarding/verbatim/queue" rate-limit="lab-read">
-      <allow role="transcriptionist"/>
-      <allow role="lab_admin"/>
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.verbatim.submit" method="POST" path="/onboarding/verbatim" rate-limit="lab-write" max-body-bytes="1048576">
-      <allow role="transcriptionist"/>
-    </route>
-    <route id="onboarding.boilerplate.export" method="GET" path="/onboarding/boilerplate/export" rate-limit="lab-read">
-      <allow role="lab_admin"/>
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.boilerplate.promote" method="POST" path="/onboarding/boilerplate/{candidate_id}/promote" rate-limit="lab-write" max-body-bytes="4096">
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.rule.author" method="POST" path="/onboarding/critical-rules" rate-limit="lab-write" max-body-bytes="65536">
-      <allow role="radiologist"/>
-    </route>
-    <route id="onboarding.rule.approve" method="POST" path="/onboarding/critical-rules/{rule_id}/approve" rate-limit="lab-write" max-body-bytes="4096">
-      <allow role="radiologist"/>
+    <route id="admin.api.user.password" method="POST" path="/admin/api/users/{user_id}/password" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="user_id" in="path" type="uuid" required="true"/>
+      <param name="password" in="json" type="string" required="true" max-length="1024"/>
     </route>
   </routes>
 
-  <!-- ======================================================== review -->
+  <!-- ====================================================== ingest -->
   <routes realm="lab">
-    <route id="review.queue" method="GET" path="/review/queue" rate-limit="lab-read">
-      <allow role="radiologist"/>
-      <allow role="transcriptionist"/>
-      <allow role="lab_admin"/>
-      <allow role="auditor"/>
+    <route id="auth.password" method="POST" path="/auth/password" roles="lab_admin,radiologist,transcriptionist,auditor" rate-limit="lab-write" max-body-bytes="4096" description="Replace your own password; ends every sign-in.">
+      <param name="current_password" in="json" type="string" required="true" max-length="1024"/>
+      <param name="new_password" in="json" type="string" required="true" max-length="1024"/>
     </route>
-    <route id="review.queue.stats" method="GET" path="/review/queue/stats" rate-limit="lab-read">
-      <allow role="radiologist"/>
-      <allow role="transcriptionist"/>
-      <allow role="lab_admin"/>
-      <allow role="auditor"/>
+    <route id="ingest.recording" method="POST" path="/ingest/recordings" roles="radiologist,lab_admin" rate-limit="lab-upload" max-body-bytes="536870912">
+      <param name="capture_device_class" in="form" type="string" pattern="legacy|dictation_mic_ptt|headset"/>
+      <param name="device_id" in="form" type="string" pattern="[A-Za-z0-9._:\-]{1,128}"/>
+      <param name="is_push_to_talk" in="form" type="bool"/>
+      <param name="radiologist_id" in="form" type="uuid" required="true"/>
+      <param name="study_id" in="form" type="uuid" required="true"/>
+      <param name="file" in="file" type="file" required="true"/>
     </route>
-    <route id="review.draft" method="GET" path="/review/drafts/{draft_id}" rate-limit="lab-read">
-      <allow role="radiologist"/>
-      <allow role="transcriptionist"/>
-      <allow role="auditor"/>
+  </routes>
+
+  <!-- ======================================= onboarding (lab side) -->
+  <routes realm="lab">
+    <route id="onboarding.voice-enrollment" method="POST" path="/onboarding/radiologists/{radiologist_id}/voice-enrollment" roles="lab_admin,radiologist" rate-limit="lab-write" max-body-bytes="65536">
+      <param name="radiologist_id" in="path" type="uuid" required="true"/>
+      <param name="consent_ref" in="json" type="string" required="true" max-length="500"/>
+      <param name="embedding" in="json" type="array" required="true" max-length="192"/>
     </route>
-    <route id="review.draft.audio" method="GET" path="/review/drafts/{draft_id}/audio" rate-limit="lab-read">
-      <allow role="radiologist"/>
-      <allow role="transcriptionist"/>
-      <allow role="auditor"/>
+    <route id="onboarding.training-consent" method="POST" path="/onboarding/radiologists/{radiologist_id}/training-consent" roles="lab_admin,radiologist" rate-limit="lab-write" max-body-bytes="4096">
+      <param name="radiologist_id" in="path" type="uuid" required="true"/>
+      <param name="consent_ref" in="json" type="string" max-length="500"/>
     </route>
-    <route id="review.draft.revision" method="POST" path="/review/drafts/{draft_id}/revisions" rate-limit="lab-write" max-body-bytes="1048576">
-      <allow role="radiologist"/>
-      <allow role="transcriptionist"/>
+    <route id="onboarding.candidates" method="GET" path="/onboarding/templates/candidates" roles="lab_admin,radiologist" rate-limit="lab-read">
+      <param name="batch_id" in="query" type="uuid"/>
     </route>
-    <route id="review.draft.sign" method="POST" path="/review/drafts/{draft_id}/sign" rate-limit="lab-write" max-body-bytes="4096">
-      <allow role="radiologist"/>
+    <route id="onboarding.candidate.review" method="POST" path="/onboarding/templates/candidates/{candidate_id}/review" roles="radiologist" rate-limit="lab-write" max-body-bytes="1048576">
+      <param name="candidate_id" in="path" type="uuid" required="true"/>
+      <param name="body_region" in="json" type="string" max-length="500"/>
+      <param name="code" in="json" type="string" max-length="64"/>
+      <param name="decision" in="json" type="string" pattern="pending|approved|edited|rejected|merged"/>
+      <param name="json_schema" in="json" type="object"/>
+      <param name="modality" in="json" type="string" max-length="500"/>
+      <param name="spoken_study_code" in="json" type="string" max-length="64"/>
     </route>
-    <route id="review.report.addendum" method="POST" path="/review/reports/{report_id}/addendum" rate-limit="lab-write" max-body-bytes="1048576">
-      <allow role="radiologist"/>
+    <route id="onboarding.merge.decide" method="POST" path="/onboarding/merge-proposals/{proposal_id}/decide" roles="radiologist" rate-limit="lab-write" max-body-bytes="4096">
+      <param name="proposal_id" in="path" type="uuid" required="true"/>
+      <param name="decision" in="json" type="string" required="true" pattern="merge|keep_separate|pending"/>
     </route>
-    <route id="review.alert.acknowledge" method="POST" path="/review/alerts/{alert_id}/acknowledge" rate-limit="lab-write" max-body-bytes="4096">
-      <allow role="radiologist"/>
+    <route id="onboarding.batch.apply" method="POST" path="/onboarding/batches/{batch_id}/apply" roles="radiologist" rate-limit="lab-write" max-body-bytes="4096">
+      <param name="batch_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="review.report.grade" method="POST" path="/review/reports/{report_id}/grade" rate-limit="lab-write" max-body-bytes="4096">
-      <allow role="radiologist"/>
+    <route id="onboarding.batch.revert" method="POST" path="/onboarding/batches/{batch_id}/revert" roles="radiologist" rate-limit="lab-write" max-body-bytes="4096">
+      <param name="batch_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="review.metrics.cse-rate" method="GET" path="/review/metrics/cse-rate" rate-limit="lab-read">
-      <allow role="radiologist"/>
+    <route id="onboarding.mapping.verify" method="POST" path="/onboarding/corpus/mappings/{mapping_id}/verify" roles="radiologist" rate-limit="lab-write" max-body-bytes="4096">
+      <param name="mapping_id" in="path" type="uuid" required="true"/>
+      <param name="correct_template_id" in="json" type="uuid"/>
     </route>
-    <route id="review.draft.usefulness" method="POST" path="/review/drafts/{draft_id}/usefulness" rate-limit="lab-write" max-body-bytes="4096">
-      <allow role="radiologist"/>
-      <allow role="transcriptionist"/>
+    <route id="onboarding.histogram" method="GET" path="/onboarding/corpus/histogram" roles="lab_admin,radiologist" rate-limit="lab-read">
+      <param name="verified_only" in="query" type="bool"/>
     </route>
-    <route id="review.metrics.usefulness" method="GET" path="/review/metrics/usefulness" rate-limit="lab-read">
-      <allow role="radiologist"/>
-      <allow role="transcriptionist"/>
-      <allow role="lab_admin"/>
-      <allow role="auditor"/>
+    <route id="onboarding.referrer-prior" method="GET" path="/onboarding/corpus/referrer-prior" roles="lab_admin,radiologist" rate-limit="lab-read"/>
+    <route id="onboarding.finding.resolve" method="POST" path="/onboarding/collision-findings/{finding_id}/resolve" roles="radiologist" rate-limit="lab-write" max-body-bytes="4096">
+      <param name="finding_id" in="path" type="uuid" required="true"/>
+      <param name="resolution" in="json" type="string" required="true" pattern="renamed|accepted_with_margin_guard|pending"/>
     </route>
-    <route id="ui.queue" method="GET" path="/ui/queue" rate-limit="lab-read">
-      <allow role="radiologist"/>
-      <allow role="transcriptionist"/>
-      <allow role="lab_admin"/>
-      <allow role="auditor"/>
+    <route id="onboarding.verbatim.queue" method="GET" path="/onboarding/verbatim/queue" roles="transcriptionist,lab_admin,radiologist" rate-limit="lab-read">
+      <param name="limit" in="query" type="int" pattern="[1-9]\d{0,2}"/>
     </route>
-    <route id="ui.draft" method="GET" path="/ui/drafts/{draft_id}" rate-limit="lab-read">
-      <allow role="radiologist"/>
-      <allow role="transcriptionist"/>
-      <allow role="auditor"/>
+    <route id="onboarding.verbatim.submit" method="POST" path="/onboarding/verbatim" roles="transcriptionist" rate-limit="lab-write" max-body-bytes="1048576">
+      <param name="includes_disfluencies" in="json" type="bool" required="true"/>
+      <param name="is_eval_set_member" in="json" type="bool"/>
+      <param name="recording_id" in="json" type="uuid" required="true"/>
+      <param name="text" in="json" type="string" required="true" max-length="200000"/>
+    </route>
+    <route id="onboarding.boilerplate.export" method="GET" path="/onboarding/boilerplate/export" roles="lab_admin,radiologist" rate-limit="lab-read"/>
+    <route id="onboarding.boilerplate.promote" method="POST" path="/onboarding/boilerplate/{candidate_id}/promote" roles="radiologist" rate-limit="lab-write" max-body-bytes="4096">
+      <param name="candidate_id" in="path" type="uuid" required="true"/>
+      <param name="enable_auto_fill" in="json" type="bool"/>
+    </route>
+    <route id="onboarding.rule.author" method="POST" path="/onboarding/critical-rules" roles="radiologist" rate-limit="lab-write" max-body-bytes="65536">
+      <param name="code" in="json" type="string" required="true" max-length="64"/>
+      <param name="escalation_path" in="json" type="array" required="true" max-length="20"/>
+      <param name="finding_label" in="json" type="string" required="true" max-length="500"/>
+      <param name="negation_sensitive" in="json" type="bool"/>
+      <param name="pattern" in="json" type="string" required="true" max-length="2000"/>
+      <param name="pattern_type" in="json" type="string" pattern="lexical|regex|llm_semantic"/>
+      <param name="requires_ack" in="json" type="bool"/>
+      <param name="severity" in="json" type="string" required="true" pattern="red|orange"/>
+      <param name="sla_minutes" in="json" type="int" required="true" pattern="[1-9]\d{0,5}"/>
+    </route>
+    <route id="onboarding.rule.approve" method="POST" path="/onboarding/critical-rules/{rule_id}/approve" roles="radiologist" rate-limit="lab-write" max-body-bytes="4096">
+      <param name="rule_id" in="path" type="uuid" required="true"/>
+    </route>
+  </routes>
+
+  <!-- ====================================================== review -->
+  <routes realm="lab">
+    <route id="review.queue" method="GET" path="/review/queue" roles="radiologist,transcriptionist,lab_admin,auditor" rate-limit="lab-read">
+      <param name="limit" in="query" type="int" pattern="[1-9]\d{0,2}"/>
+    </route>
+    <route id="review.queue.stats" method="GET" path="/review/queue/stats" roles="radiologist,transcriptionist,lab_admin,auditor" rate-limit="lab-read"/>
+    <route id="review.draft" method="GET" path="/review/drafts/{draft_id}" roles="radiologist,transcriptionist,auditor" rate-limit="lab-read">
+      <param name="draft_id" in="path" type="uuid" required="true"/>
+    </route>
+    <route id="review.draft.audio" method="GET" path="/review/drafts/{draft_id}/audio" roles="radiologist,transcriptionist,auditor" rate-limit="lab-read">
+      <param name="draft_id" in="path" type="uuid" required="true"/>
+    </route>
+    <route id="review.draft.revision" method="POST" path="/review/drafts/{draft_id}/revisions" roles="radiologist,transcriptionist" rate-limit="lab-write" max-body-bytes="1048576">
+      <param name="draft_id" in="path" type="uuid" required="true"/>
+      <param name="active_edit_seconds" in="json" type="int" required="true" pattern="\d{1,7}"/>
+      <param name="edits" in="json" type="array" max-length="2000"/>
+      <param name="rendered_text" in="json" type="string" required="true" max-length="200000"/>
+      <param name="wall_clock_seconds" in="json" type="int" required="true" pattern="\d{1,7}"/>
+    </route>
+    <route id="review.draft.sign" method="POST" path="/review/drafts/{draft_id}/sign" roles="radiologist" rate-limit="lab-write" max-body-bytes="4096">
+      <param name="draft_id" in="path" type="uuid" required="true"/>
+    </route>
+    <route id="review.report.addendum" method="POST" path="/review/reports/{report_id}/addendum" roles="radiologist" rate-limit="lab-write" max-body-bytes="1048576">
+      <param name="report_id" in="path" type="uuid" required="true"/>
+      <param name="reason" in="json" type="string" required="true" max-length="500"/>
+      <param name="rendered_text" in="json" type="string" required="true" max-length="200000"/>
+    </route>
+    <route id="review.alert.acknowledge" method="POST" path="/review/alerts/{alert_id}/acknowledge" roles="radiologist" rate-limit="lab-write" max-body-bytes="4096">
+      <param name="alert_id" in="path" type="uuid" required="true"/>
+      <param name="outcome" in="json" type="string" required="true" max-length="500"/>
+    </route>
+    <route id="review.report.grade" method="POST" path="/review/reports/{report_id}/grade" roles="radiologist" rate-limit="lab-write" max-body-bytes="4096">
+      <param name="report_id" in="path" type="uuid" required="true"/>
+      <param name="grade" in="json" type="string" required="true" pattern="G0|G1|G2|G3|G4"/>
+      <param name="note" in="json" type="string" max-length="500"/>
+    </route>
+    <route id="review.metrics.cse-rate" method="GET" path="/review/metrics/cse-rate" roles="radiologist" rate-limit="lab-read"/>
+    <route id="review.draft.usefulness" method="POST" path="/review/drafts/{draft_id}/usefulness" roles="radiologist,transcriptionist" rate-limit="lab-write" max-body-bytes="4096">
+      <param name="draft_id" in="path" type="uuid" required="true"/>
+      <param name="reason" in="json" type="string" max-length="500"/>
+      <param name="was_useless" in="json" type="bool" required="true"/>
+    </route>
+    <route id="review.metrics.usefulness" method="GET" path="/review/metrics/usefulness" roles="radiologist,transcriptionist,lab_admin,auditor" rate-limit="lab-read"/>
+    <route id="ui.queue" method="GET" path="/ui/queue" roles="radiologist,transcriptionist,lab_admin,auditor" rate-limit="lab-read"/>
+    <route id="ui.draft" method="GET" path="/ui/drafts/{draft_id}" roles="radiologist,transcriptionist,auditor" rate-limit="lab-read">
+      <param name="draft_id" in="path" type="uuid" required="true"/>
     </route>
   </routes>
 
   <!-- ===================================== autonomy, export, drift -->
   <routes realm="lab">
-    <route id="ga.autonomy.read" method="GET" path="/ga/autonomy/{class_code}" rate-limit="lab-read">
-      <allow role="lab_admin"/>
-      <allow role="radiologist"/>
-      <allow role="auditor"/>
+    <route id="ga.autonomy.read" method="GET" path="/ga/autonomy/{class_code}" roles="lab_admin,radiologist,auditor" rate-limit="lab-read">
+      <param name="class_code" in="path" type="string" required="true" pattern="[A-Za-z0-9_.\-]{1,64}"/>
     </route>
-    <route id="ga.autonomy.revoke" method="POST" path="/ga/autonomy/{class_code}/revoke" rate-limit="lab-write" max-body-bytes="4096">
-      <allow role="radiologist"/>
-      <allow role="lab_admin"/>
+    <route id="ga.autonomy.revoke" method="POST" path="/ga/autonomy/{class_code}/revoke" roles="radiologist,lab_admin" rate-limit="lab-write" max-body-bytes="4096">
+      <param name="class_code" in="path" type="string" required="true" pattern="[A-Za-z0-9_.\-]{1,64}"/>
+      <param name="reason" in="json" type="string" required="true" max-length="500"/>
     </route>
-    <route id="ga.autonomy.coverage" method="GET" path="/ga/autonomy-coverage" rate-limit="lab-read">
-      <allow role="radiologist"/>
-      <allow role="lab_admin"/>
-      <allow role="auditor"/>
+    <route id="ga.autonomy.coverage" method="GET" path="/ga/autonomy-coverage" roles="radiologist,lab_admin,auditor" rate-limit="lab-read">
+      <param name="days" in="query" type="int" pattern="[1-9]\d{0,3}"/>
     </route>
-    <route id="ga.export.hl7" method="GET" path="/ga/export/{report_id}/hl7" rate-limit="lab-read">
-      <allow role="radiologist"/>
-      <allow role="lab_admin"/>
+    <route id="ga.export.hl7" method="GET" path="/ga/export/{report_id}/hl7" roles="radiologist,lab_admin" rate-limit="lab-read">
+      <param name="report_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="ga.export.fhir" method="GET" path="/ga/export/{report_id}/fhir" rate-limit="lab-read">
-      <allow role="radiologist"/>
-      <allow role="lab_admin"/>
+    <route id="ga.export.fhir" method="GET" path="/ga/export/{report_id}/fhir" roles="radiologist,lab_admin" rate-limit="lab-read">
+      <param name="report_id" in="path" type="uuid" required="true"/>
     </route>
-    <route id="ga.drift" method="GET" path="/ga/drift" rate-limit="lab-read">
-      <allow role="lab_admin"/>
-      <allow role="radiologist"/>
-      <allow role="auditor"/>
+    <route id="ga.drift" method="GET" path="/ga/drift" roles="lab_admin,radiologist,auditor" rate-limit="lab-read">
+      <param name="baseline_days" in="query" type="int" pattern="[1-9]\d{0,3}"/>
+      <param name="window_days" in="query" type="int" pattern="[1-9]\d{0,3}"/>
     </route>
   </routes>
 

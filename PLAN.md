@@ -13,7 +13,7 @@ which supersedes part of D19. Other owner decisions folded in: microphones confi
 baseline is the radiologist assistant's cost (§8.1), compose may go local in
 Beta (§8.1). Cost model rebuilt against corrected Sonnet 5 pricing throughout
 §0.2 and §7; budgeted on the structurally-guaranteed caching tier (§0.4a),
-with the rest treated as upside. R24 resolved in **§10**; admin-console and
+with the rest treated as upside. R24 resolved in **§10**; admin-panel and
 tenancy mechanics in **§11**. Open items in §8.2.
 
 ---
@@ -270,8 +270,8 @@ JSON-schema mode" is actually spelled. Context is 1M (Sonnet 5) / 200K
 
 ### 0.6 Two ordering bugs in §12
 
-**Bug 1 — the console is scheduled before the schema it writes to.** §12 puts
-"Onboarding Console S0–S2 built first" and the corpus load in **week 1**, but
+**Bug 1 — onboarding is scheduled before the schema it writes to.** §12 puts
+"Onboarding S0–S2 built first" and the corpus load in **week 1**, but
 "Schema + migrations; ingest API; queue" in **week 3**. S0–S2 write
 `import_batch`, `import_artifact`, `corpus_report`,
 `corpus_report_template_map`, and `template_import_candidate`. Those tables do
@@ -286,7 +286,7 @@ only run on `legacy` audio, which is precisely the failure §5.3 and R14 exist
 to prevent, and which §12's own header says microphones moved to week 1 to
 avoid.
 
-Both are fixed by the phasing in §2: foundations before the console, gold set
+Both are fixed by the phasing in §2: foundations before onboarding, gold set
 before the bake-off.
 
 ## 1. The dependency chain that decides build order
@@ -329,7 +329,7 @@ threshold — waits on it. Therefore:
 
 > **Ship a capture-only ingest path in week 1.** Record → validate → FLAC →
 > object store → `recording` row. No pipeline, no ASR, no UI. It exists purely
-> so the `current` partition accumulates while the console is being built.
+> so the `current` partition accumulates while onboarding is being built.
 
 **3. Two work items need no software at all and should start day 1:**
 - Verbatim annotation of the 100 `legacy` gold items (existing archive).
@@ -380,7 +380,7 @@ interprets it yet.
 
 ---
 
-### Phase 1 — Knowledge Onboarding Console (S0–S7)
+### Phase 1 — Knowledge onboarding (S0–S7)
 
 §7.8. This is the product's first module and its scaling mechanism (R17), not
 a pile of import scripts.
@@ -546,7 +546,7 @@ so the founder-time framing is the current reality and §13 is aspirational.
 The consequence is concrete: **§12's eight-week schedule is a 5-FTE plan.** At
 one founder plus part-time clinical help it is not achievable, and §4.1's exit
 criteria (≥30% minute reduction, ≥1,500 edit pairs) go with it. On founder
-time, Phases 0–2 — foundations, console, gold set, bake-offs — are a realistic
+time, Phases 0–2 — foundations, onboarding, gold set, bake-offs — are a realistic
 first eight weeks, with the pilot following rather than landing in week 8.
 
 This is worth resolving explicitly rather than discovering in week 6, because
@@ -570,7 +570,7 @@ decisions are folded in with their doc-assigned owners and deadlines.
    start accumulating until the mics are deployed, the partition gates the
    week-3 ASR bake-off, and the bake-off gates the pipeline (§1). Order in
    week 1, deploy in week 2, and run the capture-only ingest path (§1) behind
-   them so recordings accumulate while the console is built.
+   them so recordings accumulate while onboarding is built.
 
 2. **D22 — accession number field mapping** *(week 1, Eng + Hospital IT)*.
    D9 confirms accession numbers exist per report; D22 notes the concrete
@@ -959,7 +959,7 @@ should be recorded as one.
 §6.13 (D19) lists, under "still deferred, and correctly so":
 
 - Per-tenant billing/metering
-- **Per-tenant admin console or self-service onboarding**
+- **Per-tenant admin panel or self-service onboarding**
 - Any UI concept of "switching tenants"
 
 — all "gated on a second client actually signing, not built speculatively
@@ -1085,7 +1085,7 @@ clinical pipeline, and removing it means no lab-facing surface can.
 
 Note the clinical items here are gated on **that lab's radiologist**, not on
 the lab admin alone — S1, S5 and S6 are radiologist-approval gates in the
-design and stay that way. The lab admin operates the console; the lab's
+design and stay that way. The lab admin operates lab-side onboarding; the lab's
 radiologist signs off on what it produces.
 
 **Product admin — everything else:**
@@ -1143,7 +1143,7 @@ the §9.5 legal read the design doc already calls for before Beta.
 | Phase | Addition |
 |---|---|
 | **Phase 0** | Universal `tenant_id` + RLS policies + **composite FKs** (§11.3–11.4); `platform_user` realm (§11.2); tenant-scoped model resolver; RLS coverage and leak tests in CI (§11.5). |
-| **Phase 1** | Console S0–S7 already per-tenant (§6.13) — add the lab-admin-facing wrapper and a de-identification gate before any LLM-assisted parse. **Cx registration + `tenant.status` lifecycle gated on S7 readiness** (§11.6); admin console org-selection with audit (§11.1). |
+| **Phase 1** | Onboarding S0–S7 already per-tenant (§6.13) — add the lab-admin-facing wrapper and a de-identification gate before any LLM-assisted parse. **Cx registration + `tenant.status` lifecycle gated on S7 readiness** (§11.6); admin panel org-selection with audit (§11.1). |
 | **Phase 4** | Branding in the review UI shell and the report renderer. |
 | **Beta** | Product-admin model config panel (§7.9.6) with per-tenant assignment. Per-tenant metering and cost attribution. |
 | **GA** | Self-service provisioning, billing, offboarding export-then-purge cascade. |
@@ -1152,7 +1152,7 @@ the §9.5 legal read the design doc already calls for before Beta.
 benchmarking, physical per-tenant data-space separation (§6.13 keeps this as a
 later client-managed migration), and any lab-facing model control at all.
 
-**One thing to get right in Phase 1.** The lab-admin console is now a
+**One thing to get right in Phase 1.** Lab-side onboarding is now a
 customer-facing product surface, not an internal tool. §7.8.4's design rules
 were written for engineers operating it — "nothing goes live without
 approval," idempotent by content hash, every import versioned and reversible.
@@ -1369,17 +1369,17 @@ irreversible if skipped. Everything else here can follow the build.
 
 ---
 
-## 11. Admin console architecture (org-scoped) and universal tenancy
+## 11. Admin panel architecture (org-scoped) and universal tenancy
 
-Three owner decisions: the admin console takes an `orgId` and configures against
+Three owner decisions: the admin panel takes an `orgId` and configures against
 it; every table carries `tenant_id`; lab (Cx) registration lives in the admin
-console. Each has a consequence worth building for deliberately.
+panel. Each has a consequence worth building for deliberately.
 
-### 11.1 "Console takes an orgId" collides with §6.13's RLS model
+### 11.1 "The admin panel takes an orgId" collides with §6.13's RLS model
 
 §6.13 specifies RLS "keyed to **the session's `tenant_id`**" and states that
 "a user session is scoped to exactly one tenant at login." A product-admin
-console that selects an org and then configures it is, by definition, a session
+panel that selects an org and then configures it is, by definition, a session
 that can reach more than one tenant — the "UI concept of switching tenants"
 that §6.13 defers.
 
@@ -1406,7 +1406,7 @@ Every `SET app.current_tenant_id` from an admin session writes an `audit_log`
 row (`actor_type = 'user'`, action `admin_org_selected`). That log is how you
 answer "who looked at which lab's data, when."
 
-**Narrow, explicit exceptions** — the cross-tenant reads the console genuinely
+**Narrow, explicit exceptions** — the cross-tenant reads the admin panel genuinely
 needs: the lab list (`tenant` table), aggregate metering rollups, and the
 canonical gold set. Keep these in a separate, named set of views with their own
 access path. Enumerate them in one file. Anything not on that list is

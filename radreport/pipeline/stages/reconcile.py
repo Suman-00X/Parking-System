@@ -96,6 +96,7 @@ class ReconcileStage:
                 warnings.append(f"{spec.engine.engine} failed: {error}")
                 runs.append(self._failed_run(state, spec, error))
                 continue
+            assert result is not None, "an engine that raised no error returned a result"
             hypotheses.append(EngineHypothesis(engine=spec.engine.engine, engine_version=spec.engine.engine_version, text=result.text, words=tuple(result.words), weight=spec.weight))
             runs.append(self._ok_run(state, spec, result, keyterms))
 
@@ -159,6 +160,7 @@ class ReconcileStage:
         resolved = await ctx.resolve_model(TaskKey.SELF_CORRECTION)
         model_id = resolved.ref.model_id
         prompt = PromptBundle(stable=[system_block(ARBITRATION_PROMPT)], volatile=[VolatileBlock(text=json.dumps({"disputes": payload}, separators=(",", ":")), label="disputed_spans")])
+        assert self._llm is not None, "arbitration runs only when an LLM client was given"
         response = await self._llm.complete(LLMRequest(prompt=prompt, max_tokens=2048), model_id=model_id)
 
         offered = {span.slot_index for span in rover.disputed}

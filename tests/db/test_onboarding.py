@@ -429,3 +429,40 @@ def test_s7_persists_its_outcomes_for_audit(migrated_db: str, lab) -> None:
         rows = session.query(OnboardingReadinessCheck).filter(OnboardingReadinessCheck.tenant_id == tenant_id).all()
         assert len(rows) == 7
         assert {r.check_id for r in rows} == {"collision_audit_clear", "corpus_template_coverage", "voice_enrollment_complete", "gold_set_frozen", "critical_rules_approved", "baseline_cse_measured", "template_library_ready"}
+
+
+def test_a_known_unresolved_collision_blocks_every_batch_that_carries_it(migrated_db: str, lab) -> None:
+    """The audit records a pair once; a second batch with the same codes must not slip through on that."""
+    tenant_id = lab["tenant_id"]
+    reviewer = lab["radiologist_user_id"]
+    docs = [("ct_chest.docx", CHEST_CT_DOC, "LMC"), ("usg_abdo.docx", USG_ABDO_DOC, "LMP")]
+    with tenant_session(tenant_id, url=migrated_db) as session:
+        first = _submit_and_approve(session, tenant_id, reviewer, docs)
+        with pytest.raises(BatchBlocked):
+            templates.apply_templates(session, tenant_id=tenant_id, batch=first, approver_id=reviewer)
+
+        second = _submit_and_approve(session, tenant_id, reviewer, docs)
+        with pytest.raises(BatchBlocked):
+            templates.apply_templates(session, tenant_id=tenant_id, batch=second, approver_id=reviewer)
+        assert session.query(TemplateVersion).filter(TemplateVersion.tenant_id == tenant_id).count() == 0
+
+
+def test_reverting_a_batch_marks_it_and_happens_once(migrated_db: str, lab) -> None:
+    """The revert used to roll templates back without ever recording it on the batch."""
+    from radreport.core.errors import BatchStateError
+
+    tenant_id = lab["tenant_id"]
+    reviewer = lab["radiologist_user_id"]
+    with tenant_session(tenant_id, url=migrated_db) as session:
+        batch = _submit_and_approve(session, tenant_id, reviewer, [("ct_chest.docx", CHEST_CT_DOC, "ct chest plain")])
+        unapplied = _submit_and_approve(session, tenant_id, reviewer, [("usg_abdo.docx", USG_ABDO_DOC, "usg abdomen")])
+        templates.apply_templates(session, tenant_id=tenant_id, batch=batch, approver_id=reviewer)
+
+        templates.revert_applied_templates(session, tenant_id=tenant_id, batch=batch, actor_id=reviewer)
+        assert batch.reverted_at is not None
+        assert session.query(TemplateVersion).filter(TemplateVersion.tenant_id == tenant_id, TemplateVersion.is_current.is_(True)).count() == 0
+
+        with pytest.raises(BatchStateError):
+            templates.revert_applied_templates(session, tenant_id=tenant_id, batch=batch, actor_id=reviewer)
+        with pytest.raises(BatchStateError):
+            templates.revert_applied_templates(session, tenant_id=tenant_id, batch=unapplied, actor_id=reviewer)

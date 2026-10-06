@@ -88,7 +88,7 @@ def categorical_drift(baseline: list[str], current: list[str], *, metric: str = 
 
 
 def _bucket_shares(values: list[float], buckets: tuple[float, ...]) -> dict[str, float]:
-    counts = Counter()
+    counts: Counter[str] = Counter()
     for value in values:
         for index in range(len(buckets) - 1):
             if buckets[index] <= value < buckets[index + 1]:
@@ -135,8 +135,8 @@ def evaluate_drift(session: Session, *, tenant_id: uuid.UUID, baseline_window: t
         if result is not None:
             report.results.append(DriftResult(metric=metric, psi=result.psi, baseline_n=result.baseline_n, current_n=result.current_n, baseline_distribution=result.baseline_distribution, current_distribution=result.current_distribution))
 
-    for metric, loader in (("template_mix", _template_mix), ("capture_device_class", _device_class_mix)):
-        result = categorical_drift(loader(session, tenant_id, baseline_window), loader(session, tenant_id, current_window), metric=metric)
+    for metric, mix in (("template_mix", _template_mix), ("capture_device_class", _device_class_mix)):
+        result = categorical_drift(mix(session, tenant_id, baseline_window), mix(session, tenant_id, current_window), metric=metric)
         if result is not None:
             report.results.append(result)
 

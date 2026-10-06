@@ -107,6 +107,31 @@ def test_grading_a_released_report_still_feeds_the_monitor(autonomy_fixture) -> 
         assert float(klass.cusum_statistic) > 0
 
 
+def test_a_grade_feeds_the_class_that_released_the_report(autonomy_fixture) -> None:
+    """If the template has since moved to another class, the evidence still belongs to the releasing one."""
+    from radreport.db.models.knowledge import Template, TemplateVersion
+    from radreport.db.models.reporting import ReportDraft
+
+    migrated_db, one_tenant = autonomy_fixture
+    with tenant_session(one_tenant, url=migrated_db) as session:
+        releasing, later = _granted_class(session, one_tenant), _granted_class(session, one_tenant)
+        report = _released_report(session, one_tenant, klass=releasing)
+        draft = session.get(ReportDraft, report.report_draft_id)
+        template = session.get(Template, session.get(TemplateVersion, draft.template_version_id).template_id)
+        template.autonomy_class_id = later.id
+        session.flush()
+
+        radiologist = AppUser(tenant_id=one_tenant, employee_code=f"R-{uuid.uuid4().hex[:6]}", display_name="Dr Grader", roles=[UserRole.RADIOLOGIST])
+        session.add(radiologist)
+        session.flush()
+        grading.grade_report(session, tenant_id=one_tenant, final_report_id=report.id, grade=SeverityGrade.G4, reviewer=Reviewer(user_id=radiologist.id, roles=(UserRole.RADIOLOGIST,)))
+
+        session.refresh(releasing)
+        session.refresh(later)
+        assert float(releasing.cusum_statistic) > 0
+        assert float(later.cusum_statistic or 0) == 0
+
+
 def test_an_addendum_to_a_released_report_is_not_autonomous(autonomy_fixture) -> None:
     """A radiologist wrote and signed it, so claiming it went out unreviewed would be the one case where the audit gets a wrong answer."""
     migrated_db, one_tenant = autonomy_fixture

@@ -1,10 +1,11 @@
 """The admin panel's pages, rendered on the server.
 
 Order: sign in (login_page, login_submit, logout_submit) -> manage labs (home, labs_page,
-create_lab, lab_page, change_status, lab_readiness_page) -> configure models per step
+create_lab, lab_page, set_lab_user_password, change_status, lab_readiness_page) -> configure models per step
 (assign_step, activate_step, providers_page, add_provider, add_model) -> onboard a lab
-(onboarding_page, upload_roster, upload_templates, merge_proposals, run_onboarding_step) ->
-manage platform users (users_page, create_user, deactivate_user, reactivate_user, reset_password).
+(onboarding_page, upload_roster, upload_templates, upload_corpus, merge_proposals, run_onboarding_step) ->
+manage platform users (users_page, create_user, deactivate_user, reactivate_user, reset_password)
+-> your own account (account_page, change_own_password).
 """
 
 from __future__ import annotations
@@ -26,11 +27,13 @@ from radreport.admin.modelconfig import ConfigRefused, available_models, create_
 from radreport.admin.onboarding_steps import StepRefused
 from radreport.api.access import load_policy
 from radreport.api.deps import CurrentAdmin, admin_lab_session, client_ip
-from radreport.api.routes.admin_api import SLUG_PATTERN
+from radreport.api.routes.admin_api import SLUG_PATTERN, lab_user_out
+from radreport.auth import lab as lab_auth
 from radreport.core.config import get_settings
 from radreport.core.errors import ModelResolutionError, UngatedActivation
 from radreport.core.tenancy import TenantTransitionError, allowed_transitions
 from radreport.core.types import CheckStatus, ImportBatchType, PlatformRole, ProviderKind, TenantStatus
+from radreport.db.models.identity import AppUser
 from radreport.db.models.modelconfig import ModelDefinition, ModelProvider
 from radreport.db.models.tenancy import Tenant
 from radreport.db.session import system_session
@@ -316,6 +319,17 @@ def lab_page(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, error:
 
         targets = sorted(allowed_transitions(tenant.status))
         name, slug, current, consent = tenant.name, tenant.slug, tenant.status, tenant.training_pooling_consent
+        staff = [lab_user_out(u) for u in session.execute(sa.select(AppUser).where(AppUser.tenant_id == tenant_id).order_by(AppUser.display_name)).scalars().all()]
+
+    can_set_password = _can(admin, "POST", f"/admin/labs/{tenant_id}/users/{uuid.UUID(int=0)}/password")
+    staff_rows = "".join(
+        f"""<tr><td>{_esc(u.display_name)}<div class="meta">{_esc(u.email or "no email")} · {_esc(u.employee_code)}</div></td>
+            <td>{_esc(", ".join(u.roles))}</td>
+            <td>{"can sign in" if u.can_sign_in else "<span class='tag flag'>cannot sign in</span>"}</td>
+            <td>{_esc(u.last_login_at[:16].replace("T", " ") if u.last_login_at else "never")}</td>
+            <td>{f'<form class="inline" method="post" action="/admin/labs/{tenant_id}/users/{u.id}/password"><input name="password" type="password" minlength="{auth.MIN_PASSWORD_LENGTH}" placeholder="new password" required autocomplete="new-password"> <button type="submit" class="linkish">set password</button></form>' if can_set_password and u.email else ""}</td></tr>"""
+        for u in staff
+    )
 
     unconfigured = sum(1 for s in steps if not s.is_configured)
     warning = f"<div class='banner blocked'>{unconfigured} step(s) have no active model. A pipeline run will fail at the first of them.</div>" if unconfigured else ""
@@ -341,9 +355,32 @@ def lab_page(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, error:
  {"".join(rows)}
  </table>
  <p class="meta">A proposal does not go live. Activation requires a gold-set
- <code>eval_run</code> for that model; without one it is refused.</p>""",
+ <code>eval_run</code> for that model; without one it is refused.</p>
+ <h2>Lab staff</h2>
+ <table>
+ <tr><th>Name</th><th>Roles</th><th>Sign-in</th><th>Last sign-in</th><th></th></tr>
+ {staff_rows or '<tr><td colspan="5" class="meta">No staff yet; import a roster from the onboarding page.</td></tr>'}
+ </table>
+ <p class="meta">Lab staff sign in at <code>POST /auth/login</code> with this lab's slug
+ (<code>{_esc(slug)}</code>), their email and password. Setting a password signs that person out everywhere.</p>""",
         admin=admin,
     )
+
+
+@router.post("/labs/{tenant_id}/users/{user_id}/password")
+def set_lab_user_password(tenant_id: uuid.UUID, user_id: uuid.UUID, request: Request, admin: CurrentAdmin, password: Annotated[str, Form()]) -> Response:
+    if len(password) < auth.MIN_PASSWORD_LENGTH:
+        return _redirect(f"/admin/labs/{tenant_id}", error=f"a password must be at least {auth.MIN_PASSWORD_LENGTH} characters")
+    try:
+        with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
+            user = session.get(AppUser, user_id)
+            if user is None or user.tenant_id != tenant_id:
+                return _redirect(f"/admin/labs/{tenant_id}", error="no such lab user")
+            lab_auth.set_password(session, user_id=user_id, password=password, actor_id=admin.platform_user_id, actor_is_platform=True)
+            who = user.display_name
+    except ValueError as exc:
+        return _redirect(f"/admin/labs/{tenant_id}", error=str(exc))
+    return _redirect(f"/admin/labs/{tenant_id}", notice=f"Password set for {who}; their sessions were ended")
 
 
 @router.post("/labs/{tenant_id}/status")
@@ -554,12 +591,19 @@ def onboarding_page(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin,
  <input id="templates" name="files" type="file" multiple required>
  <div class="actions"><button type="submit">Submit templates</button></div>
  </form>
- <p class="meta">The historical report corpus is loaded through
- <code>POST /admin/api/labs/{tenant_id}/onboarding/corpus</code>, since it arrives as structured records.</p>"""
+ <form class="stack" method="post" action="{base}/corpus" enctype="multipart/form-data">
+ <label for="corpus">Historical signed reports (CSV with a report_text column, or a JSON array)</label>
+ <input id="corpus" name="file" type="file" accept=".csv,.json,text/csv,application/json" required>
+ <div class="actions"><button type="submit">Load reports</button></div>
+ </form>
+ <p class="meta">Mark rows <code>is_deidentified</code> only if they truly are: it decides whether
+ a report may ever reach an external model.</p>"""
         if can_upload
         else ""
     )
-    steps = "<h2>Run a step</h2>" + "".join(f'<form class="inline" method="post" action="{base}/steps/{key}"><button type="submit">{_esc(label)}</button></form> ' for key, (label, _fn) in onboarding_steps.STEPS.items()) + "<p class='meta'>Clinical approvals (template candidates, merges, collision findings, critical rules) are made by the lab's radiologists on the lab side, not here.</p>" if can_run else ""
+    #: The extra inputs a step's button carries; every other step runs with no options.
+    step_options = {"lexicon-mine": ' <input name="min_frequency" type="number" min="1" max="9999" placeholder="min. frequency" style="width:9em">', "boilerplate-mine": ' <label style="display:inline"><input type="checkbox" name="verified_only" value="1"> verified mappings only</label>'}
+    steps = "<h2>Run a step</h2>" + "".join(f'<form class="inline" method="post" action="{base}/steps/{key}"><button type="submit">{_esc(label)}</button>{step_options.get(key, "")}</form> ' for key, (label, _fn) in onboarding_steps.STEPS.items()) + "<p class='meta'>Clinical approvals (template candidates, merges, collision findings, critical rules) are made by the lab's radiologists on the lab side, not here.</p>" if can_run else ""
     return _page(
         f"Onboarding — {name}",
         f"""{_messages(error, notice)}
@@ -609,6 +653,18 @@ async def upload_templates(tenant_id: uuid.UUID, request: Request, admin: Curren
     return _redirect(f"/admin/labs/{tenant_id}/onboarding", notice=f"Templates submitted — {_summarise(result)}")
 
 
+@router.post("/labs/{tenant_id}/onboarding/corpus")
+async def upload_corpus(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, file: Annotated[UploadFile, File()]) -> Response:
+    data = await file.read()
+    try:
+        with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
+            result = onboarding_steps.load_corpus_file(session, tenant_id, data, file.filename or "corpus.csv")
+    except StepRefused as exc:
+        return _redirect(f"/admin/labs/{tenant_id}/onboarding", error=exc.reason)
+    skipped = f"; {len(result['problems'])} row(s) skipped" if result["problems"] else ""
+    return _redirect(f"/admin/labs/{tenant_id}/onboarding", notice=f"Reports loaded — {_summarise(result)}{skipped}")
+
+
 @router.post("/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals")
 def merge_proposals(tenant_id: uuid.UUID, batch_id: uuid.UUID, request: Request, admin: CurrentAdmin) -> Response:
     try:
@@ -620,10 +676,16 @@ def merge_proposals(tenant_id: uuid.UUID, batch_id: uuid.UUID, request: Request,
 
 
 @router.post("/labs/{tenant_id}/onboarding/steps/{step}")
-def run_onboarding_step(tenant_id: uuid.UUID, step: str, request: Request, admin: CurrentAdmin) -> Response:
+def run_onboarding_step(tenant_id: uuid.UUID, step: str, request: Request, admin: CurrentAdmin, min_frequency: Annotated[int | None, Form()] = None, verified_only: Annotated[str | None, Form()] = None) -> Response:
+    """Run one step from its button; the two steps with options read them from the form."""
+    options: dict[str, object] = {}
+    if min_frequency is not None:
+        options["min_frequency"] = min_frequency
+    if verified_only:
+        options["verified_only"] = True
     try:
         with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
-            result = onboarding_steps.run_step(session, tenant_id, step)
+            result = onboarding_steps.run_step(session, tenant_id, step, options)
     except StepRefused as exc:
         return _redirect(f"/admin/labs/{tenant_id}/onboarding", error=exc.reason)
     label = onboarding_steps.STEPS[step][0]
@@ -729,3 +791,36 @@ def reset_password(user_id: uuid.UUID, admin: CurrentAdmin, password: Annotated[
     if user_id == admin.platform_user_id:
         return _redirect("/admin/login", error="Your password changed; sign in again")
     return _redirect("/admin/users", notice=done)
+
+
+# ================================================================ account ===
+@router.get("/account", response_class=HTMLResponse)
+def account_page(admin: CurrentAdmin, error: str | None = None) -> HTMLResponse:
+    """Your own account: change your password."""
+    return _page(
+        "Your account",
+        f"""{_messages(error, None)}
+ <div class="meta">{_esc(admin.display_name)} · {_esc(admin.role)}</div>
+ <h2>Change your password</h2>
+ <form class="stack" method="post" action="/admin/account/password">
+ <label for="current_password">Current password</label>
+ <input id="current_password" name="current_password" type="password" required autocomplete="current-password">
+ <label for="new_password">New password (at least {auth.MIN_PASSWORD_LENGTH} characters)</label>
+ <input id="new_password" name="new_password" type="password" minlength="{auth.MIN_PASSWORD_LENGTH}" required autocomplete="new-password">
+ <div class="actions"><button class="primary" type="submit">Change password</button></div>
+ </form>
+ <p class="meta">Changing it signs you out everywhere, this browser included.</p>""",
+        admin=admin,
+    )
+
+
+@router.post("/account/password")
+def change_own_password(admin: CurrentAdmin, current_password: Annotated[str, Form()], new_password: Annotated[str, Form()]) -> Response:
+    with system_session() as session:
+        try:
+            users.change_own_password(session, user_id=admin.platform_user_id, current=current_password, new=new_password)
+        except users.UserChangeRefused as exc:
+            return _redirect("/admin/account", error=exc.reason)
+    response = _redirect("/admin/login", error="Password changed; sign in with the new one")
+    response.delete_cookie(auth.SESSION_COOKIE, path="/")
+    return response

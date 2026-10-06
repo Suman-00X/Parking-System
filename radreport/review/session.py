@@ -56,7 +56,7 @@ class FieldView:
     is_critical: bool
     confidence: float
     flag_reasons: tuple[str, ...]
-    provenance: tuple[dict[str, object], ...]
+    provenance: tuple[dict[str, int], ...]
     """Each carries `audio_start_ms`/`audio_end_ms` — this is what makes per-field click-to-listen possible."""
 
     default_normal_text: str | None
@@ -117,7 +117,7 @@ def open_draft(session: Session, *, tenant_id: uuid.UUID, draft_id: uuid.UUID, r
 
     rows = session.execute(select(ReportFieldValue, TemplateField).join(TemplateField, TemplateField.id == ReportFieldValue.template_field_id).where(ReportFieldValue.tenant_id == tenant_id, ReportFieldValue.report_draft_id == draft_id)).all()
 
-    spans_by_value: dict[uuid.UUID, list[dict[str, object]]] = {}
+    spans_by_value: dict[uuid.UUID, list[dict[str, int]]] = {}
     for span in session.execute(select(ProvenanceSpan).where(ProvenanceSpan.tenant_id == tenant_id, ProvenanceSpan.report_field_value_id.in_([v.id for v, _ in rows] or [None]))).scalars().all():
         spans_by_value.setdefault(span.report_field_value_id, []).append({"char_start": span.char_start, "char_end": span.char_end, "audio_start_ms": span.audio_start_ms, "audio_end_ms": span.audio_end_ms})
 
@@ -147,7 +147,9 @@ def open_draft(session: Session, *, tenant_id: uuid.UUID, draft_id: uuid.UUID, r
     ]
     fields.sort(key=field_sort_key)
 
-    findings = [{"check_id": f.check_id, "severity": f.severity, "message": f.message, "field_key": f.field_key} for f in session.execute(select(VerificationFinding).where(VerificationFinding.tenant_id == tenant_id, VerificationFinding.report_draft_id == draft_id)).scalars().all()]
+    # A finding points at a field value, not a field key; resolve it through the fields just loaded.
+    key_by_value = {view.field_value_id: view.field_key for view in fields}
+    findings: list[dict[str, object]] = [{"check_id": f.check_id, "severity": f.severity, "message": f.message, "field_key": key_by_value.get(f.report_field_value_id) if f.report_field_value_id else None} for f in session.execute(select(VerificationFinding).where(VerificationFinding.tenant_id == tenant_id, VerificationFinding.report_draft_id == draft_id)).scalars().all()]
 
     if draft.status == DraftStatus.GENERATED:
         draft.status = DraftStatus.IN_REVIEW

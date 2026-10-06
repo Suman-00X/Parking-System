@@ -311,11 +311,21 @@ def test_support_can_read_but_not_change_anything(admin_fixture) -> None:
 
 
 def test_a_bad_slug_is_refused_by_the_server_not_only_the_form(admin_fixture) -> None:
+    """The access policy's pattern rejects it before the handler runs, on the page and the API alike."""
     client, _cookie = _signed_in(admin_fixture["email"])
-    response = client.post("/admin/labs", data={"name": "Bad", "slug": "Not A Slug!", "admin_display_name": "a", "admin_email": "a@b.c", "admin_employee_code": "1"})
-    assert response.status_code == 303
-    assert "error=" in response.headers["location"]
-    assert client.post("/admin/api/labs", json={"name": "Bad", "slug": "Not A Slug!", "admin_email": "a@b.c", "admin_display_name": "a", "admin_employee_code": "1"}).status_code == 422
+    page = client.post("/admin/labs", data={"name": "Bad", "slug": "Not A Slug!", "admin_display_name": "a", "admin_email": "a@b.c", "admin_employee_code": "1"})
+    assert page.status_code == 400
+    assert "'slug'" in page.json()["detail"]
+    assert client.post("/admin/api/labs", json={"name": "Bad", "slug": "Not A Slug!", "admin_email": "a@b.c", "admin_display_name": "a", "admin_employee_code": "1"}).status_code == 400
+
+
+def test_an_extra_field_cannot_be_smuggled_into_registration(admin_fixture) -> None:
+    """Pydantic would silently drop an unknown key; the policy refuses it outright."""
+    client, _cookie = _signed_in(admin_fixture["email"])
+    body = {"name": "Lab", "slug": f"lab-{uuid.uuid4().hex[:6]}", "admin_email": "a@b.c", "admin_display_name": "a", "admin_employee_code": "1", "status": "live"}
+    response = client.post("/admin/api/labs", json=body)
+    assert response.status_code == 400
+    assert "'status' is not accepted" in response.json()["detail"]
 
 
 def test_pooling_consent_needs_its_contract_reference(admin_fixture) -> None:
@@ -496,6 +506,101 @@ def test_a_lab_route_refuses_a_lab_user_without_the_role(admin_fixture) -> None:
         auditor_id = auditor.id
 
     client = TestClient(create_app(), follow_redirects=False)
-    headers = {"X-User-Id": str(auditor_id), "X-Tenant-Id": str(f["tenant_id"])}
+    from radreport.auth.lab import issue_access_token
+
+    token, _ = issue_access_token(user_id=auditor_id, tenant_id=f["tenant_id"], roles=[UserRole.AUDITOR])
+    headers = {"Authorization": f"Bearer {token}"}
     assert client.post(f"/onboarding/critical-rules/{uuid.uuid4()}/approve", headers=headers).status_code == 403
     assert client.get("/review/queue", headers=headers).status_code == 200
+
+
+def test_a_batch_uploaded_from_the_admin_panel_names_its_admin(admin_fixture) -> None:
+    """Without this, an admin's upload showed no submitter at all: `submitted_by` points at lab users only."""
+    from radreport.db.models.onboarding import ImportBatch
+    from radreport.db.session import tenant_session
+
+    f = admin_fixture
+    client, _cookie = _signed_in(f["email"])
+    roster = b"employee_code,display_name,email,roles\nR9,Dr Nine,nine@lab.example,radiologist\n"
+    response = client.post(f"/admin/api/labs/{f['tenant_id']}/onboarding/roster", files={"file": ("roster.csv", roster, "text/csv")})
+    assert response.status_code == 200, response.text
+    with tenant_session(f["tenant_id"], url=f["db"]) as session:
+        batch = session.get(ImportBatch, uuid.UUID(response.json()["batch_id"]))
+        assert batch.submitted_by is None
+        assert batch.submitted_by_platform_user_id == f["admin_id"]
+
+
+def test_a_corpus_file_loads_from_the_onboarding_page(admin_fixture) -> None:
+    f = admin_fixture
+    client, _cookie = _signed_in(f["email"])
+    csv_body = b"report_text,external_report_id\nFINDINGS Liver normal.,R-1\nFINDINGS No effusion.,R-2\n,R-3\n"
+    response = client.post(f"/admin/labs/{f['tenant_id']}/onboarding/corpus", files={"file": ("reports.csv", csv_body, "text/csv")}, headers={"Origin": "http://testserver"})
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert "notice=" in location and "loaded%3A+2" in location and "1+row%28s%29+skipped" in location
+
+    refused = client.post(f"/admin/labs/{f['tenant_id']}/onboarding/corpus", files={"file": ("bad.csv", b"text\nx\n", "text/csv")})
+    assert "error=" in refused.headers["location"]
+
+
+def test_an_admin_changes_their_own_password(admin_fixture) -> None:
+    f = admin_fixture
+    client, _cookie = _signed_in(f["email"])
+    assert client.get("/admin/account").status_code == 200
+    wrong = client.post("/admin/account/password", data={"current_password": "not my password", "new_password": "a brand new passphrase"})
+    assert "error=" in wrong.headers["location"] and wrong.headers["location"].startswith("/admin/account")
+
+    done = client.post("/admin/account/password", data={"current_password": PASSWORD, "new_password": "a brand new passphrase"})
+    assert done.headers["location"].startswith("/admin/login")
+    assert client.get("/admin/labs").headers["location"] == "/admin/login", "the old session ended"
+    fresh = TestClient(create_app(), follow_redirects=False)
+    assert fresh.post("/admin/login", data={"email": f["email"], "password": PASSWORD}).headers["location"].startswith("/admin/login?error")
+    assert fresh.post("/admin/login", data={"email": f["email"], "password": "a brand new passphrase"}).headers["location"] == "/admin/labs"
+
+
+def test_support_may_change_only_its_own_password(admin_fixture) -> None:
+    client, _cookie = _signed_in(_support_account(admin_fixture["db"]))
+    assert client.post("/admin/api/account/password", json={"current_password": PASSWORD, "new_password": "support's new passphrase"}).status_code == 204
+
+
+def test_registering_a_lab_leaves_no_empty_batch_behind(admin_fixture) -> None:
+    """The placeholder roster batch it used to create sat in `uploading` forever; the first import opens its own."""
+    from radreport.db.models.onboarding import ImportBatch
+    from radreport.db.session import tenant_session
+
+    client, _cookie = _signed_in(admin_fixture["email"])
+    created = client.post("/admin/api/labs", json={"name": "Fresh Lab", "slug": f"fresh-{uuid.uuid4().hex[:6]}", "admin_email": "lead@fresh.example", "admin_display_name": "Lead", "admin_employee_code": "L-1"})
+    assert created.status_code == 201
+    tenant_id = uuid.UUID(created.json()["id"])
+    try:
+        with tenant_session(tenant_id, url=admin_fixture["db"]) as session:
+            assert session.query(ImportBatch).filter_by(tenant_id=tenant_id).count() == 0
+    finally:
+        from tests.conftest import _purge_tenants
+
+        _purge_tenants(admin_fixture["db"], [tenant_id])
+
+
+def test_step_options_can_be_set_from_the_page(admin_fixture, monkeypatch) -> None:
+    """min_frequency and verified_only used to be API-only."""
+    from radreport.admin import onboarding_steps
+
+    seen: list[dict] = []
+    original = onboarding_steps.run_step
+
+    def spy(session, tenant_id, step, options=None):
+        seen.append(dict(options or {}))
+        return original(session, tenant_id, step, options)
+
+    monkeypatch.setattr(onboarding_steps, "run_step", spy)
+    f = admin_fixture
+    client, _cookie = _signed_in(f["email"])
+    base = f"/admin/labs/{f['tenant_id']}/onboarding/steps"
+    page = client.get(f"/admin/labs/{f['tenant_id']}/onboarding")
+    assert 'name="min_frequency"' in page.text and 'name="verified_only"' in page.text
+
+    assert client.post(f"{base}/lexicon-mine", data={"min_frequency": ""}).status_code == 303, "a blank number box runs with the default"
+    assert client.post(f"{base}/lexicon-mine", data={"min_frequency": "4"}).status_code == 303
+    assert client.post(f"{base}/boilerplate-mine", data={"verified_only": "1"}).status_code == 303
+    assert seen == [{}, {"min_frequency": 4}, {"verified_only": True}]
+    assert client.post(f"{base}/lexicon-mine", data={"min_frequency": "0"}).status_code == 400

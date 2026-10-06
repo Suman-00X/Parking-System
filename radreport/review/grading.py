@@ -88,8 +88,6 @@ def grade_report(session: Session, *, tenant_id: uuid.UUID, final_report_id: uui
 def _feed_autonomy(session: Session, tenant_id: uuid.UUID, final: FinalReport, grade: str) -> tuple[bool, bool]:
     """Record the observation and advance the CUSUM. Returns `(accrued, revoked)`."""
     from radreport.autonomy import accrual, grant
-    from radreport.db.models.knowledge import AutonomyClass, Template, TemplateVersion
-    from radreport.db.models.reporting import ReportDraft
 
     try:
         observation = accrual.record_observation(session, tenant_id=tenant_id, final_report_id=final.id, severity_grade=grade)
@@ -100,9 +98,10 @@ def _feed_autonomy(session: Session, tenant_id: uuid.UUID, final: FinalReport, g
     if observation is None:
         return False, False
 
-    class_code = session.execute(select(AutonomyClass.code).join(Template, Template.autonomy_class_id == AutonomyClass.id).join(TemplateVersion, TemplateVersion.template_id == Template.id).join(ReportDraft, ReportDraft.template_version_id == TemplateVersion.id).where(ReportDraft.tenant_id == tenant_id, ReportDraft.id == final.report_draft_id)).scalars().first()
-    if class_code is None:
+    final_class = accrual.class_for_report(session, tenant_id, final)
+    if final_class is None:
         return True, False
+    class_code = final_class.code
 
     try:
         step = grant.observe_graded_report(session, tenant_id=tenant_id, class_code=class_code, severity_grade=grade)

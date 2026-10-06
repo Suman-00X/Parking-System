@@ -136,4 +136,4 @@ def queue_stats(session: Session, *, tenant_id: uuid.UUID, reviewer: Reviewer) -
 
 def count_by_status(session: Session, *, tenant_id: uuid.UUID) -> dict[str, int]:
     rows = session.execute(select(ReportDraft.status, func.count()).where(ReportDraft.tenant_id == tenant_id).group_by(ReportDraft.status)).all()
-    return dict(rows)
+    return {status: int(n) for status, n in rows}

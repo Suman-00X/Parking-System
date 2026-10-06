@@ -1,8 +1,9 @@
 """Builds the FastAPI application, mounts every route group on it, and puts the access check in front.
 
-Order: create_app assembles the app, installs AccessMiddleware and refuses to start if the access
-policy and the routes disagree; current_revision and head_revision report whether the database
-schema is up to date.
+Order: create_app assembles the app, refuses to start if the access policy disagrees with the
+routes or their parameters, and installs AccessMiddleware (who may call) in front of
+InputValidationMiddleware (with what); current_revision and head_revision report whether the
+database schema is up to date.
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from radreport.api.access import AccessMiddleware, RateLimiter, load_policy, verify_coverage
-from radreport.api.routes import admin_api, admin_panel, ga, ingest, onboarding, review, review_ui
+from radreport.api.input_check import InputValidationMiddleware, verify_params
+from radreport.api.routes import admin_api, admin_panel, auth, ga, ingest, onboarding, review, review_ui
+from radreport.auth.lab import require_token_secret
 from radreport.core.config import get_settings
 from radreport.core.logging import configure_logging
 from radreport.db.session import get_engine, system_session
@@ -37,6 +40,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
 
     app = FastAPI(title="radreport", version="0.1.0", description=("Radiology voice-to-structured-report: the admin panel, the 15-stage V1 pipeline, and the review surface."))
+    app.include_router(auth.router)
     app.include_router(ingest.router)
     app.include_router(admin_api.router)
     app.include_router(onboarding.router)
@@ -78,8 +82,12 @@ def create_app() -> FastAPI:
 
         return JSONResponse({"status": "ready" if ok else "not_ready", "checks": checks}, status_code=200 if ok else 503)
 
+    require_token_secret()
     policy = load_policy()
     verify_coverage(app, policy)
+    verify_params(app, policy)
+    # Added last runs first: the caller is identified and authorized before any body is read.
+    app.add_middleware(InputValidationMiddleware)
     app.add_middleware(AccessMiddleware, policy=policy, limiter=RateLimiter())
     return app
 

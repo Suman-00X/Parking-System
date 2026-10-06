@@ -1,83 +1,17 @@
 # TODO Roadmap (2026-10-05)
 
-## BLOCKING: `alembic upgrade head` fails on a fresh database (CRITICAL)
+## Migrations: every step must be guarded
 
-**Found 2026-10-05 while verifying Phase 6's migration 0006.** Pre-existing and
-unrelated to that change, but it blocks the entire `tests/db` suite — those
-tests run `command.upgrade(config, "head")` in the `migrated_db` fixture, so
-none of them can run until this is fixed.
-
-### The cause
-Revision **0001** builds the schema with `Base.metadata.create_all`, which reads
-the **live models**. Every later hand-written migration then tries to re-apply a
-change the models already express. First failure:
-
-```
-0004_template_version_spoken_code.py
-  ALTER TABLE template_version DROP CONSTRAINT uq_template_version_tenant_id_spoken_study_code
-  -> psycopg.errors.UndefinedObject: constraint ... does not exist
-```
-
-The constraint is already absent from `Base.metadata`, so 0001 never created it.
-**0005 has the same shape** — it drops `task_key_valid`, while the real
-constraint name under the `ck_%(table_name)s_%(constraint_name)s` naming
-convention is `ck_task_model_assignment_task_key_valid`. Both are latent until
-someone migrates from scratch.
-
-### Options (a decision, not a mechanical fix)
-- [ ] **Freeze 0001.** Transcribe the schema as it stood at 0001 into explicit
-      `op.create_table` calls so it stops tracking the models. Correct, and the
-      one that makes every future migration behave. ~57 tables of work.
-- [ ] **Make 0002–0005 idempotent**, guarding each step on the current database
-      state (`pg_constraint` / `information_schema`). Cheaper, and what 0006
-      already does — see `_has_column` / `_has_constraint` there. Leaves the
-      underlying drift in place.
-- [ ] **Squash to a new baseline.** Drop 0001–0005, emit one revision from
-      today's models. Simplest, but only if no deployed database is mid-chain.
-
-Also fix 0005's two `drop_constraint("task_key_valid", ...)` calls to use the
-convention-qualified name regardless of which option is chosen.
+Fixed 2026-10-07: `alembic upgrade head` now runs from an empty database and from
+a database stopped at 0005, and the full test suite passes on both as the
+non-owner role. Revision 0001 still builds the schema from the **live models**, so
+on a fresh database later revisions find their changes already applied. The rule
+that keeps this working: **every step in a new migration checks the database
+first** (`_has_column`, `_has_table`, `_has_constraint`, `_has_index`, `_has_policy`
+in 0004–0007 are the pattern), and a constraint named in full is wrapped in
+`op.f(...)` so the naming convention does not prefix it a second time.
 
 ---
-
-## BLOCKING: Lab User Authentication (CRITICAL — Production Blocker)
-
-**Current State (2026-10-06):** Lab users have no real login. Admins do.
-
-### Context
-- **Admin auth**: session cookie from `/admin/login` (server-side, revocable). Every
-  route's roles, rate limit and body cap are in `radreport/api/access_policy.xml`,
-  enforced by `AccessMiddleware` (`radreport/api/access.py`) before any handler runs.
-- **Lab user auth**: still the placeholder `X-User-Id` + `X-Tenant-Id` headers,
-  **accepted in every environment, production included**. The middleware now looks
-  the user up inside the claimed tenant and checks their stored roles against the
-  policy, so a forged pair must name a real, active user with the right role; but
-  nothing proves the caller *is* that user.
-- The review UI (`/ui/*`) cannot be used from a plain browser, because nothing
-  sends those headers.
-
-### Required Before Production
-
-- [ ] **Implement Lab User Authentication** (TBD)
-  - Choose auth method: OIDC, session-based, or deployment-specific
-  - Replace `AccessMiddleware._identify_lab_user` in `radreport/api/access.py`;
-    handlers read `request.state.identity` through `current_principal`, so they
-    do not change. The policy file's `realm="lab"` routes and roles stay as they are.
-  - Build login UI (form or redirect to IdP)
-  - Until then, consider refusing the header path outside local/test/development
-    the way the old admin header was refused.
-
-### Why This Matters
-- Today anyone who can reach the API and knows a lab user's id and tenant id can
-  act as that user.
-- This is prerequisite for any production deployment.
-
-## Rate limits are per process
-
-`RateLimiter` in `radreport/api/access.py` counts in memory, so with
-`WORKERS=N` each worker allows the full limit (up to N× overall), and limits reset
-on restart. Move the counters to Postgres or Redis before relying on them for
-abuse protection across workers.
 
 ---
 
@@ -729,3 +663,82 @@ ROI: Positive by month 6–9 ✅
   - Integration: Update `evaluate_gates()` to read from env at startup
   - **Why:** Allows ops to tune thresholds for different labs/pilot stages without code changes
   - Example usage: `ADAPTER_HOURS_THRESHOLD=15.0 python -m radreport.main` (lab with less data)
+
+---
+
+# Scale & System Design Roadmap (2026-10-06)
+
+What exists today: monthly partitions on `asr_segment`, `edit_event` and
+`audit_log` (migration 0003), Anthropic prompt caching, and in-process
+`lru_cache`s. Everything below is missing. Ordered by value for effort; the
+queue and outbox come first because the crash test depends on them.
+
+## Easy — fits the product, no paid infrastructure
+
+- [ ] **Postgres job queue** (1 day)
+  - New `job` table; workers claim with `SELECT ... FOR UPDATE SKIP LOCKED`
+  - Upload enqueues a `run_pipeline` job instead of running it in the request
+  - Visibility timeout + attempt count + dead-letter state for poison jobs
+  - Fill the empty `radreport/workers/` package with the worker loop
+  - Jobs are tenant-scoped: the worker must `bind_tenant` before touching rows
+  - Test: two workers never claim the same job; a killed worker's job is reclaimed
+
+- [ ] **Transactional outbox** (half day)
+  - New `outbox_event` table written in the same transaction as the change
+  - Events: `recording.ingested`, `draft.ready`, `report.signed`, `autonomy.revoked`
+  - A relay publishes unsent rows and marks them sent; consumers must be idempotent
+  - Test: crash between commit and publish → event still delivered exactly once per consumer
+
+- [ ] **Redis cache** (1 day)
+  - Cache tenant config, model assignments and admin sessions; TTL + explicit invalidation on write
+  - In-memory fallback when `RADREPORT_REDIS_URL` is unset, so local dev and tests need no Redis
+  - Upstash free tier for the hosted demo
+  - Cache keys must include `tenant_id` — a missing one is a cross-lab leak that RLS cannot catch
+  - Builds on "Add Request-Scoped Caching" and "LLM Response Caching" above
+
+- [ ] **Bloom filter** (half day)
+  - Pure Python, no dependency; sized from expected items + target false-positive rate
+  - Uses: duplicate-recording pre-check on `content_hash` before the DB lookup; unknown-term pre-check in lexicon matching
+  - A "maybe" still goes to the database — the filter only skips work on a definite "no"
+  - Per tenant, rebuilt on startup from the DB
+  - Test: no false negatives; measured false-positive rate within target
+
+- [ ] **Extend partitioning** (1 day)
+  - **Bug:** 0003 creates partitions 12 months ahead at migration time and nothing
+    creates more. After that, rows fall into `<table>_default`, pruning stops, and
+    creating that month's partition later fails because the default holds its rows.
+  - Add a scheduled job calling `ensure_month_partition` for the next 3 months (runs on the job queue above)
+  - Partition `pipeline_run` by month and `recording` by tenant (hash) — see "Partition Large Tables" above
+  - Archive / detach partitions older than the retention window
+
+## Doable with caveats
+
+- [ ] **Kafka event streaming** (1–2 days)
+  - Redpanda (Kafka-compatible, lighter) in `docker-compose.yml`
+  - Outbox relay publishes to topics; consumers: HL7/FHIR export, critical alerts, metering, analytics
+  - One `EventBus` interface with Postgres and Kafka implementations, chosen by config
+  - **Caveat:** no lasting free hosted Kafka found (Confluent offers trial credits only).
+    The hosted demo runs the Postgres implementation; Kafka runs locally and in the crash-test demo.
+  - Partition topics by `tenant_id` so one lab's events stay in order
+
+- [ ] **Sharding by lab** (3–4 days)
+  - Consistent-hash ring (virtual nodes) mapping `tenant_id` → shard; explicit override table for pinning a big lab
+  - Global database for untenanted tables (`platform_user`, model catalog, shard map); tenant tables on shards
+  - `db/session.py` resolves the shard before `bind_tenant`
+  - Migrations and RLS policies applied to every shard; `/ready` checks all of them
+  - Admin "list all labs" fans out to every shard and merges
+  - **Caveat:** demo with 2 databases on one Postgres server; moving a lab between shards is out of scope
+  - Test: adding a shard moves only ~1/N of labs; isolation tests pass on each shard
+
+- [ ] **Read replicas** (1 day code + replica setup)
+  - `read_session()` alongside the write session; route dashboards, cost views and exports only
+  - Never route the review screen or anything read right after a write (replication lag breaks read-your-writes)
+  - Falls back to the primary when no replica URL is configured
+  - **Caveat:** a real replica needs a second Postgres with streaming replication — fine locally, rarely free when hosted
+  - Builds on "Add Read Replicas" above
+
+## Configuration, not code
+
+- [ ] **CDN via Cloudflare free plan** (1 hour)
+  - Cache `/ui/static/*` and the features page; set long `Cache-Control` on static assets
+  - **Never cache audio.** Serve it through short-lived signed S3 URLs instead of streaming through the app

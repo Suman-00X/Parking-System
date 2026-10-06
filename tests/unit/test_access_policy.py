@@ -9,8 +9,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from radreport.admin.auth import SESSION_COOKIE, AuthenticatedAdmin
-from radreport.api.access import AccessMiddleware, LabUser, PolicyError, RateLimit, RateLimiter, load_policy, parse_policy, verify_coverage
+from radreport.api.access import AccessMiddleware, PolicyError, RateLimit, RateLimiter, load_policy, parse_policy, verify_coverage
 from radreport.api.app import create_app
+from radreport.auth.lab import issue_access_token
 from radreport.core.types import PlatformRole, UserRole
 
 ROLES = """
@@ -32,20 +33,14 @@ POLICY = f"""<access-policy version="1">{ROLES}
     <route id="devonly" method="GET" path="/devonly" environments="nowhere"/>
   </routes>
   <routes realm="admin">
-    <route id="panel" method="GET" path="/admin/things">
-      <allow role="product_admin"/><allow role="support"/>
-    </route>
-    <route id="panel.write" method="POST" path="/admin/things" max-body-bytes="10">
-      <allow role="product_admin"/>
-    </route>
-    <route id="api" method="GET" path="/admin/api/things/{{thing_id}}" rate-limit="tight">
-      <allow role="product_admin"/>
+    <route id="panel" method="GET" path="/admin/things" roles="product_admin, support"/>
+    <route id="panel.write" method="POST" path="/admin/things" roles="product_admin" max-body-bytes="10"/>
+    <route id="api" method="GET" path="/admin/api/things/{{thing_id}}" roles="product_admin" rate-limit="tight">
+      <param name="thing_id" in="path" required="true"/>
     </route>
   </routes>
   <routes realm="lab">
-    <route id="sign" method="POST" path="/lab/sign">
-      <allow role="radiologist"/>
-    </route>
+    <route id="sign" method="POST" path="/lab/sign" roles="radiologist"/>
   </routes>
 </access-policy>"""
 
@@ -58,10 +53,9 @@ def _admin(token: str | None) -> AuthenticatedAdmin | None:
     return AuthenticatedAdmin(platform_user_id=uuid.uuid5(uuid.NAMESPACE_DNS, role), display_name=role, role=role, session_id=uuid.uuid4()) if role else None
 
 
-def _lab_user(tenant_id: uuid.UUID, user_id: uuid.UUID) -> LabUser | None:
-    if tenant_id != LAB_TENANT:
-        return None
-    return {RADIOLOGIST: LabUser(True, frozenset({UserRole.RADIOLOGIST})), AUDITOR: LabUser(True, frozenset({UserRole.AUDITOR}))}.get(user_id)
+def _bearer(user_id: uuid.UUID, *roles: str) -> dict[str, str]:
+    token, _ = issue_access_token(user_id=user_id, tenant_id=LAB_TENANT, roles=list(roles))
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
@@ -69,7 +63,7 @@ def client() -> TestClient:
     app = FastAPI()
     for method, path in (("GET", "/open"), ("GET", "/devonly"), ("GET", "/admin/things"), ("POST", "/admin/things"), ("GET", "/admin/api/things/{thing_id}"), ("POST", "/lab/sign"), ("GET", "/unlisted")):
         app.add_api_route(path, lambda: {"ok": True}, methods=[method])
-    app.add_middleware(AccessMiddleware, policy=parse_policy(POLICY), admin_resolver=_admin, lab_user_resolver=_lab_user)
+    app.add_middleware(AccessMiddleware, policy=parse_policy(POLICY), admin_resolver=_admin)
     return TestClient(app, follow_redirects=False)
 
 
@@ -81,10 +75,16 @@ def _policy(routes: str) -> str:
 @pytest.mark.parametrize(
     ("routes", "message"),
     [
-        ('<routes realm="admin"><route id="a" method="GET" path="/a"><allow role="nobody"/></route></routes>', "not a role of the admin realm"),
-        ('<routes realm="admin"><route id="a" method="GET" path="/a"><allow role="radiologist"/></route></routes>', "not a role of the admin realm"),
+        ('<routes realm="admin"><route id="a" method="GET" path="/a" roles="nobody"/></routes>', "not a role of the admin realm"),
+        ('<routes realm="admin"><route id="a" method="GET" path="/a" roles="support,radiologist"/></routes>', "not a role of the admin realm"),
         ('<routes realm="admin"><route id="a" method="GET" path="/a"/></routes>', "allows nobody"),
-        ('<routes realm="public"><route id="a" method="GET" path="/a"><allow role="support"/></route></routes>', "takes no <allow>"),
+        ('<routes realm="public"><route id="a" method="GET" path="/a" roles="support"/></routes>', "takes no roles"),
+        ('<routes realm="public"><route id="a" method="GET" path="/a/{x}"/></routes>', "does not declare its path parameter"),
+        ('<routes realm="public"><route id="a" method="GET" path="/a"><param name="q" in="query" pattern="("/></route></routes>', "not a valid regex"),
+        ('<routes realm="public"><route id="a" method="GET" path="/a"><param name="q" in="body"/></route></routes>', "in= one of"),
+        ('<routes realm="public"><route id="a" method="POST" path="/a"><param name="f" in="file"/></route></routes>', "type=file goes with in=file"),
+        ('<routes realm="public"><route id="a" method="POST" path="/a"><param name="q" in="query"/><param name="q" in="query"/></route></routes>', "declares a parameter twice"),
+        ('<routes realm="public"><route id="a" method="POST" path="/a"><param name="j" in="json"/><param name="f" in="form"/></route></routes>', "mixes a JSON body"),
         ('<routes realm="public"><route id="a" method="GET" path="/a"/><route id="b" method="GET" path="/a"/></routes>', "listed twice"),
         ('<routes realm="public"><route id="a" method="GET" path="/a"/><route id="a" method="GET" path="/b"/></routes>', "used twice"),
         ('<routes realm="public"><route id="a" method="GET" path="/a" rate-limit="missing"/></routes>', "unknown rate limit"),
@@ -111,10 +111,14 @@ def test_the_shipped_policy_covers_exactly_the_served_routes() -> None:
     verify_coverage(create_app(), load_policy())
 
 
+#: The only writes support may make: to its own account, never to configuration.
+SUPPORT_OWN_ACCOUNT_ROUTES = {"admin.account.password", "admin.api.account.password"}
+
+
 def test_support_is_read_only() -> None:
     policy = load_policy()
     for rule in policy.routes:
-        if PlatformRole.SUPPORT in rule.roles:
+        if PlatformRole.SUPPORT in rule.roles and rule.id not in SUPPORT_OWN_ACCOUNT_ROUTES:
             assert rule.method == "GET", f"{rule.id} lets support change something"
 
 
@@ -204,12 +208,16 @@ def test_the_rate_limit_answers_429_with_retry_after(client: TestClient) -> None
     assert int(refused.headers["retry-after"]) >= 1
 
 
-def test_a_lab_route_checks_headers_user_and_role(client: TestClient) -> None:
+def test_a_lab_route_needs_a_valid_bearer_token_with_the_role(client: TestClient) -> None:
     assert client.post("/lab/sign").status_code == 401
-    assert client.post("/lab/sign", headers={"X-User-Id": "not-a-uuid", "X-Tenant-Id": str(LAB_TENANT)}).status_code == 401
-    assert client.post("/lab/sign", headers={"X-User-Id": str(RADIOLOGIST), "X-Tenant-Id": str(uuid.uuid4())}).status_code == 401
-    assert client.post("/lab/sign", headers={"X-User-Id": str(AUDITOR), "X-Tenant-Id": str(LAB_TENANT)}).status_code == 403
-    assert client.post("/lab/sign", headers={"X-User-Id": str(RADIOLOGIST), "X-Tenant-Id": str(LAB_TENANT)}).status_code == 200
+    assert client.post("/lab/sign", headers={"Authorization": "Bearer not-a-token"}).status_code == 401
+    assert client.post("/lab/sign", headers={"Authorization": "Basic abc"}).status_code == 401
+    assert client.post("/lab/sign", headers=_bearer(AUDITOR, UserRole.AUDITOR)).status_code == 403
+    assert client.post("/lab/sign", headers=_bearer(RADIOLOGIST, UserRole.RADIOLOGIST)).status_code == 200
+
+
+def test_the_old_identity_headers_grant_nothing(client: TestClient) -> None:
+    assert client.post("/lab/sign", headers={"X-User-Id": str(RADIOLOGIST), "X-Tenant-Id": str(LAB_TENANT)}).status_code == 401
 
 
 def test_an_admin_cookie_does_not_open_a_lab_route(client: TestClient) -> None:
@@ -231,3 +239,127 @@ def test_the_old_routes_are_gone() -> None:
     client = TestClient(create_app(), follow_redirects=False)
     for path in ("/console/labs", "/admin/tenants", "/onboarding/roster", "/onboarding/status", "/ga/autonomy/x/grant"):
         assert client.get(path).status_code == 404, path
+
+
+def test_the_step_routes_accept_exactly_the_steps_the_code_runs() -> None:
+    """The step name is a path parameter whose pattern repeats `STEPS`; the two must not drift."""
+    from radreport.admin.onboarding_steps import STEPS
+
+    for rule_id in ("admin.lab.onboarding.step", "admin.api.lab.onboarding.step"):
+        rule = next(r for r in load_policy().routes if r.id == rule_id)
+        step = rule.param("path", "step")
+        assert step is not None and step.pattern is not None
+        listed = set(step.pattern.pattern.replace("\\-", "-").split("|"))
+        assert listed == set(STEPS), f"{rule_id}: policy lists {sorted(listed ^ set(STEPS))} differently from STEPS"
+
+
+# ================================================================== csrf ===
+def test_a_cross_site_admin_write_is_refused(client: TestClient) -> None:
+    client.cookies.set(SESSION_COOKIE, ADMIN_TOKEN)
+    assert client.post("/admin/things", headers={"Origin": "https://evil.example"}).status_code == 403
+    assert client.post("/admin/things", headers={"Referer": "https://evil.example/page"}).status_code == 403
+
+
+def test_a_same_site_or_headerless_admin_write_is_allowed(client: TestClient) -> None:
+    client.cookies.set(SESSION_COOKIE, ADMIN_TOKEN)
+    assert client.post("/admin/things", headers={"Origin": "http://testserver"}).status_code == 200
+    assert client.post("/admin/things", headers={"Referer": "http://testserver/admin/things"}).status_code == 200
+    assert client.post("/admin/things").status_code == 200, "a script sends no Origin and cannot be a forged browser request"
+
+
+def test_reads_and_lab_routes_skip_the_origin_check(client: TestClient) -> None:
+    client.cookies.set(SESSION_COOKIE, ADMIN_TOKEN)
+    assert client.get("/admin/things", headers={"Origin": "https://evil.example"}).status_code == 200
+    bearer = _bearer(RADIOLOGIST, UserRole.RADIOLOGIST) | {"Origin": "https://evil.example"}
+    assert client.post("/lab/sign", headers=bearer).status_code == 200, "a bearer token is never sent by the browser on its own"
+
+
+def test_a_trusted_origin_is_allowed(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from radreport.core.config import get_settings
+
+    monkeypatch.setenv("RADREPORT_TRUSTED_ORIGINS", '["https://admin.radreport.example"]')
+    get_settings.cache_clear()
+    try:
+        client.cookies.set(SESSION_COOKIE, ADMIN_TOKEN)
+        assert client.post("/admin/things", headers={"Origin": "https://admin.radreport.example"}).status_code == 200
+    finally:
+        get_settings.cache_clear()
+
+
+def test_a_forged_login_from_another_site_is_refused() -> None:
+    """Login CSRF: signing a victim into the attacker's account is refused before any password check."""
+    client = TestClient(create_app(), follow_redirects=False)
+    response = client.post("/admin/login", data={"email": "a@b.c", "password": "x" * 12}, headers={"Origin": "https://evil.example"})
+    assert response.status_code == 403
+
+
+# ========================================================== shared limits ===
+def test_a_shared_limit_counts_in_fixed_windows() -> None:
+    from radreport.api.access import SharedRateLimiter
+
+    counts: dict[tuple[str, str, object], int] = {}
+
+    def counter(limit_id: str, who: str, window_start: object) -> int:
+        counts[(limit_id, who, window_start)] = counts.get((limit_id, who, window_start), 0) + 1
+        return counts[(limit_id, who, window_start)]
+
+    now = [1_000_040.0]  # 20 s into the window that starts at 1_000_020
+    limiter = SharedRateLimiter(counter=counter, clock=lambda: now[0])
+    limit = RateLimit(id="login", requests=2, window_seconds=60, key="ip", store="shared")
+    assert limiter.hit(limit, "ip:1") is None
+    assert limiter.hit(limit, "ip:1") is None
+    assert limiter.hit(limit, "ip:1") == pytest.approx(40.0), "wait until the window ends"
+    now[0] += 40
+    assert limiter.hit(limit, "ip:1") is None, "a new window starts a new count"
+
+
+def test_every_shipped_limit_holds_across_workers() -> None:
+    """A per-worker count lets N workers allow N times the figure; none of the shipped limits may do that."""
+    assert {lid for lid, limit in load_policy().rate_limits.items() if limit.store != "shared"} == set()
+
+
+def test_a_shared_limiter_fails_open_when_its_store_is_down() -> None:
+    from radreport.api.access import SharedRateLimiter
+
+    def broken(*_args: object) -> int:
+        raise ConnectionError("database unreachable")
+
+    limit = RateLimit(id="login", requests=1, window_seconds=60, key="ip", store="shared")
+    assert SharedRateLimiter(counter=broken).hit(limit, "ip:1") is None
+
+
+def test_an_unknown_store_is_refused() -> None:
+    with pytest.raises(PolicyError, match="store must be"):
+        parse_policy('<access-policy version="1"><rate-limits><rate-limit id="x" requests="1" window-seconds="1" key="ip" store="redis"/></rate-limits></access-policy>')
+
+
+# ======================================================= browser sign-in ===
+def test_a_signed_out_browser_on_a_review_page_is_sent_to_sign_in() -> None:
+    client = TestClient(create_app(), follow_redirects=False)
+    response = client.get("/ui/queue")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/ui/login?next=%2Fui%2Fqueue"
+
+
+def test_an_expired_access_cookie_goes_to_refresh_first() -> None:
+    from radreport.auth.lab import ACCESS_COOKIE
+
+    client = TestClient(create_app(), follow_redirects=False)
+    client.cookies.set(ACCESS_COOKIE, "expired-or-garbage")
+    assert client.get("/ui/queue").headers["location"].startswith("/ui/refresh?next=")
+    assert client.get("/review/queue").status_code == 401, "an API call gets a status code, not a redirect"
+
+
+def test_a_lab_cookie_authenticates_but_only_same_site_writes(client: TestClient) -> None:
+    from radreport.auth.lab import ACCESS_COOKIE
+
+    token = _bearer(RADIOLOGIST, UserRole.RADIOLOGIST)["Authorization"].split(" ", 1)[1]
+    client.cookies.set(ACCESS_COOKIE, token)
+    assert client.post("/lab/sign", headers={"Origin": "http://testserver"}).status_code == 200
+    assert client.post("/lab/sign", headers={"Origin": "https://evil.example"}).status_code == 403
+
+
+def test_sign_in_never_redirects_off_site() -> None:
+    client = TestClient(create_app(), follow_redirects=False)
+    for target in ("https://evil.example", "//evil.example", "/admin/labs", "/ui/../admin"):
+        assert client.get("/ui/login", params={"next": target}).status_code == 400, target

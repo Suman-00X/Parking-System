@@ -107,7 +107,7 @@ def synth_dictation(*, seed: int = 0, include_aside: bool = True) -> SyntheticDi
     add(right, "self_correction")
 
     transcript = " ".join(parts)
-    report_text = " ".join(entry["text"] for entry in labels if entry["is_included_downstream"])
+    report_text = " ".join(str(entry["text"]) for entry in labels if entry["is_included_downstream"])
 
     return SyntheticDictation(transcript_verbatim=transcript, report_text=report_text, study_code_spoken=study_code, template_code=template_code, utterance_labels=labels)
 

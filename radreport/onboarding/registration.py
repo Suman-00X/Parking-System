@@ -14,10 +14,9 @@ from sqlalchemy.orm import Session
 
 from radreport.core.logging import get_logger
 from radreport.core.tenancy import assert_transition_allowed
-from radreport.core.types import ActorType, ImportBatchType, ImportStatus, ImportTrigger, TenantStatus, TrainingConsentEvent, UserRole
+from radreport.core.types import ActorType, TenantStatus, TrainingConsentEvent, UserRole
 from radreport.db.models.evaluation import EvalSet
 from radreport.db.models.identity import AppUser
-from radreport.db.models.onboarding import ImportBatch
 from radreport.db.models.orchestration import AuditLog
 from radreport.db.models.tenancy import Tenant, TenantBranding
 from radreport.db.session import bind_tenant
@@ -48,7 +47,6 @@ class RegistrationResult:
     tenant: Tenant
     lab_admin: AppUser
     acceptance_eval_set: EvalSet
-    onboarding_batch: ImportBatch
 
 
 def register_lab(session: Session, registration: LabRegistration, *, actor_id: uuid.UUID | None = None) -> RegistrationResult:
@@ -85,8 +83,7 @@ def register_lab(session: Session, registration: LabRegistration, *, actor_id: u
     acceptance_set = EvalSet(tenant_id=tenant.id, name=f"{registration.slug}-acceptance", description=("Per-lab acceptance set: ~40 items, readiness readiness only. Not a release gate — that is the canonical set."), is_frozen=False, is_canonical=False, stratification_spec={"target_size": 40, "stratify_by": ["capture_device_class", "template"]})
     session.add(acceptance_set)
 
-    batch = ImportBatch(tenant_id=tenant.id, batch_type=ImportBatchType.ROSTER, trigger=ImportTrigger.INITIAL_ONBOARDING, stage="S0", status=ImportStatus.UPLOADING, submitted_by=lab_admin.id)
-    session.add(batch)
+    # No roster batch here: the first roster import opens its own, and a placeholder only sat in `uploading` forever.
     session.flush()
 
     if registration.training_pooling_consent:
@@ -105,7 +102,7 @@ def register_lab(session: Session, registration: LabRegistration, *, actor_id: u
     transition_status(session, tenant.id, TenantStatus.ONBOARDING, actor_id=actor_id)
 
     log.info("lab_registered", tenant_id=str(tenant.id), slug=tenant.slug, pooling_consent=registration.training_pooling_consent)
-    return RegistrationResult(tenant=tenant, lab_admin=lab_admin, acceptance_eval_set=acceptance_set, onboarding_batch=batch)
+    return RegistrationResult(tenant=tenant, lab_admin=lab_admin, acceptance_eval_set=acceptance_set)
 
 
 def transition_status(session: Session, tenant_id: uuid.UUID, target: str, *, actor_id: uuid.UUID | None = None) -> Tenant:

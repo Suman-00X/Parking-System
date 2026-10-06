@@ -221,16 +221,30 @@ change nothing. From it a product admin can:
 - **manage platform users** — add, deactivate or reactivate product admins and
   support accounts, and reset their passwords.
 
+### Lab sign-in
+
+Lab staff sign in with `POST /auth/login` (`{"lab": "<slug>", "email", "password"}`)
+and send `Authorization: Bearer <access token>` on every lab request. Access tokens
+last 15 minutes and are checked without a database hit; refresh tokens last 14
+days, are single-use, stored only as hashes, and a replayed one revokes that whole
+sign-in. In a browser, `/ui/login` keeps the same tokens in httponly cookies and
+renews them silently. A product admin sets a lab user's first password from the
+lab's page in the admin panel. Admins keep server-side sessions instead: they are few, use only
+a browser, and need revocation to be instant.
+
 ### Who may call what
 
 Every route is listed in **`radreport/api/access_policy.xml`** with the roles
-allowed to call it, its rate limit and its request-size cap. A middleware checks
-each request against that file before any handler runs: an unlisted route is
-refused, a wrong role gets 403, too many requests get 429. The app refuses to
-start if the file and the routes disagree. To give `support` a new permission,
-add an `<allow role="support"/>` to that route. Rate limits are counted in each
-worker process's memory, so with `WORKERS=N` the effective limit is up to N
-times the configured one.
+allowed to call it (`roles="a,b"`), its rate limit, its request-size cap and
+every parameter it accepts (`<param>` with location, type, required, pattern and
+length). Two middlewares check each request against that file before any handler
+runs: an unlisted route is refused, a wrong role gets 403, too many requests get
+429, and an unknown, repeated, malformed or missing parameter gets 400. The app
+refuses to start if the file disagrees with the routes or with the parameters
+the handlers accept. To give `support` a new permission, add it to that route's
+`roles=`. Every rate limit is counted in Postgres (an unlogged table, one upsert
+per request), so it holds however many workers run and across restarts; if that
+table cannot be reached the limiter lets requests through rather than failing them.
 
 ### Configuration
 
@@ -243,6 +257,8 @@ Settings are read from the environment and `.env`, prefixed `RADREPORT_`, with
 | `RADREPORT_TEST_DATABASE_URL` | Unset ⇒ DB-backed tests skip. |
 | `RADREPORT_ENVIRONMENT` | `local` / `test` / `development` serve the API docs (`/docs`, `/openapi.json`) and send the admin cookie without `Secure`. Anything else hides the docs and requires HTTPS for the cookie. |
 | `RADREPORT_STORAGE__*` | S3-compatible audio store; SSE-KMS in a real deployment. |
+| `RADREPORT_LAB_AUTH__TOKEN_SECRET` | Signs lab users' access tokens. **Required outside local/test/development** (32+ random characters); the app refuses to start without it. |
+| `RADREPORT_TRUSTED_ORIGINS` | JSON list of extra origins allowed to send admin writes, for a public hostname in front of a proxy, e.g. `["https://admin.example.com"]`. A cross-site admin write from anywhere else is refused (CSRF). |
 | `RADREPORT_SEED_ADMIN_PASSWORD` | Read only by `make seed`, to set the first product admin's password. |
 | `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, … | **Unprefixed, and not settings.** Each provider row names the variable it reads, so a second account is a second variable plus a second provider in the admin panel — no code change. |
 
@@ -418,7 +434,8 @@ Each has a test that fails loudly.
   unfed safety monitor is worse than none: it reports as coverage.
 - **`api/access_policy.xml` + `api/access.py`** — the only place a route's
   roles are decided. A new route that is not added to the XML makes the app
-  refuse to start; a role added to an `<allow>` takes effect everywhere at once.
+  refuse to start, and so does a handler parameter the XML does not declare;
+  a role added to a route's `roles=` takes effect everywhere at once.
   Admin identity comes only from the session cookie: the old
   `X-Platform-User-Id` header made the admin realm spoofable and is gone.
 - **`api/deps.py:admin_lab_session`** — an admin acting on a lab must go

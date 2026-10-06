@@ -1,12 +1,12 @@
 # Modules and submodules
 
 A map of `radreport/` for someone who has to change it. Eight broad modules; the
-18 Python packages sit inside them. Each module opens with a file table — line
+19 Python packages sit inside them. Each module opens with a file table — line
 count, path, one line on what it is for — and then describes each submodule and,
 in pointers, the work it actually does.
 
-**141 Python files, 30,518 lines.** Counts taken from the filesystem on
-2026-10-05. Aggregate tables are at the bottom: [by module](#by-module),
+**154 Python files, 21,014 lines.** Counts taken from the filesystem on
+2026-10-07. Aggregate tables are at the bottom: [by module](#by-module),
 [by category](#by-category), [data](#data), [HTTP](#http-routes),
 [UI](#ui) and [tests](#tests).
 
@@ -17,14 +17,14 @@ but is never called by them; Surfaces call down and are called by nothing.
 
 | # | Module | Packages | Runs | Files | Lines |
 |---|---|---|---|---:|---:|
-| 1 | [Foundation](#1-foundation) | `core/`, `db/`, `devtools/` | always | 37 | 6,053 |
-| 2 | [Onboarding](#2-onboarding) | `onboarding/` | once per lab, before clinical traffic | 12 | 4,808 |
-| 3 | [Capture](#3-capture) | `ingest/`, `adapters/storage/` | per recording | 5 | 645 |
-| 4 | [Pipeline](#4-pipeline) | `pipeline/`, `knowledge/` | per report | 32 | 7,248 |
-| 5 | [Engines](#5-engines) | `adapters/llm/`, `adapters/asr/` | called by the pipeline | 13 | 1,995 |
-| 6 | [Review and export](#6-review-and-export) | `review/`, `export/` | per draft, then per signature | 10 | 2,371 |
-| 7 | [Governance](#7-governance) | `eval/`, `autonomy/`, `adaptation/`, `monitoring/` | out of band | 16 | 3,341 |
-| 8 | [Surfaces](#8-surfaces) | `api/`, `admin/` | per HTTP request | 16 | 4,057 |
+| 1 | [Foundation](#1-foundation) | `core/`, `db/`, `devtools/` | always | 40 | 4,309 |
+| 2 | [Onboarding](#2-onboarding) | `onboarding/` | once per lab, before clinical traffic | 12 | 2,500 |
+| 3 | [Capture](#3-capture) | `ingest/`, `adapters/storage/` | per recording | 5 | 418 |
+| 4 | [Pipeline](#4-pipeline) | `pipeline/`, `knowledge/` | per report | 33 | 4,594 |
+| 5 | [Engines](#5-engines) | `adapters/llm/`, `adapters/asr/` | called by the pipeline | 14 | 1,304 |
+| 6 | [Review and export](#6-review-and-export) | `review/`, `export/` | per draft, then per signature | 10 | 1,294 |
+| 7 | [Governance](#7-governance) | `eval/`, `autonomy/`, `adaptation/`, `monitoring/` | out of band | 17 | 1,989 |
+| 8 | [Surfaces](#8-surfaces) | `api/`, `admin/`, `auth/` | per HTTP request | 23 | 4,606 |
 
 ---
 
@@ -34,37 +34,37 @@ The substrate. Tenancy, the schema, configuration, and the primitives the other
 seven modules are not allowed to re-invent. Depends on nothing in this
 repository.
 
-**37 files, 6,053 lines.** (5 package `__init__` stubs omitted below.)
+**40 files, 4,309 lines.** (4 package `__init__` stubs omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
-| 579 | `core/types.py` | Every enum and value set. The migration builds its CHECK constraints from these. |
-| 412 | `db/models/onboarding.py` | §6.10 S0–S7: import batches, artifacts, template candidates, merge proposals, corpus, collisions, readiness checks |
-| 378 | `db/models/reporting.py` | §6.6 drafts, field values, provenance spans, verification findings, critical rules and alerts, autonomy observations |
-| 372 | `db/models/knowledge.py` | §6.5 templates, versions, fields, lexicon sets/terms/variants, autonomy classes, speaker bias |
-| 265 | `core/tenancy.py` | §11.3 exception lists, tenant scope, lifecycle transition gates |
-| 256 | `devtools/synthetic.py` | Synthetic audio, dictations, patients, `.docx` templates — no PHI on dev machines |
-| 229 | `db/models/modelconfig.py` | §6.14 providers, model definitions, per-(tenant, task) assignments + append-only log |
-| 277 | `db/models/review.py` | §6.7 revisions, edit events, final reports, draft-usefulness reports |
-| 227 | `db/models/asr.py` | §6.4 ASR runs, segments, transcripts, labelled utterances |
-| 206 | `db/models/tenancy.py` | `tenant`, `platform_user`, `admin_session`, training-consent event log, branding |
-| 202 | `db/models/evaluation.py` | §6.9 eval sets, items, runs, results |
-| 198 | `db/models/adaptation.py` | §6.12 verbatim transcripts, training corpus snapshots, adaptation runs |
-| 190 | `db/models/identity.py` | §6.2 app users, radiologist profiles, patients, studies |
-| 185 | `db/session.py` | Engine, `tenant_session()`, `system_session()`, `bind_tenant()` — the RLS GUC binding |
-| 184 | `db/models/orchestration.py` | §6.8 pipeline runs, stage executions, audit log |
+| 529 | `core/types.py` | Every enum and value set. The migration builds its CHECK constraints from these. |
+| 231 | `db/models/onboarding.py` | §6.10 S0–S7: import batches, artifacts, template candidates, merge proposals, corpus, collisions, readiness checks |
+| 211 | `db/models/reporting.py` | §6.6 drafts, field values, provenance spans, verification findings, critical rules and alerts, autonomy observations |
+| 230 | `db/models/knowledge.py` | §6.5 templates, versions, fields, lexicon sets/terms/variants, autonomy classes, speaker bias |
+| 188 | `core/tenancy.py` | §11.3 exception lists, tenant scope, lifecycle transition gates |
+| 146 | `devtools/synthetic.py` | Synthetic audio, dictations, patients, `.docx` templates — no PHI on dev machines |
+| 121 | `db/models/modelconfig.py` | §6.14 providers, model definitions, per-(tenant, task) assignments + append-only log |
+| 137 | `db/models/review.py` | §6.7 revisions, edit events, final reports, draft-usefulness reports |
+| 141 | `db/models/asr.py` | §6.4 ASR runs, segments, transcripts, labelled utterances |
+| 129 | `db/models/tenancy.py` | `tenant`, `platform_user`, `admin_session`, training-consent event log, branding |
+| 114 | `db/models/evaluation.py` | §6.9 eval sets, items, runs, results |
+| 111 | `db/models/adaptation.py` | §6.12 verbatim transcripts, training corpus snapshots, adaptation runs |
+| 139 | `db/models/identity.py` | §6.2 app users, radiologist profiles, patients, studies |
+| 95 | `db/session.py` | Engine, `tenant_session()`, `system_session()`, `bind_tenant()` — the RLS GUC binding |
+| 114 | `db/models/orchestration.py` | §6.8 pipeline runs, stage executions, audit log |
 | 152 | `devtools/seed.py` | Seeds the global model catalog, the first product admin, the demo logins and an optional demo lab |
-| 166 | `db/introspect.py` | Derives the tenancy facts that migration 0002 and the tests both read |
-| 158 | `db/base.py` | Declarative base, `tenant_fk()` composite FKs, tenancy mixins, CHECK builders |
-| 150 | `core/errors.py` | Every domain error the system raises deliberately |
-| 148 | `db/models/ingestion.py` | §6.3 recordings, with every §9.8 quality measurement |
-| 141 | `db/models/__init__.py` | Imports every model so `Base.metadata` is complete for migrations and tests |
-| 119 | `core/config.py` | Settings from env and `.env`, `RADREPORT_`-prefixed |
-| 91 | `core/text.py` | Sentence splitting that does not cut decimals ("3.2 cm") in half |
-| 89 | `db/bootstrap.py` | Creates the least-privileged app and audit roles (non-owner, so RLS is not bypassed) |
-| 74 | `db/migrations/env.py` | Alembic environment |
-| 61 | `core/hashing.py` | Content hashing — the idempotency backbone |
-| 56 | `core/logging.py` | structlog configuration |
+| 126 | `db/introspect.py` | Derives the tenancy facts that migration 0002 and the tests both read |
+| 84 | `db/base.py` | Declarative base, `tenant_fk()` composite FKs, tenancy mixins, CHECK builders |
+| 122 | `core/errors.py` | Every domain error the system raises deliberately |
+| 79 | `db/models/ingestion.py` | §6.3 recordings, with every §9.8 quality measurement |
+| 90 | `db/models/__init__.py` | Imports every model so `Base.metadata` is complete for migrations and tests |
+| 129 | `core/config.py` | Settings from env and `.env`, `RADREPORT_`-prefixed |
+| 56 | `core/text.py` | Sentence splitting that does not cut decimals ("3.2 cm") in half |
+| 65 | `db/bootstrap.py` | Creates the least-privileged app and audit roles (non-owner, so RLS is not bypassed) |
+| 50 | `db/migrations/env.py` | Alembic environment |
+| 48 | `core/hashing.py` | Content hashing — the idempotency backbone |
+| 38 | `core/logging.py` | structlog configuration |
 
 ### `core/config.py` — settings
 Typed settings objects for storage, audio gates, LLM, ASR and observability,
@@ -223,21 +223,21 @@ The S0–S7 onboarding stages: everything that turns a signed contract into a la
 pipeline can serve. Runs once per lab and must finish before `tenant.status` can
 move `onboarding → pilot`.
 
-**12 files, 4,808 lines.** (1 package `__init__` stub omitted below.)
+**12 files, 2,500 lines.** (1 package `__init__` stub omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
-| 807 | `onboarding/templates.py` | S1 — candidates, merge proposals, promotion under R18 |
-| 579 | `onboarding/lexicon.py` | S3 — term mining and the blocking collision audit |
-| 523 | `onboarding/corpus.py` | S2 — corpus load, derived template map, usage histogram, referrer prior |
-| 494 | `onboarding/critical_rules.py` | S6 — seed candidates, author, approve critical-findings rules |
-| 476 | `onboarding/paired_audio.py` | S4 — verbatim queue, corpus hours, surface-variant mining |
-| 417 | `onboarding/boilerplate.py` | S5 — rank normals by corpus share, CSV export |
-| 348 | `onboarding/readiness.py` | S7 — the seven checks gating onboarding → pilot |
-| 334 | `onboarding/roster.py` | S0 — roster import, voice enrollment, the two separate consents |
-| 279 | `onboarding/registration.py` | Lab registration and the tenant lifecycle |
-| 276 | `onboarding/template_parse.py` | S1's `.docx` parser, stdlib only. PDF refused, not half-parsed. |
-| 275 | `onboarding/batches.py` | The import-batch lifecycle every stage shares |
+| 390 | `onboarding/templates.py` | S1 — candidates, merge proposals, promotion under R18 |
+| 285 | `onboarding/lexicon.py` | S3 — term mining and the blocking collision audit |
+| 329 | `onboarding/corpus.py` | S2 — corpus load, derived template map, usage histogram, referrer prior |
+| 243 | `onboarding/critical_rules.py` | S6 — seed candidates, author, approve critical-findings rules |
+| 252 | `onboarding/paired_audio.py` | S4 — verbatim queue, corpus hours, surface-variant mining |
+| 186 | `onboarding/boilerplate.py` | S5 — rank normals by corpus share, CSV export |
+| 163 | `onboarding/readiness.py` | S7 — the seven checks gating onboarding → pilot |
+| 181 | `onboarding/roster.py` | S0 — roster import, voice enrollment, the two separate consents |
+| 137 | `onboarding/registration.py` | Lab registration and the tenant lifecycle |
+| 219 | `onboarding/template_parse.py` | S1's `.docx` parser, stdlib only. PDF refused, not half-parsed. |
+| 114 | `onboarding/batches.py` | The import-batch lifecycle every stage shares |
 
 ### `onboarding/batches.py` — the import-batch spine
 Every S-stage differs in what it parses and agrees on everything else, and the
@@ -342,13 +342,13 @@ The capture-only path. Ships before anything that interprets audio, so the
 `current` gold partition accumulates while the rest is being built — and must
 keep working when every other module is down.
 
-**5 files, 645 lines.** (2 package `__init__` stubs omitted below.)
+**5 files, 418 lines.** (2 package `__init__` stubs omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
-| 299 | `ingest/audio_gates.py` | §9.8 quality gates: format, SNR, silence, duration |
-| 182 | `ingest/service.py` | Capture-only ingest, idempotent by content hash |
-| 164 | `adapters/storage/object_store.py` | S3-compatible store (SSE-KMS) + in-memory double |
+| 186 | `ingest/audio_gates.py` | §9.8 quality gates: format, SNR, silence, duration |
+| 113 | `ingest/service.py` | Capture-only ingest, idempotent by content hash |
+| 117 | `adapters/storage/object_store.py` | S3-compatible store (SSE-KMS) + in-memory double |
 
 ### `ingest/audio_gates.py` — §9.8 quality gates
 Two kinds of failure, kept apart deliberately. A reject is permanent data loss;
@@ -385,40 +385,40 @@ deliberately the ones carrying the safety properties — replayable,
 bit-reproducible, testable with no model bound. The rest call a model or an ASR
 engine, and each degrades explicitly when none is bound.
 
-**32 files, 7,248 lines.** (3 package `__init__` stubs omitted below.)
+**33 files, 4,594 lines.** (3 package `__init__` stubs omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
-| 450 | `pipeline/stages/routing.py` | Stage 9 — the §8.3.4 cascade. Declines rather than picking the nearest of twenty. |
-| 376 | `pipeline/stages/normalise.py` | Stage 3 — phonetic resolution with the margin guard (stops LMC resolving to LMP) |
-| 368 | `pipeline/stages/extract.py` | Stage 10 — per-section extraction, k=3, provenance mandatory |
-| 348 | `pipeline/stages/verify/rules.py` | Stage 13 — the deterministic §8.3.8 contradiction checks |
-| 358 | `pipeline/stages/persist.py` | Stage 16 — the seam to the review surface; emits every domain row |
-| 214 | `pipeline/stages/release.py` | Stage 17 — files the report a granted class released (GA, off by default) |
-| 331 | `pipeline/stages/critic.py` | Stage 13b — LLM critic + round-trip entailment (Beta) |
-| 329 | `pipeline/stages/reconcile.py` | Stage 2b — multi-engine fan-out, ROVER, bounded arbitration (Beta) |
-| 291 | `pipeline/stages/repairs.py` | Stage 6 — self-corrections. Splits the utterance; never deletes. |
-| 288 | `knowledge/phonetics.py` | Double metaphone, the E-set, the collision audit |
-| 285 | `pipeline/stages/study_code.py` | Stage 4 — bounded study-code search; `CODEWORD_COMPLIANCE` vs `STUDYCODE_RECALL` |
-| 284 | `pipeline/stages/grounding.py` | Stage 11 — verbatim quote check, outside the LLM (invariant I1) |
-| 282 | `pipeline/stages/segment.py` | Stage 5 — segment and classify utterances. Labels only; nothing deleted. |
-| 281 | `pipeline/stages/critical.py` | Stage 7 — critical findings on the transcript; writes the alert row |
-| 251 | `pipeline/stages/preprocess.py` | Stage 1 — VAD, SNR, peak normalisation |
-| 247 | `pipeline/graph.py` | The orchestrator: `stage_execution` rows, commit discipline, shadow mode |
-| 321 | `pipeline/state.py` | `PipelineState` — the object every stage reads |
-| 275 | `pipeline/stages/providers.py` | Per-tenant knowledge snapshot, injected (stages get no DB session) |
-| 240 | `pipeline/stages/post_correction.py` | Stage 2c — the only stage allowed to rewrite the transcript |
-| 223 | `knowledge/consent.py` | Derived training eligibility; `G6_legal_basis` |
-| 220 | `pipeline/stages/asr.py` | Stage 2 — single-engine ASR with keyterm biasing |
-| 238 | `pipeline/v1.py` | The 16-stage graph, plus release at GA. The only place edges are defined. |
-| 201 | `pipeline/stages/compose.py` | Stage 12 — deterministic render from `render_spec`, grounded atoms only |
-| 192 | `pipeline/stages/sketch.py` | Stage 8 — template-free finding sketch, before routing |
-| 277 | `pipeline/stages/route_human.py` | Stage 15 — who reviews it, the §5.4.1 grading sample, and whether anybody reviews it |
-| 175 | `pipeline/stages/confidence.py` | Stage 14 — `min(critical) × mean(all)` |
-| 139 | `pipeline/timing.py` | Character offset → audio time, for click-to-listen and the training corpus |
-| 107 | `pipeline/context.py` | `RunContext`: cost accounting, budget cap, model resolution |
-| 101 | `pipeline/contracts.py` | `Stage` / `StageResult` — no stage writes domain tables |
-| 9 | `pipeline/stages/verify/__init__.py` | Re-exports the verification stage |
+| 260 | `pipeline/stages/routing.py` | Stage 9 — the §8.3.4 cascade. Declines rather than picking the nearest of twenty. |
+| 223 | `pipeline/stages/normalise.py` | Stage 3 — phonetic resolution with the margin guard (stops LMC resolving to LMP) |
+| 216 | `pipeline/stages/extract.py` | Stage 10 — per-section extraction, k=3, provenance mandatory |
+| 172 | `pipeline/stages/verify/rules.py` | Stage 13 — the deterministic §8.3.8 contradiction checks |
+| 186 | `pipeline/stages/persist.py` | Stage 16 — the seam to the review surface; emits every domain row |
+| 115 | `pipeline/stages/release.py` | Stage 17 — files the report a granted class released (GA, off by default) |
+| 187 | `pipeline/stages/critic.py` | Stage 13b — LLM critic + round-trip entailment (Beta) |
+| 188 | `pipeline/stages/reconcile.py` | Stage 2b — multi-engine fan-out, ROVER, bounded arbitration (Beta) |
+| 184 | `pipeline/stages/repairs.py` | Stage 6 — self-corrections. Splits the utterance; never deletes. |
+| 215 | `knowledge/phonetics.py` | Double metaphone, the E-set, the collision audit |
+| 175 | `pipeline/stages/study_code.py` | Stage 4 — bounded study-code search; `CODEWORD_COMPLIANCE` vs `STUDYCODE_RECALL` |
+| 145 | `pipeline/stages/grounding.py` | Stage 11 — verbatim quote check, outside the LLM (invariant I1) |
+| 164 | `pipeline/stages/segment.py` | Stage 5 — segment and classify utterances. Labels only; nothing deleted. |
+| 167 | `pipeline/stages/critical.py` | Stage 7 — critical findings on the transcript; writes the alert row |
+| 178 | `pipeline/stages/preprocess.py` | Stage 1 — VAD, SNR, peak normalisation |
+| 161 | `pipeline/graph.py` | The orchestrator: `stage_execution` rows, commit discipline, shadow mode |
+| 252 | `pipeline/state.py` | `PipelineState` — the object every stage reads |
+| 118 | `pipeline/stages/providers.py` | Per-tenant knowledge snapshot, injected (stages get no DB session) |
+| 152 | `pipeline/stages/post_correction.py` | Stage 2c — the only stage allowed to rewrite the transcript |
+| 140 | `knowledge/consent.py` | Derived training eligibility; `G6_legal_basis` |
+| 125 | `pipeline/stages/asr.py` | Stage 2 — single-engine ASR with keyterm biasing |
+| 130 | `pipeline/v1.py` | The 16-stage graph, plus release at GA. The only place edges are defined. |
+| 139 | `pipeline/stages/compose.py` | Stage 12 — deterministic render from `render_spec`, grounded atoms only |
+| 135 | `pipeline/stages/sketch.py` | Stage 8 — template-free finding sketch, before routing |
+| 125 | `pipeline/stages/route_human.py` | Stage 15 — who reviews it, the §5.4.1 grading sample, and whether anybody reviews it |
+| 99 | `pipeline/stages/confidence.py` | Stage 14 — `min(critical) × mean(all)` |
+| 83 | `pipeline/timing.py` | Character offset → audio time, for click-to-listen and the training corpus |
+| 77 | `pipeline/context.py` | `RunContext`: cost accounting, budget cap, model resolution |
+| 75 | `pipeline/contracts.py` | `Stage` / `StageResult` — no stage writes domain tables |
+| 5 | `pipeline/stages/verify/__init__.py` | Re-exports the verification stage |
 
 ### Orchestration
 
@@ -662,21 +662,21 @@ conditions, re-derivable at any time.
 The only place a vendor is named. Everything above calls an interface; swapping
 a provider is configuration, not an engineering project.
 
-**13 files, 1,995 lines.** (2 package `__init__` stubs omitted below.)
+**14 files, 1,304 lines.** (3 package `__init__` stubs omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
-| 452 | `adapters/asr/rover.py` | ROVER multi-engine voting. NULL is a candidate, which suppresses single-engine insertions. |
-| 288 | `adapters/llm/registry.py` | Resolves "which model serves task T for tenant X"; refuses activation without a gold-set eval run |
-| 200 | `adapters/llm/anthropic_client.py` | Anthropic client with cache-control blocks and usage accounting |
-| 172 | `adapters/llm/prompt.py` | `PromptBundle` — makes a cache-hostile prompt order unexpressible |
-| 155 | `adapters/llm/openai_compat.py` | OpenAI-compatible client, for locally hosted models |
-| 148 | `adapters/asr/whisper_local.py` | faster-whisper behind the engine interface, plus the deterministic stub |
-| 138 | `adapters/llm/base.py` | `LLMClient` protocol, request/response/usage types |
-| 133 | `adapters/llm/sampling.py` | k-sample fan-out with cache warm-up (sample 1 completes before 2..k) |
-| 127 | `adapters/llm/concurrency.py` | Concurrency limiter and circuit breaker |
-| 92 | `adapters/llm/pricing.py` | Corrected Sonnet 5 pricing and cached-call cost accounting |
-| 90 | `adapters/asr/base.py` | `ASREngine` protocol, word timings, config hashing for idempotent reruns |
+| 314 | `adapters/asr/rover.py` | ROVER multi-engine voting. NULL is a candidate, which suppresses single-engine insertions. |
+| 144 | `adapters/llm/registry.py` | Resolves "which model serves task T for tenant X"; refuses activation without a gold-set eval run |
+| 136 | `adapters/llm/anthropic_client.py` | Anthropic client with cache-control blocks and usage accounting |
+| 113 | `adapters/llm/prompt.py` | `PromptBundle` — makes a cache-hostile prompt order unexpressible |
+| 97 | `adapters/llm/openai_compat.py` | OpenAI-compatible client, for locally hosted models |
+| 89 | `adapters/asr/whisper_local.py` | faster-whisper behind the engine interface, plus the deterministic stub |
+| 113 | `adapters/llm/base.py` | `LLMClient` protocol, request/response/usage types |
+| 72 | `adapters/llm/sampling.py` | k-sample fan-out with cache warm-up (sample 1 completes before 2..k) |
+| 105 | `adapters/llm/concurrency.py` | Concurrency limiter and circuit breaker |
+| 57 | `adapters/llm/pricing.py` | Corrected Sonnet 5 pricing and cached-call cost accounting |
+| 61 | `adapters/asr/base.py` | `ASREngine` protocol, word timings, config hashing for idempotent reruns |
 
 ### `adapters/llm/base.py` — the LLM interface
 One interface over cloud and local providers. A local model is a row in
@@ -766,19 +766,19 @@ mistake, and where they agree the word is almost certainly right.
 The human loop and what leaves the building. The schema for this was designed in
 Phase 0; this module is the behaviour.
 
-**10 files, 2,371 lines.** (1 package `__init__` stub omitted below.)
+**10 files, 1,294 lines.** (2 package `__init__` stubs omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
-| 590 | `review/session.py` | Open a draft, record revisions, `active_edit_seconds`, categorised edit events |
-| 478 | `review/signing.py` | The four refusals between a draft and a signed record; addenda |
-| 280 | `export/hl7.py` | HL7 v2 ORU^R01, MLLP-framed |
-| 280 | `review/grading.py` | G0–G4, CSE rate, and the feed into autonomy accrual + CUSUM |
-| 262 | `export/fhir.py` | FHIR R4 DiagnosticReport + transaction bundle |
-| 272 | `review/queue.py` | Priority → alert → flagged count → oldest, filtered by role |
-| 153 | `review/feedback.py` | §9.6's "this draft was useless", actually recorded |
-| 135 | `review/rbac.py` | The four roles, genuinely different (an assistant may not sign) |
-| 6 | `review/__init__.py` | Package docstring |
+| 343 | `review/session.py` | Open a draft, record revisions, `active_edit_seconds`, categorised edit events |
+| 187 | `review/signing.py` | The four refusals between a draft and a signed record; addenda |
+| 160 | `export/hl7.py` | HL7 v2 ORU^R01, MLLP-framed |
+| 148 | `review/grading.py` | G0–G4, CSE rate, and the feed into autonomy accrual + CUSUM |
+| 131 | `export/fhir.py` | FHIR R4 DiagnosticReport + transaction bundle |
+| 139 | `review/queue.py` | Priority → alert → flagged count → oldest, filtered by role |
+| 80 | `review/feedback.py` | §9.6's "this draft was useless", actually recorded |
+| 104 | `review/rbac.py` | The four roles, genuinely different (an assistant may not sign) |
+| 1 | `review/__init__.py` | Package docstring |
 
 ### `review/rbac.py` — the four roles
 Stated as code because the instinct is to collapse them into "can edit" and
@@ -849,24 +849,24 @@ system its customer runs.
 Measurement, and the machinery that decides what the rest of the system is
 allowed to do unsupervised. Reads from everything; called by nothing.
 
-**16 files, 3,341 lines.** (3 package `__init__` stubs omitted below.)
+**17 files, 1,989 lines.** (4 package `__init__` stubs omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
-| 443 | `autonomy/accrual.py` | Evidence gathering and the Beta-Binomial posterior |
-| 443 | `eval/goldset.py` | §5.3-stratified assembly, freeze, permanent training exclusion |
-| 423 | `eval/bakeoff.py` | ASR bake-off: per-partition, insertions tracked independently |
-| 374 | `monitoring/drift.py` | PSI against an explicit baseline window |
-| 360 | `autonomy/grant.py` | Bayesian sequential grant, mechanical CUSUM revocation |
-| 348 | `adaptation/gates.py` | §8.6.5's six gates; two unimplemented and failing closed |
-| 321 | `eval/harness.py` | Eval runner, scopeable to one `task_key` |
-| 175 | `eval/gates.py` | Release-gate evaluation with per-stratum breakdowns |
-| 158 | `eval/metrics/asr_metrics.py` | WER, INS_RATE, CTER — all from one alignment |
-| 103 | `eval/metrics/routing_metrics.py` | Routing accuracy, codeword compliance, study-code recall |
-| 97 | `eval/metrics/alignment.py` | Token alignment shared by the ASR metrics |
-| 90 | `eval/metrics/__init__.py` | Metric registry |
-| 272 | `autonomy/release.py` | The release gate: what a grant actually changes, and §4.3's coverage |
-| 4 | `autonomy/__init__.py` | Package docstring — Beta observes, Phase 6 grants |
+| 264 | `autonomy/accrual.py` | Evidence gathering and the Beta-Binomial posterior |
+| 219 | `eval/goldset.py` | §5.3-stratified assembly, freeze, permanent training exclusion |
+| 262 | `eval/bakeoff.py` | ASR bake-off: per-partition, insertions tracked independently |
+| 189 | `monitoring/drift.py` | PSI against an explicit baseline window |
+| 172 | `autonomy/grant.py` | Bayesian sequential grant, mechanical CUSUM revocation |
+| 173 | `adaptation/gates.py` | §8.6.5's six gates; two unimplemented and failing closed |
+| 176 | `eval/harness.py` | Eval runner, scopeable to one `task_key` |
+| 119 | `eval/gates.py` | Release-gate evaluation with per-stratum breakdowns |
+| 95 | `eval/metrics/asr_metrics.py` | WER, INS_RATE, CTER — all from one alignment |
+| 75 | `eval/metrics/routing_metrics.py` | Routing accuracy, codeword compliance, study-code recall |
+| 69 | `eval/metrics/alignment.py` | Token alignment shared by the ASR metrics |
+| 51 | `eval/metrics/__init__.py` | Metric registry |
+| 121 | `autonomy/release.py` | The release gate: what a grant actually changes, and §4.3's coverage |
+| 1 | `autonomy/__init__.py` | Package docstring — Beta observes, Phase 6 grants |
 
 ### `eval/harness.py` — the eval harness
 Precedes the pipeline by invariant I6: you cannot tell whether a stage works
@@ -971,34 +971,35 @@ gate. This notices when something changed and nobody said so.
 HTTP and the admin panel. Thin by rule — access checks, permission checks and
 serialisation, no business logic.
 
-**19 files, 3,423 lines**, plus the access policy XML. (3 package `__init__`
+**23 files, 4,606 lines**, plus the access policy XML. (5 package `__init__` stubs
 stubs omitted below.) Line counts taken on 2026-10-06, after the admin panel
 and the access policy landed.
 
 | Lines | File | Purpose |
 |---:|---|---|
-| 731 | `api/routes/admin_panel.py` | Admin panel pages under `/admin`: sign-in, labs, lab page, readiness, onboarding, providers, users |
-| 377 | `api/access.py` | Access middleware: policy loading, coverage check, rate limits, caller identification |
-| 377 | `api/access_policy.xml` | Every route: realm, allowed roles, rate limit, body cap (XML, not Python) |
-| 358 | `api/routes/admin_api.py` | Admin panel JSON under `/admin/api`: labs, steps, onboarding, autonomy, adaptation, platform users |
-| 325 | `api/routes/onboarding.py` | 17 routes: lab-side onboarding — consents and clinical approvals |
+| 818 | `api/routes/admin_panel.py` | Admin panel pages under `/admin`: sign-in, labs, lab page, readiness, onboarding, providers, users |
+| 489 | `api/access.py` | Access middleware: policy loading, coverage check, rate limits, caller identification |
+| 492 | `api/access_policy.xml` | Every route: realm, allowed roles, rate limit, body cap (XML, not Python) |
+| 420 | `api/routes/admin_api.py` | Admin panel JSON under `/admin/api`: labs, steps, onboarding, autonomy, adaptation, platform users |
+| 328 | `api/routes/onboarding.py` | 17 routes: lab-side onboarding — consents and clinical approvals |
 | 289 | `api/routes/review.py` | 12 routes: queue, draft, revisions, signing, grading, feedback, audio |
 | 233 | `admin/modelconfig.py` | Providers, model definitions, per-lab per-step assignment |
-| 223 | `api/routes/review_ui.py` | Review screen + queue screen |
+| 303 | `api/routes/review_ui.py` | Review screen + queue screen |
 | 185 | `admin/auth.py` | scrypt passwords, server-side sessions, revocation |
 | 154 | `api/routes/ga.py` | 6 routes: lab-side autonomy read/revoke, release coverage, HL7 + FHIR export, drift |
-| 117 | `admin/onboarding_steps.py` | The onboarding uploads and mining steps an admin runs, shared by the pages and the API |
-| 99 | `admin/users.py` | Add, deactivate, reactivate and reset product admin and support accounts |
-| 93 | `api/deps.py` | The caller the middleware identified, and one-lab session binding |
+| 161 | `admin/onboarding_steps.py` | The onboarding uploads and mining steps an admin runs, shared by the pages and the API |
+| 113 | `admin/users.py` | Add, deactivate, reactivate and reset product admin and support accounts |
+| 95 | `api/deps.py` | The caller the middleware identified, and one-lab session binding |
 | 88 | `admin/cli.py` | Create the first admin, reset a password, revoke sessions |
-| 87 | `api/app.py` | App factory, router wiring, access middleware, `/health` (liveness) and `/ready` (dependencies) |
+| 95 | `api/app.py` | App factory, router wiring, access middleware, `/health` (liveness) and `/ready` (dependencies) |
 | 60 | `api/routes/ingest.py` | Capture-only upload: validate, store, audit |
 
 ### `api/app.py` — the FastAPI application
 Assembles the routers and puts the access check in front of all of them.
 
-- `create_app()` mounts every router, runs `verify_coverage()` against the
-  policy — the app refuses to start on a mismatch — and installs `AccessMiddleware`
+- `create_app()` mounts every router, runs `verify_coverage()` and `verify_params()`
+  against the policy — the app refuses to start on a mismatch — and installs
+  `AccessMiddleware` in front of `InputValidationMiddleware`
 - `current_revision()` / `head_revision()` so a schema drift is visible at boot
 
 ### `api/access_policy.xml` — who may call what
@@ -1008,9 +1009,30 @@ an edit here, not in code.
 - `<roles>` — `product_admin` and `support` (admin realm); `lab_admin`,
   `radiologist`, `transcriptionist`, `auditor` (lab realm)
 - `<rate-limits>` — named sliding-window limits, keyed by caller or by IP
-- `<routes realm="public|admin|lab">` — method, path, `<allow role>` list,
+- `<routes realm="public|admin|lab">` — method, path, `roles="a,b"`,
   `rate-limit`, `max-body-bytes`, and `environments` for the dev-only docs routes
+- `<param>` per accepted parameter — `in` (path/query/form/file/json), `type`,
+  `required`, `pattern`, `max-length`, `multiple`
 - A role may only be allowed on a route of its own realm; the parser refuses the file otherwise
+
+### `auth/lab.py` — lab users' sign-in
+- `login()` — password check (same answer and timing for every failure), then a token pair
+- `issue_access_token()` / `verify_access_token()` — HS256, 15 minutes, user id + tenant id + roles
+- `refresh()` — single-use refresh tokens stored as hashes; a replayed one revokes its whole sign-in
+- `logout()`, `revoke_all()`, `set_password()` (by a product admin), `change_password()` (by the user)
+- `require_token_secret()` — the app refuses to start outside development without a 32+ character secret
+
+### `api/routes/auth.py` — `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/password`
+
+### `api/input_check.py` — the parameter allowlist
+Runs right after the access middleware, so only for a caller already let through.
+
+- `handler_params()` / `verify_params()` — read what each handler really accepts
+  (path, query, form, file, JSON model fields) and refuse to start if the policy differs
+- `InputValidationMiddleware` — unknown, repeated, malformed or missing parameter
+  `400`; body counted while it is spooled (memory, then disk past 1 MiB) so a
+  chunked body is capped too `413`; the handler gets the spooled body unchanged
+- Errors name the parameter, never its value
 
 ### `api/access.py` — the access middleware
 Every request passes through it before any handler runs, so a route cannot be
@@ -1022,9 +1044,11 @@ reached without a policy entry and a caller the policy allows.
   rate limit `429` with `Retry-After`; caller identification `401` (or a `303` to
   `/admin/login` for a signed-out browser on a panel page); role check `403`
 - Admin realm: the `radreport_admin` session cookie. Lab realm: the placeholder
-  `X-User-Id` / `X-Tenant-Id` headers, with the user looked up inside that tenant
+  bearer access token from `/auth/login`, verified without a database round trip
   and their stored roles checked
-- `RateLimiter` — in-process sliding window, so limits are per worker
+- `SharedRateLimiter` — a fixed-window counter in the unlogged `rate_limit_counter` table,
+  used by every shipped limit so counts hold across workers; fails open if the table is
+  unreachable. `RateLimiter` — an in-process sliding window, for a limit without `store="shared"`
 - `AccessPolicy.allows()` — used by the panel to hide controls a role cannot use
 
 ### `api/deps.py` — request dependencies
@@ -1129,7 +1153,8 @@ One implementation behind both the onboarding page and the admin API.
 - `onboarding_overview()` — corpus verification, gold progress, active rules, recent batches, readiness
 - `import_roster_file()`, `submit_template_files()`, `load_corpus_records()`, `propose_template_merges()`
 - `STEPS` — `derive-map`, `lexicon-mine`, `collision-audit`, `mine-variants`,
-  `boilerplate-mine`, `critical-rules-seed`; `run_step()` runs one by name
+  `boilerplate-mine`, `critical-rules-seed`, and `acceptance-assemble` / `acceptance-freeze`
+  (fill and freeze the lab's acceptance set, which the pilot gate needs); `run_step()` runs one by name
 - `StepRefused` carries the HTTP status the API answers with
 
 ### `admin/modelconfig.py` — per-lab model configuration
@@ -1177,50 +1202,53 @@ Grouped by **when the code runs**, which is how the sections above are ordered.
 
 | # | Module | Files | Lines | Share | Runs |
 |---|---|---:|---:|---:|---|
-| 1 | [Foundation](#1-foundation) | 37 | 6,053 | 19.8% | always |
-| 2 | [Onboarding](#2-onboarding) | 12 | 4,808 | 15.8% | once per lab |
-| 3 | [Capture](#3-capture) | 5 | 645 | 2.1% | per recording |
-| 4 | [Pipeline](#4-pipeline) | 32 | 7,248 | 23.8% | per report |
-| 5 | [Engines](#5-engines) | 13 | 1,995 | 6.5% | called by the pipeline |
-| 6 | [Review and export](#6-review-and-export) | 10 | 2,371 | 7.8% | per draft, then per signature |
-| 7 | [Governance](#7-governance) | 16 | 3,341 | 10.9% | out of band |
-| 8 | [Surfaces](#8-surfaces) | 16 | 4,057 | 13.3% | per HTTP request |
-| | **Total** | **141** | **30,518** | | |
+| 1 | [Foundation](#1-foundation) | 40 | 4,309 | 20.5% | always |
+| 2 | [Onboarding](#2-onboarding) | 12 | 2,500 | 11.9% | once per lab |
+| 3 | [Capture](#3-capture) | 5 | 418 | 2.0% | per recording |
+| 4 | [Pipeline](#4-pipeline) | 33 | 4,594 | 21.9% | per report |
+| 5 | [Engines](#5-engines) | 14 | 1,304 | 6.2% | called by the pipeline |
+| 6 | [Review and export](#6-review-and-export) | 10 | 1,294 | 6.2% | per draft, then per signature |
+| 7 | [Governance](#7-governance) | 17 | 1,989 | 9.5% | out of band |
+| 8 | [Surfaces](#8-surfaces) | 23 | 4,606 | 21.9% | per HTTP request |
+| | **Total** | **154** | **21,014** | | |
 
-The two largest are the ones to expect: the Pipeline is sixteen stages, and the
-Foundation carries the 58-table schema plus every shared primitive. Capture is
-the smallest at 2.1% and does the least on purpose — it validates, stores and
+The three largest are close: the Pipeline is sixteen stages, the Surfaces are two
+realms of routes plus the access layer that checks every request, and the
+Foundation carries the 60-table schema plus every shared primitive. Capture is
+the smallest at 2.0% and does the least on purpose — it validates, stores and
 audits, and kicks off nothing.
 
 ## By category
 
-The same 141 files cut by **what a file is**, which is the cut that matters when
-you are deciding where a change belongs rather than when it runs.
+The same 154 files cut by **what a file is**, which is the cut that matters when
+you are deciding where a change belongs rather than when it runs. The rule: `db/` is
+DB / schema, `api/` is HTTP, `adapters/` is external I/O, `core/` and `devtools/`
+are shared helpers, and everything else is domain logic.
 
 | Category | Files | Lines | Share |
 |---|---:|---:|---:|
-| Domain logic | 77 | 19,222 | 63.0% |
-| DB / schema | 24 | 4,304 | 14.1% |
-| Controllers (HTTP) | 12 | 3,084 | 10.1% |
-| Adapters (external I/O) | 16 | 2,159 | 7.1% |
-| Helpers / shared | 12 | 1,749 | 5.7% |
-| **Total** | **141** | **30,518** | |
+| Domain logic | 83 | 11,741 | 55.9% |
+| DB / schema | 28 | 2,898 | 13.8% |
+| Controllers (HTTP) | 15 | 3,542 | 16.9% |
+| Adapters (external I/O) | 16 | 1,422 | 6.8% |
+| Helpers / shared | 12 | 1,411 | 6.7% |
+| **Total** | **154** | **21,014** | |
 
 Adapters are listed apart from domain logic because they are the only code that
 talks to Postgres, S3, an LLM or an ASR engine. Counted as logic instead, that is
-**93 files and 21,381 lines**.
+**99 files and 13,163 lines**.
 
 `DB / schema` splits three ways, and the middle one is not editable code:
 
 | Kind | Files | Lines | Editing rule |
 |---|---:|---:|---|
-| ORM models | 13 | 3,110 | Declare the 58 tables. Edit freely — but **any change here needs a new migration.** |
-| Migrations | 5 | 517 | **Append-only history, not code.** See the table under [Foundation](#1-foundation). |
-| Infrastructure | 5 | 592 | The machinery both rely on: `session.py`, `introspect.py`, `base.py`, `bootstrap.py`, `env.py`. |
+| ORM models | 13 | 1,847 | Declare the 60 tables. Edit freely — but **any change here needs a new migration.** |
+| Migrations | 9 | 630 | **Append-only history, not code.** See the table under [Foundation](#1-foundation). |
+| Infrastructure | 6 | 421 | The machinery both rely on: `session.py`, `introspect.py`, `base.py`, `bootstrap.py`, `env.py`. |
 
 ## Data
 
-**58 tables, 752 columns.**
+**60 tables, 752 columns.**
 
 | Tenancy class | Tables | Meaning |
 |---|---:|---|
@@ -1266,14 +1294,14 @@ has the roles, rate limit and body cap of each.
 
 | Routes | File | Surface |
 |---:|---|---|
-| 24 | `api/routes/admin_panel.py` | Admin panel pages and form handlers (**renders HTML**) |
-| 24 | `api/routes/admin_api.py` | Admin panel JSON: labs, steps, onboarding, autonomy, adaptation, platform users |
-| 17 | `api/routes/onboarding.py` | Lab-side onboarding: consents and clinical approvals |
-| 12 | `api/routes/review.py` | Queue, draft, revisions, signing, grading, feedback, audio |
-| 6 | `api/routes/ga.py` | Lab-side autonomy read/revoke, release coverage, HL7 + FHIR export, drift |
-| 3 | `api/routes/review_ui.py` | Review screen, queue screen, static assets (**renders HTML**) |
-| 2 | `api/app.py` | `/health` (liveness) and `/ready` (connection + schema revision) |
-| 1 | `api/routes/ingest.py` | Capture-only upload: validate, store, audit |
+| 818 | `api/routes/admin_panel.py` | Admin panel pages and form handlers (**renders HTML**) |
+| 420 | `api/routes/admin_api.py` | Admin panel JSON: labs, steps, onboarding, autonomy, adaptation, platform users |
+| 328 | `api/routes/onboarding.py` | Lab-side onboarding: consents and clinical approvals |
+| 289 | `api/routes/review.py` | Queue, draft, revisions, signing, grading, feedback, audio |
+| 154 | `api/routes/ga.py` | Lab-side autonomy read/revoke, release coverage, HL7 + FHIR export, drift |
+| 303 | `api/routes/review_ui.py` | Review screen, queue screen, static assets (**renders HTML**) |
+| 95 | `api/app.py` | `/health` (liveness) and `/ready` (connection + schema revision) |
+| 60 | `api/routes/ingest.py` | Capture-only upload: validate, store, audit |
 | 4 | FastAPI | `/openapi.json`, `/docs`, `/docs/oauth2-redirect`, `/redoc` — local, test and development only |
 
 `/health` returning 200 against an unreachable database was a real bug; `/ready`
@@ -1364,7 +1392,7 @@ in [API.md](API.md#appendix-a--index-by-prefix).
 | POST | `/admin/api/labs/{tenant_id}/onboarding/templates` | Submit template documents |
 | POST | `/admin/api/labs/{tenant_id}/onboarding/corpus` | Load the historical report corpus |
 | POST | `/admin/api/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals` | Propose near-duplicate merges |
-| POST | `/admin/api/labs/{tenant_id}/onboarding/steps/{step}` | Run `derive-map`, `lexicon-mine`, `collision-audit`, `mine-variants`, `boilerplate-mine` or `critical-rules-seed` |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/steps/{step}` | Run `derive-map`, `lexicon-mine`, `collision-audit`, `mine-variants`, `boilerplate-mine`, `critical-rules-seed`, `acceptance-assemble` or `acceptance-freeze` |
 | GET | `/admin/api/labs/{tenant_id}/autonomy/{class_code}` | Accrual state and the Beta-Binomial posterior |
 | POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/open-accrual` | Start observing a class |
 | POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/grant` | The Bayesian sequential grant |
@@ -1461,8 +1489,8 @@ Opening accrual, granting and the adaptation gates moved to `/admin/api`.
 
 | Lines | File | Purpose |
 |---:|---|---|
-| 731 | `api/routes/admin_panel.py` | Admin panel: 7 pages, plus 17 form handlers, sign-in routes and the `/admin` redirect |
-| 223 | `api/routes/review_ui.py` | Review screen + queue screen |
+| 818 | `api/routes/admin_panel.py` | Admin panel: 7 pages, plus 17 form handlers, sign-in routes and the `/admin` redirect |
+| 303 | `api/routes/review_ui.py` | Review screen + queue screen |
 | 102 | `api/static/review.js` | Focus timer (`active_edit_seconds`), click-to-listen, edit collection |
 | 60 | `api/static/review.css` | The entire stylesheet, light and dark; the admin panel uses it too |
 
@@ -1491,8 +1519,8 @@ commercial argument rests on that number) and **play a cited audio span** from
 
 ## Tests
 
-**40 files, 9,216 lines, 511 tests.** That is 30% of the repository's lines
-against 70% application code.
+**51 files, 7,886 lines, 696 tests.** That is 27% of the repository's lines
+against 73% application code.
 
 DB-backed tests skip unless `RADREPORT_TEST_DATABASE_URL` is set, so the unit
 suite runs anywhere. They must connect as the **non-owner** `radreport_app_login`

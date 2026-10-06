@@ -6,6 +6,7 @@ raises PermissionDenied if it is missing.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -62,7 +63,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
 class Reviewer:
     """Who is acting, and what they may do."""
 
-    user_id: object
+    user_id: uuid.UUID
     roles: tuple[str, ...]
 
     @property

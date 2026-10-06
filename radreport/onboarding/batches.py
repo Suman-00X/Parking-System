@@ -21,6 +21,7 @@ from radreport.core.logging import get_logger
 from radreport.core.types import ActorType, CollisionResolution, CollisionSeverity, ImportStatus
 from radreport.db.models.onboarding import CollisionAuditFinding, ImportArtifact, ImportBatch
 from radreport.db.models.orchestration import AuditLog
+from radreport.db.session import ACTING_PLATFORM_USER
 
 log = get_logger(__name__)
 
@@ -39,8 +40,9 @@ class ArtifactUpload:
 
 
 def open_batch(session: Session, *, tenant_id: uuid.UUID, batch_type: str, stage: str, trigger: str, submitted_by: uuid.UUID | None = None) -> ImportBatch:
-    """Start a batch in `uploading`."""
-    batch = ImportBatch(tenant_id=tenant_id, batch_type=batch_type, trigger=trigger, stage=stage, status=ImportStatus.UPLOADING, submitted_by=submitted_by)
+    """Start a batch in `uploading`, recording a product admin as its submitter when one is acting."""
+    platform_user_id = session.info.get(ACTING_PLATFORM_USER) if submitted_by is None else None
+    batch = ImportBatch(tenant_id=tenant_id, batch_type=batch_type, trigger=trigger, stage=stage, status=ImportStatus.UPLOADING, submitted_by=submitted_by, submitted_by_platform_user_id=platform_user_id)
     session.add(batch)
     session.flush()
     log.info("import_batch_opened", tenant_id=str(tenant_id), batch_id=str(batch.id), stage=stage, batch_type=batch_type, trigger=trigger)
@@ -94,9 +96,9 @@ def recount_blocking_issues(session: Session, batch: ImportBatch) -> int:
 
 
 def revert_batch(session: Session, batch: ImportBatch, *, actor_id: uuid.UUID | None = None) -> ImportBatch:
-    """The onboarding rollback: stamp `reverted_at`."""
-    if batch.status != ImportStatus.APPLIED:
-        raise BatchStateError(str(batch.id), batch.status, "reverted")
+    """The onboarding rollback: stamp `reverted_at`. Callers undo the batch's effects alongside."""
+    if batch.status != ImportStatus.APPLIED or batch.reverted_at is not None:
+        raise BatchStateError(str(batch.id), "reverted" if batch.reverted_at else batch.status, "reverted")
 
     batch.reverted_at = dt.datetime.now(dt.UTC)
     session.add(AuditLog(tenant_id=batch.tenant_id, actor_id=actor_id, actor_type=ActorType.USER if actor_id else ActorType.SYSTEM, action="import_batch_reverted", entity_type="import_batch", entity_id=batch.id, before={"applied_at": str(batch.applied_at)}, after={"reverted_at": str(batch.reverted_at), "stage": batch.stage}))

@@ -1,8 +1,9 @@
 """The onboarding steps a product admin runs for a lab, shared by the admin panel's pages and its JSON API.
 
 Order: see where the lab stands (onboarding_overview) -> upload its data (import_roster_file,
-submit_template_files, load_corpus_records) -> run the mining and seeding steps
-(propose_template_merges, run_step over STEPS).
+submit_template_files, load_corpus_records, load_corpus_file) -> run the mining and seeding steps
+(propose_template_merges, run_step over STEPS) -> fill and freeze the lab's acceptance set from
+its verbatim transcripts (_assemble_acceptance, _freeze_acceptance), which the pilot gate needs.
 """
 
 from __future__ import annotations
@@ -11,11 +12,13 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from radreport.core.types import ImportTrigger
+from radreport.db.models.evaluation import EvalItem, EvalSet
 from radreport.db.models.onboarding import ImportBatch
+from radreport.eval import goldset
 from radreport.onboarding import boilerplate, corpus, critical_rules, lexicon, paired_audio, roster, templates
 from radreport.onboarding.batches import ArtifactUpload
 from radreport.onboarding.readiness import evaluate_readiness
@@ -39,7 +42,7 @@ def onboarding_overview(session: Session, tenant_id: uuid.UUID) -> dict[str, Any
         "corpus_verification": {"verified": verified, "target": target},
         "gold_progress": {k: {"annotated": v[0], "target": v[1]} for k, v in paired_audio.gold_partition_progress(session, tenant_id=tenant_id).items()},
         "active_critical_rules": len(critical_rules.active_rules(session, tenant_id=tenant_id)),
-        "recent_batches": [{"id": str(b.id), "batch_type": b.batch_type, "stage": b.stage, "status": b.status, "blocking_issue_count": b.blocking_issue_count, "accepted": b.accepted_count} for b in batches],
+        "recent_batches": [{"id": str(b.id), "batch_type": b.batch_type, "stage": b.stage, "status": b.status, "blocking_issue_count": b.blocking_issue_count, "accepted": b.accepted_count, "submitted_by": str(b.submitted_by) if b.submitted_by else None, "submitted_by_platform_user_id": str(b.submitted_by_platform_user_id) if b.submitted_by_platform_user_id else None} for b in batches],
         "readiness": {"passed": report.passed, "failures": [o.check_id for o in report.failures], "warnings": [o.check_id for o in report.warnings], "checks": [{"check_id": o.check_id, "status": o.status, "measured_value": o.measured_value, "threshold": o.threshold} for o in report.outcomes]},
     }
 
@@ -65,6 +68,15 @@ def load_corpus_records(session: Session, tenant_id: uuid.UUID, records: list[co
     """Bulk-load historical signed reports."""
     result = corpus.load_corpus(session, tenant_id=tenant_id, records=records, submitted_by=None, trigger=trigger)
     return {"batch_id": str(result.batch.id), "loaded": result.loaded, "duplicates": result.duplicates, "rejected": [{"id": rid, "reason": reason} for rid, reason in result.rejected]}
+
+
+def load_corpus_file(session: Session, tenant_id: uuid.UUID, data: bytes, filename: str, *, trigger: str = ImportTrigger.INITIAL_ONBOARDING) -> dict[str, Any]:
+    """Bulk-load historical reports from an uploaded CSV or JSON file."""
+    records, problems = corpus.parse_corpus_file(data, filename)
+    if not records:
+        raise StepRefused(422, "; ".join(problems[:5]) or "the file holds no reports")
+    result = load_corpus_records(session, tenant_id, records, trigger=trigger)
+    return result | {"problems": problems}
 
 
 def propose_template_merges(session: Session, tenant_id: uuid.UUID, batch_id: uuid.UUID) -> dict[str, Any]:
@@ -106,8 +118,40 @@ def _seed_critical_rules(session: Session, tenant_id: uuid.UUID, options: dict[s
     return {"created": [r.code for r in result.created], "candidates": [{"code": c.code, "finding_label": c.finding_label, "severity": c.severity, "corpus_mentions": c.corpus_mentions, "examples": list(c.example_sentences)} for c in result.candidates], "lab_specific_phrases": [{"phrase": p, "count": n} for p, n in result.lab_specific_phrases]}
 
 
+def _acceptance_set(session: Session, tenant_id: uuid.UUID) -> EvalSet:
+    """The lab's acceptance set that can still change, created if registration predates it."""
+    sets = list(session.execute(select(EvalSet).where(EvalSet.tenant_id == tenant_id, EvalSet.is_canonical.is_(False)).order_by(EvalSet.created_at.desc())).scalars().all())
+    open_set = next((s for s in sets if not s.is_frozen), None)
+    if open_set is not None:
+        return open_set
+    if sets:
+        raise StepRefused(409, "the acceptance set is already frozen; readiness is measured against it and it cannot change")
+    created = EvalSet(tenant_id=tenant_id, name=f"acceptance-{tenant_id.hex[:8]}", description="Per-lab acceptance set for the pilot gate; not a release gate.", is_frozen=False, is_canonical=False, stratification_spec={"target_size": goldset.ACCEPTANCE_TARGET, "stratify_by": ["capture_device_class", "audio_quality_bucket"]})
+    session.add(created)
+    session.flush()
+    return created
+
+
+def _assemble_acceptance(session: Session, tenant_id: uuid.UUID, options: dict[str, Any]) -> dict[str, Any]:
+    eval_set = _acceptance_set(session, tenant_id)
+    # Current hardware only: the pilot question is how the lab's new microphones perform.
+    result = goldset.assemble(session, eval_set=eval_set, candidates=goldset.eligible_candidates(session, tenant_id=tenant_id), target_current=goldset.ACCEPTANCE_TARGET, target_legacy=0)
+    held = len(result.added)
+    return {"eval_set_id": str(eval_set.id), "items": held, "target": goldset.ACCEPTANCE_TARGET, "short_by": max(0, goldset.ACCEPTANCE_TARGET - held)}
+
+
+def _freeze_acceptance(session: Session, tenant_id: uuid.UUID, options: dict[str, Any]) -> dict[str, Any]:
+    eval_set = _acceptance_set(session, tenant_id)
+    try:
+        goldset.freeze(session, eval_set=eval_set)
+    except ValueError as exc:
+        raise StepRefused(409, str(exc)) from exc
+    items = session.execute(select(func.count()).select_from(EvalItem).where(EvalItem.eval_set_id == eval_set.id)).scalar_one()
+    return {"eval_set_id": str(eval_set.id), "items": items, "frozen": True}
+
+
 #: Step name -> (label shown in the panel, what it does). Each takes optional `options`.
-STEPS: dict[str, tuple[str, Callable[[Session, uuid.UUID, dict[str, Any]], dict[str, Any]]]] = {"derive-map": ("Derive the report-to-template map", _derive_map), "lexicon-mine": ("Mine terms from the corpus", _mine_lexicon), "collision-audit": ("Run the sound-alike collision audit", _collision_audit), "mine-variants": ("Mine what the ASR actually heard", _mine_variants), "boilerplate-mine": ("Rank normal statements", _mine_boilerplate), "critical-rules-seed": ("Propose critical-finding rules", _seed_critical_rules)}
+STEPS: dict[str, tuple[str, Callable[[Session, uuid.UUID, dict[str, Any]], dict[str, Any]]]] = {"derive-map": ("Derive the report-to-template map", _derive_map), "lexicon-mine": ("Mine terms from the corpus", _mine_lexicon), "collision-audit": ("Run the sound-alike collision audit", _collision_audit), "mine-variants": ("Mine what the ASR actually heard", _mine_variants), "boilerplate-mine": ("Rank normal statements", _mine_boilerplate), "critical-rules-seed": ("Propose critical-finding rules", _seed_critical_rules), "acceptance-assemble": ("Fill the acceptance set from verbatim transcripts", _assemble_acceptance), "acceptance-freeze": ("Freeze the acceptance set", _freeze_acceptance)}
 
 
 def run_step(session: Session, tenant_id: uuid.UUID, step: str, options: dict[str, Any] | None = None) -> dict[str, Any]:

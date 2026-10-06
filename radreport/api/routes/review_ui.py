@@ -1,20 +1,27 @@
 """The review screen itself, rendered on the server rather than as a single-page app.
 
-Order: render the queue (queue_screen) -> render one draft with its fields and withdrawn spans
-(review_screen, render_field, render_retractions). static_file serves the few assets.
+Order: sign in from a browser (login_page, login_submit, refresh_session, logout_submit) -> render
+the queue (queue_screen) -> render one draft with its fields and withdrawn spans (review_screen,
+render_field, render_retractions). static_file serves the few assets.
 """
 
 from __future__ import annotations
 
 import html
+import re
 import uuid
 from pathlib import Path
+from typing import Annotated
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException, status
-from fastapi.responses import HTMLResponse, Response
+from fastapi import APIRouter, Cookie, Form, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from radreport.api.deps import CurrentPrincipal, DbSession
+from radreport.api.deps import CurrentPrincipal, DbSession, client_ip
 from radreport.api.routes.review import _reviewer, _tenant
+from radreport.auth import lab
+from radreport.auth.lab import ACCESS_COOKIE, REFRESH_COOKIE, REFRESH_COOKIE_PATH, SignInFailed, TokenInvalid
+from radreport.core.config import get_settings
 from radreport.review import session as review_session
 from radreport.review import signing
 from radreport.review.rbac import PermissionDenied
@@ -22,6 +29,79 @@ from radreport.review.rbac import PermissionDenied
 router = APIRouter(prefix="/ui", tags=["review-ui"])
 
 _STATIC = Path(__file__).resolve().parent.parent / "static"
+#: Where a browser may be sent back to after signing in: a review page, never another site.
+_SAFE_NEXT = re.compile(r"/ui/[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*")
+
+
+def _safe_next(target: str | None) -> str:
+    return target if target and _SAFE_NEXT.fullmatch(target) else "/ui/queue"
+
+
+def _with_tokens(response: Response, pair: lab.TokenPair) -> Response:
+    """Put a fresh token pair in httponly cookies."""
+    secure = get_settings().environment not in ("local", "test", "development")
+    response.set_cookie(ACCESS_COOKIE, pair.access_token, httponly=True, samesite="lax", secure=secure, max_age=pair.access_expires_in, path="/")
+    response.set_cookie(REFRESH_COOKIE, pair.refresh_token, httponly=True, samesite="strict", secure=secure, max_age=get_settings().lab_auth.refresh_ttl_days * 86400, path=REFRESH_COOKIE_PATH)
+    return response
+
+
+def _without_tokens(response: Response) -> Response:
+    response.delete_cookie(ACCESS_COOKIE, path="/")
+    response.delete_cookie(REFRESH_COOKIE, path=REFRESH_COOKIE_PATH)
+    return response
+
+
+# ================================================================= sign-in ===
+@router.get("/login", response_class=HTMLResponse)
+def login_page(error: str | None = None, next: str | None = None) -> HTMLResponse:  # noqa: A002 - the query parameter is called next
+    """A lab user's sign-in form."""
+    problem = f'<div class="banner alert">{_esc(error)}</div>' if error else ""
+    return HTMLResponse(f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · radreport</title><link rel="stylesheet" href="/ui/static/review.css">
+</head><body><main>
+  <h1>Sign in</h1>
+  {problem}
+  <form method="post" action="/ui/login" style="max-width:420px">
+    <input type="hidden" name="next" value="{_esc(_safe_next(next))}">
+    <p><label>Lab<br><input name="lab" required autocomplete="organization" pattern="[a-z0-9][a-z0-9-]{{1,62}}"></label></p>
+    <p><label>Email<br><input name="email" type="email" required autocomplete="username"></label></p>
+    <p><label>Password<br><input name="password" type="password" required autocomplete="current-password"></label></p>
+    <div class="actions"><button class="primary" type="submit">Sign in</button></div>
+  </form>
+</main></body></html>""")
+
+
+@router.post("/login")
+def login_submit(request: Request, lab_slug: Annotated[str, Form(alias="lab")], email: Annotated[str, Form()], password: Annotated[str, Form()], next: Annotated[str | None, Form()] = None) -> Response:  # noqa: A002
+    """Sign in and keep the tokens in httponly cookies."""
+    try:
+        pair = lab.sign_in_to_lab(lab_slug=lab_slug, email=email, password=password, user_agent=request.headers.get("user-agent"), ip_address=client_ip(request))
+    except SignInFailed:
+        return RedirectResponse("/ui/login?" + urlencode({"error": "Invalid lab, email or password", "next": _safe_next(next)}), status_code=status.HTTP_303_SEE_OTHER)
+    return _with_tokens(RedirectResponse(_safe_next(next), status_code=status.HTTP_303_SEE_OTHER), pair)
+
+
+@router.get("/refresh")
+def refresh_session(request: Request, next: str | None = None, radreport_lab_refresh: Annotated[str | None, Cookie()] = None) -> Response:  # noqa: A002
+    """Swap an expired access cookie for a fresh pair, then go back; or to sign-in if that fails."""
+    target = _safe_next(next)
+    if radreport_lab_refresh:
+        try:
+            pair = lab.refresh_in_lab(raw=radreport_lab_refresh, user_agent=request.headers.get("user-agent"), ip_address=client_ip(request))
+            return _with_tokens(RedirectResponse(target, status_code=status.HTTP_303_SEE_OTHER), pair)
+        except TokenInvalid:
+            pass
+    return _without_tokens(RedirectResponse("/ui/login?" + urlencode({"next": target}), status_code=status.HTTP_303_SEE_OTHER))
+
+
+@router.post("/logout")
+def logout_submit(radreport_lab_refresh: Annotated[str | None, Cookie()] = None) -> Response:
+    """End this browser's sign-in."""
+    if radreport_lab_refresh:
+        lab.logout_in_lab(raw=radreport_lab_refresh)
+    return _without_tokens(RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER))
 
 
 @router.get("/static/{name}")
@@ -153,11 +233,10 @@ const form = document.getElementById("review-form");
 const draftId = {str(draft_id)!r};
 
 async function post(url, body) {{
-  const res = await fetch(url, {{
-    method: "POST",
-    headers: {{ "content-type": "application/json" }},
-    body: JSON.stringify(body),
-  }});
+  // No body at all when there is nothing to send: a route that takes none refuses even "{{}}".
+  const init = body === undefined ? {{ method: "POST" }} : {{ method: "POST", headers: {{ "content-type": "application/json" }}, body: JSON.stringify(body) }};
+  const res = await fetch(url, init);
+  if (res.status === 401) {{ location.href = "/ui/refresh?next=" + encodeURIComponent(location.pathname); return res; }}
   if (!res.ok) alert(await res.text());
   return res;
 }}
@@ -173,7 +252,7 @@ document.getElementById("save").onclick = async () => {{
   location.reload();
 }};
 document.getElementById("sign").onclick = async () => {{
-  const res = await post(`/review/drafts/${{draftId}}/sign`, {{}});
+  const res = await post(`/review/drafts/${{draftId}}/sign`);
   if (res.ok) location.href = "/ui/queue";
 }};
 document.getElementById("useless").onclick = async () => {{
@@ -218,6 +297,7 @@ def queue_screen(session: DbSession, principal: CurrentPrincipal) -> HTMLRespons
 </head><body><main>
   <h1>Review queue</h1>
   <div class="meta">{_esc(reviewer.display_role)} · {len(items)} waiting ·
-    ordered by priority, then critical findings, then flagged fields</div>
+    ordered by priority, then critical findings, then flagged fields ·
+    <form method="post" action="/ui/logout" style="display:inline"><button type="submit">Sign out</button></form></div>
   {rows}{empty}
 </main></body></html>""")

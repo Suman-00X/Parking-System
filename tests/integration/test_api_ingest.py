@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from radreport.adapters.storage.object_store import InMemoryObjectStore
+from radreport.auth.lab import issue_access_token
 from radreport.core.types import UserRole
 from radreport.db.models.identity import AppUser, Patient, RadiologistProfile, Study
 from radreport.db.session import tenant_session
@@ -50,7 +51,8 @@ def seeded(migrated_db: str, two_tenants):
 
 
 def _headers(seeded: dict) -> dict[str, str]:
-    return {"X-User-Id": seeded["user_id"], "X-Tenant-Id": seeded["tenant_id"]}
+    token, _ = issue_access_token(user_id=uuid.UUID(seeded["user_id"]), tenant_id=uuid.UUID(seeded["tenant_id"]), roles=[UserRole.RADIOLOGIST])
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _post(client: TestClient, seeded: dict, data: bytes, name: str = "d.flac"):
@@ -110,8 +112,7 @@ def test_a_platform_user_header_grants_nothing(client: TestClient, seeded: dict)
     assert client.get("/admin/api/labs", headers={"X-Platform-User-Id": str(uuid.uuid4())}).status_code == 401
 
 
-def test_a_lab_user_from_another_tenant_is_refused(client: TestClient, seeded: dict, two_tenants) -> None:
-    """The access check looks the user up inside the tenant they claim, so a mismatched pair is unknown."""
-    _tenant, other = two_tenants
-    response = client.post("/ingest/recordings", headers={"X-User-Id": seeded["user_id"], "X-Tenant-Id": str(other)}, files={"file": ("d.flac", synth_audio(seconds=20), "audio/flac")}, data={"study_id": seeded["study_id"], "radiologist_id": seeded["radiologist_id"]})
+def test_the_old_identity_headers_grant_nothing(client: TestClient, seeded: dict) -> None:
+    """Lab identity comes only from a signed access token now."""
+    response = client.post("/ingest/recordings", headers={"X-User-Id": seeded["user_id"], "X-Tenant-Id": seeded["tenant_id"]}, files={"file": ("d.flac", synth_audio(seconds=20), "audio/flac")}, data={"study_id": seeded["study_id"], "radiologist_id": seeded["radiologist_id"]})
     assert response.status_code == 401

@@ -59,44 +59,75 @@ once; every phase below assumes them.
 
 ## The access policy
 
-Every route, and who may call it, is declared in one file:
+Every route, who may call it and exactly which parameters it accepts are declared in one file:
 [`api/access_policy.xml`](radreport/api/access_policy.xml). It is read once at
 startup by [`load_policy`](radreport/api/access.py#L191), and
 [`AccessMiddleware`](radreport/api/access.py#L297) checks every request against
 it **before any route handler runs**.
 
-Each `<route>` names a method, a path, a realm, the roles allowed to call it, a
-rate limit and, for anything that takes a body, a maximum body size:
+Each `<route>` names a method, a path, a realm, the roles allowed to call it
+(`roles=`, comma-separated), a rate limit, for anything that takes a body a
+maximum body size, and one `<param>` per accepted parameter:
 
 ```xml
 <route id="admin.lab.status" method="POST" path="/admin/labs/{tenant_id}/status"
-       rate-limit="admin-write" max-body-bytes="4096">
-  <allow role="product_admin"/>
+       roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+  <param name="tenant_id" in="path" type="uuid" required="true"/>
+  <param name="status" in="form" type="string" required="true"
+         pattern="provisioning|onboarding|pilot|live|suspended|offboarded"/>
 </route>
 ```
+
+A `<param>` has `in=` `path` | `query` | `form` | `file` | `json` (a top-level
+key of a JSON object body), `type=` `string` | `uuid` | `int` | `number` |
+`bool` | `object` | `array` | `file`, `required="true"` when mandatory,
+`pattern=` (must match the whole value), `max-length=` (characters for a string,
+items for an array, files for a file field; a string without one gets 2000) and
+`multiple="true"` for a repeatable query key or a list of files.
 
 The middleware, in order:
 
 | Step | Refusal |
 |---|---|
 | Match the method and path to a `<route>`. Unlisted, or limited by `environments` to other deployments (the docs routes) | `404 Not Found` |
-| Compare the declared `Content-Length` with `max-body-bytes` | `413` |
+| A write (anything but GET/HEAD/OPTIONS) to an `/admin` route whose `Origin`, or failing that `Referer`, is not this host or a `RADREPORT_TRUSTED_ORIGINS` entry. A request carrying neither header is a script, not a forged browser request, and passes | `403 cross-site request refused` |
+| Compare the declared `Content-Length` with `max-body-bytes` (a fast early refusal) | `413` |
 | Count the request against an IP-keyed rate limit | `429` with `Retry-After` |
 | Identify the caller for the route's realm (below) | `401`, or a `303` to `/admin/login` |
 | Count it against a caller-keyed rate limit | `429` with `Retry-After` |
 | Check the caller's role is one the route allows | `403` |
+
+Then [`InputValidationMiddleware`](radreport/api/input_check.py) checks the
+parameters, still before any handler runs, and only for a caller already let
+through, so nothing is read for a stranger:
+
+| Step | Refusal |
+|---|---|
+| Path and query: every key declared, none repeated unless `multiple`, each value of its type and pattern, every required one present | `400` |
+| Read the body into a spool (memory up to 1 MiB, then a temporary file), counting bytes as they arrive, so a chunked body without a `Content-Length` is capped too. A route without `max-body-bytes` may carry 64 KiB | `413` |
+| A route with no body parameters refuses any body; a JSON route needs `application/json` and an object; a form route needs urlencoded or multipart | `400` |
+| Every JSON key, form field and file field declared, of its type, pattern and length, with no file count over `max-length`, nothing required missing | `400` |
+
+The `400` names the parameter but never repeats its value, and a parameter
+name that is not plain text is not repeated either. The body the handler then
+reads is the spooled copy, byte for byte. This matters most for JSON: Pydantic
+silently drops unknown keys, so without the policy a smuggled `"status": "live"`
+on registration would be ignored rather than refused.
 
 The identified caller is left on `request.state.identity`; handlers read it
 through [`current_admin`](radreport/api/deps.py#L39) and
 [`current_principal`](radreport/api/deps.py#L50).
 
 **The app refuses to start if the policy and the routes disagree.**
-[`verify_coverage`](radreport/api/access.py#L210) fails `create_app()` when a
-served route is not in the file, or the file lists a route that is not served.
-A new route without a policy entry cannot ship by accident.
+[`verify_coverage`](radreport/api/access.py) fails `create_app()` when a
+served route is not in the file, or the file lists a route that is not served;
+[`verify_params`](radreport/api/input_check.py) fails it when a handler accepts
+a parameter its route does not declare, or the reverse, or when `required` or
+`type` differ. A new route or parameter without a policy entry cannot ship by
+accident.
 
 **Adding a role or a permission is an edit to the XML**, not to code: declare
-the `<role>` under its realm, and add an `<allow role="..."/>` to each route it
+the `<role>` under its realm, and add it to the `roles=` of each route it
 may call. A role must belong to the route's realm, so an admin role can never be
 allowed onto a lab route or the reverse — the parser refuses the file.
 
@@ -104,49 +135,81 @@ Rate limits are named `<rate-limit>` elements; their counter is shared by every
 route that names them, per caller (`key="principal"`) or per client address
 (`key="ip"`):
 
-| Limit | Requests | Window | Keyed by |
-|---|---:|---:|---|
-| `login` | 5 | 60 s | IP |
-| `public` | 120 | 60 s | IP |
-| `admin-read` | 300 | 60 s | caller |
-| `admin-write` | 60 | 60 s | caller |
-| `admin-upload` | 10 | 60 s | caller |
-| `lab-read` | 300 | 60 s | caller |
-| `lab-write` | 120 | 60 s | caller |
-| `lab-upload` | 30 | 60 s | caller |
+| Limit | Requests | Window | Keyed by | Counted |
+|---|---:|---:|---|---|
+| `login` | 5 | 60 s | IP | **shared** |
+| `token-refresh` | 30 | 60 s | IP | **shared** |
+| `public` | 120 | 60 s | IP | **shared** |
+| `admin-read` | 300 | 60 s | caller | **shared** |
+| `admin-write` | 60 | 60 s | caller | **shared** |
+| `admin-upload` | 10 | 60 s | caller | **shared** |
+| `lab-read` | 300 | 60 s | caller | **shared** |
+| `lab-write` | 120 | 60 s | caller | **shared** |
+| `lab-upload` | 30 | 60 s | caller | **shared** |
 
-The counter is a sliding window held in the process's own memory
-([`RateLimiter`](radreport/api/access.py#L221)), so with several workers each
-one counts separately.
+Every limit is `store="shared"`: a fixed one-minute window counted in the
+`rate_limit_counter` table with one atomic upsert
+([`SharedRateLimiter`](radreport/api/access.py)), so every worker and restart
+sees the same count. The table is `UNLOGGED` — a crash loses at most a minute
+of counts, and skipping the write-ahead log keeps the per-request cost small.
+If the table cannot be reached the limiter fails open and logs
+`rate_limit_store_unavailable`: with the database down the request could not do
+anything anyway. A `<rate-limit>` without `store` would count in each worker's
+memory; none of the shipped ones does, and a unit test keeps it that way.
 
 ## Authentication
 
 Three realms, and they never mix. `public` routes need nothing. A lab user
 belongs to exactly one tenant; a product admin belongs to none. Which realm a
 route is in decides which credentials are even looked at — an admin cookie on a
-`/review` request is ignored, and lab headers on an `/admin` request are
+`/review` request is ignored, and a lab token on an `/admin` request is
 ignored.
 
-### Lab users — `app_user`
+### Lab users — `app_user`, by bearer token
+
+Admins and lab users get different mechanisms on purpose. Admin accounts are few,
+browser-only and the most powerful, so they get server-side sessions that end the
+instant they are revoked. Lab traffic includes dictation devices and hospital
+integrations as well as browsers, and grows with every lab, so it gets short-lived
+signed tokens that the middleware checks without a database round trip.
 
 ```
-X-User-Id:   <app_user uuid>
-X-Tenant-Id: <tenant uuid>
+POST /auth/login     {"lab": "<lab slug>", "email": "...", "password": "..."}
+  -> {"access_token": "...", "token_type": "bearer", "expires_in": 900, "refresh_token": "..."}
+
+Authorization: Bearer <access_token>      on every lab-realm request
 ```
 
-Both are required. Missing either is `401 missing principal headers`; a value
-that is not a UUID is `401 malformed principal headers`
-([`_identify_lab_user`](radreport/api/access.py#L361)).
-
-The middleware then looks the user up **inside that tenant**, under its RLS
-binding. An unknown user, an inactive one, or one who belongs to a different
-tenant is `401 unknown or inactive user`. The user's **stored** roles are
-checked against the route's `<allow>` list — `403` if none match. Handlers keep
-their own finer checks on top (a radiologist-only gate, say).
-
-**This is still not real authentication.** Anyone who knows a user id and its
-tenant id can act as that user. It is a development placeholder, replaceable
-without touching the routes.
+- **Access token:** HS256-signed, 15 minutes, carrying the user id, tenant id and
+  roles. [`_identify_lab_user`](radreport/api/access.py) verifies signature,
+  expiry, issuer and type; a missing, forged or expired token is `401` with
+  `WWW-Authenticate: Bearer`. The roles in the token are checked against the
+  route's `roles=` — `403` if none match. Handlers keep their own finer checks.
+- **Refresh token:** `POST /auth/refresh {"refresh_token": ...}` returns a new
+  pair. It lasts 14 days, is stored only as a SHA-256 hash in the per-lab,
+  RLS-isolated `lab_refresh_token` table, and is single-use: each refresh retires
+  the old one. Presenting a retired token again is treated as theft and revokes
+  every token from that sign-in.
+- **Sign-out:** `POST /auth/logout {"refresh_token": ...}` ends that sign-in.
+- **Passwords:** a product admin sets them from the lab page or
+  `POST /admin/api/labs/{tenant_id}/users/{user_id}/password`; a user changes
+  their own at `POST /auth/password`. Either signs the user out everywhere.
+- **Revocation window:** deactivating a user or changing their password stops new
+  access tokens at once; an access token already issued keeps working until it
+  expires, at most 15 minutes. That is the price of not hitting the database on
+  every request.
+- **From a browser:** `/ui/login` is a sign-in form that keeps the same two tokens
+  in `httponly` cookies — the access token site-wide, the refresh token sent only
+  to `/ui`. A review page whose access cookie has expired goes to `/ui/refresh`,
+  which renews the pair and sends the browser back, or to `/ui/login` if it
+  cannot; `POST /ui/logout` ends the sign-in. Writes authenticated by the cookie
+  get the same cross-site `Origin` check as the admin panel, and `next=` only
+  ever points at a `/ui/...` page.
+- **Every failed sign-in answers the same `401 invalid lab, email or password`**,
+  whether the lab, the email or the password was wrong, and takes the same time.
+- The signing secret is `RADREPORT_LAB_AUTH__TOKEN_SECRET`. Outside
+  local/test/development the app refuses to start without one of at least 32
+  characters.
 
 ### Product admins — `platform_user`, by session cookie
 
@@ -198,7 +261,7 @@ so row-level security can do its job.
 
 | Principal | How the tenant is chosen | Opened by |
 |---|---|---|
-| Lab user | `X-Tenant-Id`, after the middleware has verified the user belongs to it | [`get_db`](radreport/api/deps.py#L61) |
+| Lab user | the tenant id inside their signed access token | [`get_db`](radreport/api/deps.py#L61) |
 | Product admin | The `{tenant_id}` in the route's path — `/admin/labs/{tenant_id}/...`, `/admin/api/labs/{tenant_id}/...` | [`admin_lab_session`](radreport/api/deps.py#L72) / [`get_admin_lab_db`](radreport/api/deps.py#L87) |
 
 A `{tenant_id}` naming a lab that does not exist is `404 no lab ...`.
@@ -294,6 +357,9 @@ the list but change nothing.
 | POST | `/admin/api/users/{user_id}/deactivate` | `product_admin` | [`admin_api.py:335`](radreport/api/routes/admin_api.py#L335) |
 | POST | `/admin/api/users/{user_id}/reactivate` | `product_admin` | [`admin_api.py:341`](radreport/api/routes/admin_api.py#L341) |
 | POST | `/admin/api/users/{user_id}/password` | `product_admin` | [`admin_api.py:351`](radreport/api/routes/admin_api.py#L351) |
+| GET | `/admin/account` | `product_admin`, `support` — **HTML** | [`admin_panel.py`](radreport/api/routes/admin_panel.py) |
+| POST | `/admin/account/password` | `product_admin`, `support` | [`admin_panel.py`](radreport/api/routes/admin_panel.py) |
+| POST | `/admin/api/account/password` | `product_admin`, `support` | [`admin_api.py`](radreport/api/routes/admin_api.py) |
 
 Create takes `email`, `display_name`, `role` (`product_admin` \| `support`) and
 `password` (at least 12 characters) — as form fields on the page, as JSON on the
@@ -304,6 +370,10 @@ The rules live in [`admin/users.py`](radreport/admin/users.py):
 
 - **You cannot deactivate your own account**, and **you cannot deactivate the
   last active product admin** — add another first.
+- **Anyone may change their own password** — `support` included, since it is
+  their own account and not configuration — with `current_password` and
+  `new_password`. A wrong current password is refused (`403` on the API), and
+  the attempts share the sign-in rate limit.
 - **Deactivation and password reset end every live session** of that account.
   Resetting your own password from the panel signs you out and sends you back to
   the login page.
@@ -504,8 +574,9 @@ granted after the first import. A `radiologist` row also gets a
 `radiologist_profile` created on first sight, carrying language and
 subspecialty.
 
-The batch records no submitting lab user; who uploaded it is in the
-`admin_org_selected` audit row the request wrote.
+A batch run from the admin panel records the product admin in
+`submitted_by_platform_user_id` (`submitted_by` stays for lab users), and the
+onboarding overview's `recent_batches` shows both.
 
 ## 1.5 Voice and the two consents
 
@@ -580,12 +651,16 @@ from [`STEPS`](radreport/admin/onboarding_steps.py#L110):
 | `mine-variants` | Mine what the ASR actually heard | [2.4](#24-verbatim-annotation-s4) |
 | `boilerplate-mine` | Rank normal statements | [2.5](#25-rank-the-normals-s5) |
 | `critical-rules-seed` | Propose critical-finding rules | [2.6](#26-author-the-safety-rules-s6) |
+| `acceptance-assemble` | Fill the lab's acceptance set from its verbatim transcripts | [2.8](#28-readiness-and-the-gate-to-pilot) |
+| `acceptance-freeze` | Freeze the acceptance set | [2.8](#28-readiness-and-the-gate-to-pilot) |
 
 An unknown name is `404` listing the valid ones. The API takes an optional JSON
 body for the two steps that have options — `{"min_frequency": n}` for
 `lexicon-mine`, `{"verified_only": true}` for `boilerplate-mine` — and returns
-the step's result. The page's buttons run with the defaults and redirect with a
-one-line summary of the counts.
+the step's result. On the page, the `lexicon-mine` button carries a minimum-frequency
+box and the `boilerplate-mine` button a "verified mappings only" checkbox; a
+blank box runs with the default. Each button redirects with a one-line summary
+of the counts.
 
 ## 2.1 Templates (S1)
 
@@ -636,9 +711,12 @@ batch that is not this lab's is `404`.
 
 This is the report feeding step, and everything downstream depends on it.
 
-The corpus load is **API only** — it arrives as structured records, so the
-onboarding page points at the API rather than offering a form. It takes
-`{"records": [...], "trigger": "..."}`, up to 100 MiB. Each record:
+The corpus loads two ways. The onboarding page takes a file, `POST
+/admin/labs/{tenant_id}/onboarding/corpus`: a CSV with one report per row and a
+`report_text` column, or a JSON array of the same records. Bad rows (empty
+text, malformed age or date, an unknown column) are skipped and counted in the
+notice rather than failing the whole file. The API takes
+`{"records": [...], "trigger": "..."}`. Both accept up to 100 MiB. Each record:
 `report_text` (required) plus `external_report_id`,
 `radiologist_employee_code`, `referring_doctor`, `patient_sex`,
 `patient_age_years`, `is_deidentified`. Returns `batch_id`, `loaded`,
@@ -777,6 +855,21 @@ A step with no active model does not degrade — the pipeline fails at the first
 such step. The lab page counts them and says so.
 
 ## 2.8 Readiness and the gate to pilot
+
+**The acceptance set comes first.** The `gold_set_frozen` check needs a frozen
+per-lab acceptance set of at least 40 items. Registration creates it empty; fill
+it once the transcriptionists have produced verbatim transcripts (2.4):
+
+```
+POST /admin/api/labs/{id}/onboarding/steps/acceptance-assemble   → {"items", "target": 40, "short_by"}
+POST /admin/api/labs/{id}/onboarding/steps/acceptance-freeze     → 409 while short of 40
+```
+
+Only current-hardware recordings with disfluency-preserving transcripts are
+used, spread across radiologists and audio quality; chosen transcripts are
+excluded from training for good. Assembling again adds to the set until it is
+frozen; after that both steps answer `409`, because readiness was measured
+against it.
 
 | Method | Path | Who | Source |
 |---|---|---|---|
@@ -1258,20 +1351,6 @@ Role shorthand: **PA** `product_admin`, **S** `support`, **R** `radiologist`,
 Things a client developer will look for and not find, in the phase where they
 will look.
 
-**Everywhere — lab users have no real authentication.** `X-User-Id` /
-`X-Tenant-Id` is a development affordance: the middleware now checks the user
-exists, is active, belongs to that tenant and holds an allowed role, but anyone
-who knows the two ids can still act as that user. There is no token issuance
-for lab users, and nothing replaces the headers in production yet.
-
-**Everywhere — rate limits are per process.** The counters live in each
-worker's memory, so with *n* workers a caller gets up to *n* times the
-configured rate, and a restart resets them.
-
-**Everywhere — the body cap reads the declared length.** A request is refused
-with `413` when its `Content-Length` is over the cap; a body sent without a
-`Content-Length` (chunked) is not measured by the middleware.
-
 **Phase 1 — no `GET /admin/api/labs/{tenant_id}`.** Single-lab status comes
 only from filtering `GET /admin/api/labs`, from the `POST .../status` response,
 or from the `/admin/labs/{id}` page.
@@ -1285,11 +1364,6 @@ or discovers the boundary by eating a `409`.
 roster CSV is the only way a lab user is created or changed, and it never
 deletes. `tenant_branding` is inserted empty at registration and never written
 again.
-
-**Phase 2 — the corpus has no upload form.** It is loaded through
-`POST /admin/api/labs/{tenant_id}/onboarding/corpus` only. The page's step
-buttons also run with default options; `min_frequency` and `verified_only` are
-API-only.
 
 **Phase 3 — nothing creates a `Study` or a `Patient`.** Yet
 [`/ingest/recordings`](radreport/api/routes/ingest.py#L38) requires a
