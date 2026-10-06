@@ -13,14 +13,6 @@ in 0004–0007 are the pattern), and a constraint named in full is wrapped in
 
 ---
 
-## Throughput rate limits are per worker
-
-The sign-in limits are shared in Postgres (done 2026-10-07). The throughput limits
-(`*-read`, `*-write`, `*-upload`, `public`) still count in each worker's memory, so
-with `WORKERS=N` each allows up to N× its figure. Fine for abuse protection on one
-worker; if they ever need to hold exactly, mark them `store="shared"` and accept a
-database write per request, or move the counters to Redis.
-
 ---
 
 # Cost Optimization Roadmap (2026-10-05)

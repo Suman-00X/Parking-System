@@ -139,21 +139,23 @@ route that names them, per caller (`key="principal"`) or per client address
 |---|---:|---:|---|---|
 | `login` | 5 | 60 s | IP | **shared** |
 | `token-refresh` | 30 | 60 s | IP | **shared** |
-| `public` | 120 | 60 s | IP | per worker |
-| `admin-read` | 300 | 60 s | caller | per worker |
-| `admin-write` | 60 | 60 s | caller | per worker |
-| `admin-upload` | 10 | 60 s | caller | per worker |
-| `lab-read` | 300 | 60 s | caller | per worker |
-| `lab-write` | 120 | 60 s | caller | per worker |
-| `lab-upload` | 30 | 60 s | caller | per worker |
+| `public` | 120 | 60 s | IP | **shared** |
+| `admin-read` | 300 | 60 s | caller | **shared** |
+| `admin-write` | 60 | 60 s | caller | **shared** |
+| `admin-upload` | 10 | 60 s | caller | **shared** |
+| `lab-read` | 300 | 60 s | caller | **shared** |
+| `lab-write` | 120 | 60 s | caller | **shared** |
+| `lab-upload` | 30 | 60 s | caller | **shared** |
 
-A limit marked `store="shared"` is a fixed one-minute window counted in the
+Every limit is `store="shared"`: a fixed one-minute window counted in the
 `rate_limit_counter` table with one atomic upsert
 ([`SharedRateLimiter`](radreport/api/access.py)), so every worker and restart
-sees the same count; it is used where an attacker gains from parallelism, the
-sign-in routes. The others are a sliding window in each worker's own memory
-([`RateLimiter`](radreport/api/access.py)), which costs nothing per request but
-lets *n* workers allow *n* times the figure.
+sees the same count. The table is `UNLOGGED` — a crash loses at most a minute
+of counts, and skipping the write-ahead log keeps the per-request cost small.
+If the table cannot be reached the limiter fails open and logs
+`rate_limit_store_unavailable`: with the database down the request could not do
+anything anyway. A `<rate-limit>` without `store` would count in each worker's
+memory; none of the shipped ones does, and a unit test keeps it that way.
 
 ## Authentication
 
@@ -1346,10 +1348,6 @@ Role shorthand: **PA** `product_admin`, **S** `support`, **R** `radiologist`,
 
 Things a client developer will look for and not find, in the phase where they
 will look.
-
-**Everywhere — throughput limits are per worker.** Only the sign-in limits are
-shared; with *n* workers the others allow up to *n* times their figure, and a
-restart resets them.
 
 **Phase 1 — no `GET /admin/api/labs/{tenant_id}`.** Single-lab status comes
 only from filtering `GET /admin/api/labs`, from the `POST .../status` response,

@@ -242,9 +242,9 @@ runs: an unlisted route is refused, a wrong role gets 403, too many requests get
 429, and an unknown, repeated, malformed or missing parameter gets 400. The app
 refuses to start if the file disagrees with the routes or with the parameters
 the handlers accept. To give `support` a new permission, add it to that route's
-`roles=`. The sign-in limits (`login`, `token-refresh`) are counted in Postgres,
-so they hold however many workers run; the throughput limits are counted in each
-worker's memory, so with `WORKERS=N` those allow up to N times their figure.
+`roles=`. Every rate limit is counted in Postgres (an unlogged table, one upsert
+per request), so it holds however many workers run and across restarts; if that
+table cannot be reached the limiter lets requests through rather than failing them.
 
 ### Configuration
 

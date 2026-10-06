@@ -1046,8 +1046,9 @@ reached without a policy entry and a caller the policy allows.
 - Admin realm: the `radreport_admin` session cookie. Lab realm: the placeholder
   bearer access token from `/auth/login`, verified without a database round trip
   and their stored roles checked
-- `RateLimiter` — in-process sliding window for throughput limits; `SharedRateLimiter` — a
-  Postgres fixed-window counter for `store="shared"` limits (sign-in), seen by every worker
+- `SharedRateLimiter` — a fixed-window counter in the unlogged `rate_limit_counter` table,
+  used by every shipped limit so counts hold across workers; fails open if the table is
+  unreachable. `RateLimiter` — an in-process sliding window, for a limit without `store="shared"`
 - `AccessPolicy.allows()` — used by the panel to hide controls a role cannot use
 
 ### `api/deps.py` — request dependencies
