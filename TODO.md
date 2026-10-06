@@ -21,12 +21,13 @@ Lab users now sign in at `POST /auth/login` and send `Authorization: Bearer
 cannot be used without a client that does. Needs a browser sign-in page that keeps
 the tokens safely (httponly cookies, with an Origin check against CSRF).
 
-## Rate limits are per process
+## Throughput rate limits are per worker
 
-`RateLimiter` in `radreport/api/access.py` counts in memory, so with
-`WORKERS=N` each worker allows the full limit (up to N× overall), and limits reset
-on restart. Move the counters to Postgres or Redis before relying on them for
-abuse protection across workers.
+The sign-in limits are shared in Postgres (done 2026-10-07). The throughput limits
+(`*-read`, `*-write`, `*-upload`, `public`) still count in each worker's memory, so
+with `WORKERS=N` each allows up to N× its figure. Fine for abuse protection on one
+worker; if they ever need to hold exactly, mark them `store="shared"` and accept a
+database write per request, or move the counters to Redis.
 
 ---
 

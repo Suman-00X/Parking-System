@@ -135,20 +135,25 @@ Rate limits are named `<rate-limit>` elements; their counter is shared by every
 route that names them, per caller (`key="principal"`) or per client address
 (`key="ip"`):
 
-| Limit | Requests | Window | Keyed by |
-|---|---:|---:|---|
-| `login` | 5 | 60 s | IP |
-| `public` | 120 | 60 s | IP |
-| `admin-read` | 300 | 60 s | caller |
-| `admin-write` | 60 | 60 s | caller |
-| `admin-upload` | 10 | 60 s | caller |
-| `lab-read` | 300 | 60 s | caller |
-| `lab-write` | 120 | 60 s | caller |
-| `lab-upload` | 30 | 60 s | caller |
+| Limit | Requests | Window | Keyed by | Counted |
+|---|---:|---:|---|---|
+| `login` | 5 | 60 s | IP | **shared** |
+| `token-refresh` | 30 | 60 s | IP | **shared** |
+| `public` | 120 | 60 s | IP | per worker |
+| `admin-read` | 300 | 60 s | caller | per worker |
+| `admin-write` | 60 | 60 s | caller | per worker |
+| `admin-upload` | 10 | 60 s | caller | per worker |
+| `lab-read` | 300 | 60 s | caller | per worker |
+| `lab-write` | 120 | 60 s | caller | per worker |
+| `lab-upload` | 30 | 60 s | caller | per worker |
 
-The counter is a sliding window held in the process's own memory
-([`RateLimiter`](radreport/api/access.py#L221)), so with several workers each
-one counts separately.
+A limit marked `store="shared"` is a fixed one-minute window counted in the
+`rate_limit_counter` table with one atomic upsert
+([`SharedRateLimiter`](radreport/api/access.py)), so every worker and restart
+sees the same count; it is used where an attacker gains from parallelism, the
+sign-in routes. The others are a sliding window in each worker's own memory
+([`RateLimiter`](radreport/api/access.py)), which costs nothing per request but
+lets *n* workers allow *n* times the figure.
 
 ## Authentication
 
@@ -1328,9 +1333,9 @@ will look.
 `POST /auth/login` and send a bearer token, which a plain browser opening `/ui/*`
 cannot do yet.
 
-**Everywhere — rate limits are per process.** The counters live in each
-worker's memory, so with *n* workers a caller gets up to *n* times the
-configured rate, and a restart resets them.
+**Everywhere — throughput limits are per worker.** Only the sign-in limits are
+shared; with *n* workers the others allow up to *n* times their figure, and a
+restart resets them.
 
 **Phase 1 — no `GET /admin/api/labs/{tenant_id}`.** Single-lab status comes
 only from filtering `GET /admin/api/labs`, from the `POST .../status` response,
