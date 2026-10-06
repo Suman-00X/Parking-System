@@ -154,29 +154,47 @@ one counts separately.
 Three realms, and they never mix. `public` routes need nothing. A lab user
 belongs to exactly one tenant; a product admin belongs to none. Which realm a
 route is in decides which credentials are even looked at — an admin cookie on a
-`/review` request is ignored, and lab headers on an `/admin` request are
+`/review` request is ignored, and a lab token on an `/admin` request is
 ignored.
 
-### Lab users — `app_user`
+### Lab users — `app_user`, by bearer token
+
+Admins and lab users get different mechanisms on purpose. Admin accounts are few,
+browser-only and the most powerful, so they get server-side sessions that end the
+instant they are revoked. Lab traffic includes dictation devices and hospital
+integrations as well as browsers, and grows with every lab, so it gets short-lived
+signed tokens that the middleware checks without a database round trip.
 
 ```
-X-User-Id:   <app_user uuid>
-X-Tenant-Id: <tenant uuid>
+POST /auth/login     {"lab": "<lab slug>", "email": "...", "password": "..."}
+  -> {"access_token": "...", "token_type": "bearer", "expires_in": 900, "refresh_token": "..."}
+
+Authorization: Bearer <access_token>      on every lab-realm request
 ```
 
-Both are required. Missing either is `401 missing principal headers`; a value
-that is not a UUID is `401 malformed principal headers`
-([`_identify_lab_user`](radreport/api/access.py#L361)).
-
-The middleware then looks the user up **inside that tenant**, under its RLS
-binding. An unknown user, an inactive one, or one who belongs to a different
-tenant is `401 unknown or inactive user`. The user's **stored** roles are
-checked against the route's `roles=` — `403` if none match. Handlers keep
-their own finer checks on top (a radiologist-only gate, say).
-
-**This is still not real authentication.** Anyone who knows a user id and its
-tenant id can act as that user. It is a development placeholder, replaceable
-without touching the routes.
+- **Access token:** HS256-signed, 15 minutes, carrying the user id, tenant id and
+  roles. [`_identify_lab_user`](radreport/api/access.py) verifies signature,
+  expiry, issuer and type; a missing, forged or expired token is `401` with
+  `WWW-Authenticate: Bearer`. The roles in the token are checked against the
+  route's `roles=` — `403` if none match. Handlers keep their own finer checks.
+- **Refresh token:** `POST /auth/refresh {"refresh_token": ...}` returns a new
+  pair. It lasts 14 days, is stored only as a SHA-256 hash in the per-lab,
+  RLS-isolated `lab_refresh_token` table, and is single-use: each refresh retires
+  the old one. Presenting a retired token again is treated as theft and revokes
+  every token from that sign-in.
+- **Sign-out:** `POST /auth/logout {"refresh_token": ...}` ends that sign-in.
+- **Passwords:** a product admin sets them from the lab page or
+  `POST /admin/api/labs/{tenant_id}/users/{user_id}/password`; a user changes
+  their own at `POST /auth/password`. Either signs the user out everywhere.
+- **Revocation window:** deactivating a user or changing their password stops new
+  access tokens at once; an access token already issued keeps working until it
+  expires, at most 15 minutes. That is the price of not hitting the database on
+  every request.
+- **Every failed sign-in answers the same `401 invalid lab, email or password`**,
+  whether the lab, the email or the password was wrong, and takes the same time.
+- The signing secret is `RADREPORT_LAB_AUTH__TOKEN_SECRET`. Outside
+  local/test/development the app refuses to start without one of at least 32
+  characters.
 
 ### Product admins — `platform_user`, by session cookie
 
@@ -228,7 +246,7 @@ so row-level security can do its job.
 
 | Principal | How the tenant is chosen | Opened by |
 |---|---|---|
-| Lab user | `X-Tenant-Id`, after the middleware has verified the user belongs to it | [`get_db`](radreport/api/deps.py#L61) |
+| Lab user | the tenant id inside their signed access token | [`get_db`](radreport/api/deps.py#L61) |
 | Product admin | The `{tenant_id}` in the route's path — `/admin/labs/{tenant_id}/...`, `/admin/api/labs/{tenant_id}/...` | [`admin_lab_session`](radreport/api/deps.py#L72) / [`get_admin_lab_db`](radreport/api/deps.py#L87) |
 
 A `{tenant_id}` naming a lab that does not exist is `404 no lab ...`.
@@ -1288,11 +1306,9 @@ Role shorthand: **PA** `product_admin`, **S** `support`, **R** `radiologist`,
 Things a client developer will look for and not find, in the phase where they
 will look.
 
-**Everywhere — lab users have no real authentication.** `X-User-Id` /
-`X-Tenant-Id` is a development affordance: the middleware now checks the user
-exists, is active, belongs to that tenant and holds an allowed role, but anyone
-who knows the two ids can still act as that user. There is no token issuance
-for lab users, and nothing replaces the headers in production yet.
+**Everywhere — the review screen has no sign-in page.** Lab users sign in through
+`POST /auth/login` and send a bearer token, which a plain browser opening `/ui/*`
+cannot do yet.
 
 **Everywhere — rate limits are per process.** The counters live in each
 worker's memory, so with *n* workers a caller gets up to *n* times the

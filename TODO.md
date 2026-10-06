@@ -40,37 +40,13 @@ convention-qualified name regardless of which option is chosen.
 
 ---
 
-## BLOCKING: Lab User Authentication (CRITICAL — Production Blocker)
+## Review UI sign-in
 
-**Current State (2026-10-06):** Lab users have no real login. Admins do.
-
-### Context
-- **Admin auth**: session cookie from `/admin/login` (server-side, revocable). Every
-  route's roles, rate limit and body cap are in `radreport/api/access_policy.xml`,
-  enforced by `AccessMiddleware` (`radreport/api/access.py`) before any handler runs.
-- **Lab user auth**: still the placeholder `X-User-Id` + `X-Tenant-Id` headers,
-  **accepted in every environment, production included**. The middleware now looks
-  the user up inside the claimed tenant and checks their stored roles against the
-  policy, so a forged pair must name a real, active user with the right role; but
-  nothing proves the caller *is* that user.
-- The review UI (`/ui/*`) cannot be used from a plain browser, because nothing
-  sends those headers.
-
-### Required Before Production
-
-- [ ] **Implement Lab User Authentication** (TBD)
-  - Choose auth method: OIDC, session-based, or deployment-specific
-  - Replace `AccessMiddleware._identify_lab_user` in `radreport/api/access.py`;
-    handlers read `request.state.identity` through `current_principal`, so they
-    do not change. The policy file's `realm="lab"` routes and roles stay as they are.
-  - Build login UI (form or redirect to IdP)
-  - Until then, consider refusing the header path outside local/test/development
-    the way the old admin header was refused.
-
-### Why This Matters
-- Today anyone who can reach the API and knows a lab user's id and tenant id can
-  act as that user.
-- This is prerequisite for any production deployment.
+Lab users now sign in at `POST /auth/login` and send `Authorization: Bearer
+<token>` (done 2026-10-06; see `radreport/auth/lab.py`). The review screens under
+`/ui/*` are opened by a browser, which cannot attach that header, so they still
+cannot be used without a client that does. Needs a browser sign-in page that keeps
+the tokens safely (httponly cookies, with an Origin check against CSRF).
 
 ## Rate limits are per process
 

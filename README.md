@@ -221,6 +221,16 @@ change nothing. From it a product admin can:
 - **manage platform users** — add, deactivate or reactivate product admins and
   support accounts, and reset their passwords.
 
+### Lab sign-in
+
+Lab staff sign in with `POST /auth/login` (`{"lab": "<slug>", "email", "password"}`)
+and send `Authorization: Bearer <access token>` on every lab request. Access tokens
+last 15 minutes and are checked without a database hit; refresh tokens last 14
+days, are single-use, stored only as hashes, and a replayed one revokes that whole
+sign-in. A product admin sets a lab user's first password from the lab's page in
+the admin panel. Admins keep server-side sessions instead: they are few, use only
+a browser, and need revocation to be instant.
+
 ### Who may call what
 
 Every route is listed in **`radreport/api/access_policy.xml`** with the roles
@@ -246,6 +256,7 @@ Settings are read from the environment and `.env`, prefixed `RADREPORT_`, with
 | `RADREPORT_TEST_DATABASE_URL` | Unset ⇒ DB-backed tests skip. |
 | `RADREPORT_ENVIRONMENT` | `local` / `test` / `development` serve the API docs (`/docs`, `/openapi.json`) and send the admin cookie without `Secure`. Anything else hides the docs and requires HTTPS for the cookie. |
 | `RADREPORT_STORAGE__*` | S3-compatible audio store; SSE-KMS in a real deployment. |
+| `RADREPORT_LAB_AUTH__TOKEN_SECRET` | Signs lab users' access tokens. **Required outside local/test/development** (32+ random characters); the app refuses to start without it. |
 | `RADREPORT_SEED_ADMIN_PASSWORD` | Read only by `make seed`, to set the first product admin's password. |
 | `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, … | **Unprefixed, and not settings.** Each provider row names the variable it reads, so a second account is a second variable plus a second provider in the admin panel — no code change. |
 

@@ -1015,6 +1015,15 @@ an edit here, not in code.
   `required`, `pattern`, `max-length`, `multiple`
 - A role may only be allowed on a route of its own realm; the parser refuses the file otherwise
 
+### `auth/lab.py` — lab users' sign-in
+- `login()` — password check (same answer and timing for every failure), then a token pair
+- `issue_access_token()` / `verify_access_token()` — HS256, 15 minutes, user id + tenant id + roles
+- `refresh()` — single-use refresh tokens stored as hashes; a replayed one revokes its whole sign-in
+- `logout()`, `revoke_all()`, `set_password()` (by a product admin), `change_password()` (by the user)
+- `require_token_secret()` — the app refuses to start outside development without a 32+ character secret
+
+### `api/routes/auth.py` — `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/password`
+
 ### `api/input_check.py` — the parameter allowlist
 Runs right after the access middleware, so only for a caller already let through.
 
@@ -1035,7 +1044,7 @@ reached without a policy entry and a caller the policy allows.
   rate limit `429` with `Retry-After`; caller identification `401` (or a `303` to
   `/admin/login` for a signed-out browser on a panel page); role check `403`
 - Admin realm: the `radreport_admin` session cookie. Lab realm: the placeholder
-  `X-User-Id` / `X-Tenant-Id` headers, with the user looked up inside that tenant
+  bearer access token from `/auth/login`, verified without a database round trip
   and their stored roles checked
 - `RateLimiter` — in-process sliding window, so limits are per worker
 - `AccessPolicy.allows()` — used by the panel to hide controls a role cannot use
