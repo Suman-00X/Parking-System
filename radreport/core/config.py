@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     allow_phi_on_this_machine: bool = False
     """Developer machines get synthetic data only. See devtools/."""
 
+    trusted_origins: list[str] = Field(default_factory=list)
+    """Extra origins (scheme://host[:port]) allowed to send state-changing admin requests, e.g. a public hostname in front of a proxy. Set as JSON in RADREPORT_TRUSTED_ORIGINS."""
+
     demo_accounts: list[DemoAccount] = Field(default_factory=list)
     """Empty => the login page has no credentials tab. Set as JSON in RADREPORT_DEMO_ACCOUNTS."""
 

@@ -247,3 +247,43 @@ def test_the_step_routes_accept_exactly_the_steps_the_code_runs() -> None:
         assert step is not None and step.pattern is not None
         listed = set(step.pattern.pattern.replace("\\-", "-").split("|"))
         assert listed == set(STEPS), f"{rule_id}: policy lists {sorted(listed ^ set(STEPS))} differently from STEPS"
+
+
+# ================================================================== csrf ===
+def test_a_cross_site_admin_write_is_refused(client: TestClient) -> None:
+    client.cookies.set(SESSION_COOKIE, ADMIN_TOKEN)
+    assert client.post("/admin/things", headers={"Origin": "https://evil.example"}).status_code == 403
+    assert client.post("/admin/things", headers={"Referer": "https://evil.example/page"}).status_code == 403
+
+
+def test_a_same_site_or_headerless_admin_write_is_allowed(client: TestClient) -> None:
+    client.cookies.set(SESSION_COOKIE, ADMIN_TOKEN)
+    assert client.post("/admin/things", headers={"Origin": "http://testserver"}).status_code == 200
+    assert client.post("/admin/things", headers={"Referer": "http://testserver/admin/things"}).status_code == 200
+    assert client.post("/admin/things").status_code == 200, "a script sends no Origin and cannot be a forged browser request"
+
+
+def test_reads_and_lab_routes_skip_the_origin_check(client: TestClient) -> None:
+    client.cookies.set(SESSION_COOKIE, ADMIN_TOKEN)
+    assert client.get("/admin/things", headers={"Origin": "https://evil.example"}).status_code == 200
+    bearer = _bearer(RADIOLOGIST, UserRole.RADIOLOGIST) | {"Origin": "https://evil.example"}
+    assert client.post("/lab/sign", headers=bearer).status_code == 200, "a bearer token is never sent by the browser on its own"
+
+
+def test_a_trusted_origin_is_allowed(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from radreport.core.config import get_settings
+
+    monkeypatch.setenv("RADREPORT_TRUSTED_ORIGINS", '["https://admin.radreport.example"]')
+    get_settings.cache_clear()
+    try:
+        client.cookies.set(SESSION_COOKIE, ADMIN_TOKEN)
+        assert client.post("/admin/things", headers={"Origin": "https://admin.radreport.example"}).status_code == 200
+    finally:
+        get_settings.cache_clear()
+
+
+def test_a_forged_login_from_another_site_is_refused() -> None:
+    """Login CSRF: signing a victim into the attacker's account is refused before any password check."""
+    client = TestClient(create_app(), follow_redirects=False)
+    response = client.post("/admin/login", data={"email": "a@b.c", "password": "x" * 12}, headers={"Origin": "https://evil.example"})
+    assert response.status_code == 403

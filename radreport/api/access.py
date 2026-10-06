@@ -2,9 +2,10 @@
 
 Order: read the policy, its roles and its declared parameters (load_policy, parse_policy,
 _parse_param) -> confirm it lists exactly the routes the app serves (verify_coverage) -> for each
-request, find its rule (AccessPolicy.match), identify the caller for that rule's realm, check
-their role and rate limit (AccessMiddleware) -> leave the result on `request.state.identity` and
-the rule on `request.state.access_rule`; input_check.py then checks the parameters.
+request, find its rule (AccessPolicy.match), refuse a cross-site admin write (_check_origin),
+identify the caller for that rule's realm, check their role and rate limit (AccessMiddleware)
+-> leave the result on `request.state.identity` and the rule on `request.state.access_rule`;
+input_check.py then checks the parameters.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Final
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
@@ -353,6 +355,9 @@ class AccessMiddleware(BaseHTTPMiddleware):
         if rule is None or (rule.environments is not None and get_settings().environment not in rule.environments):
             return _deny(404, "Not Found")
 
+        if (refused := self._check_origin(rule, request)) is not None:
+            return refused
+
         if rule.max_body_bytes is not None:
             declared = request.headers.get("content-length", "")
             if declared.isdigit() and int(declared) > rule.max_body_bytes:
@@ -377,6 +382,21 @@ class AccessMiddleware(BaseHTTPMiddleware):
         request.state.identity = identity
         request.state.access_rule = rule
         return await call_next(request)
+
+    def _check_origin(self, rule: RouteRule, request: Request) -> Response | None:
+        """Refuse a cross-site write to a cookie-authenticated route (CSRF)."""
+        if request.method in ("GET", "HEAD", "OPTIONS") or not rule.path.startswith("/admin"):
+            return None
+        source = request.headers.get("origin") or request.headers.get("referer")
+        if source is None:
+            # No browser sends a cross-site POST without Origin, so this is a script, not a forged request.
+            return None
+        parts = urlsplit(source)
+        origin = f"{parts.scheme}://{parts.netloc}".lower()
+        if parts.netloc.lower() == request.headers.get("host", "").lower() or origin in {o.rstrip("/").lower() for o in get_settings().trusted_origins}:
+            return None
+        log.warning("cross_site_request_refused", route=rule.id, origin=origin)
+        return _deny(403, "cross-site request refused")
 
     def _limit(self, rule: RouteRule, who: str) -> Response | None:
         assert rule.rate_limit is not None
