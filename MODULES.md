@@ -961,3 +961,540 @@ A vendor-side model change is a pipeline change that must re-clear the release
 gate. This notices when something changed and nobody said so.
 
 - `population_stability_index()` against an explicit baseline window, not a mean comparison
+- `categorical_drift()` for template and routing distributions
+- `evaluate_drift()` → `DriftReport`: silent model updates, a new microphone, a locum's accent
+
+---
+
+## 8. Surfaces
+
+HTTP and the admin panel. Thin by rule — access checks, permission checks and
+serialisation, no business logic.
+
+**19 files, 3,423 lines**, plus the access policy XML. (3 package `__init__`
+stubs omitted below.) Line counts taken on 2026-10-06, after the admin panel
+and the access policy landed.
+
+| Lines | File | Purpose |
+|---:|---|---|
+| 731 | `api/routes/admin_panel.py` | Admin panel pages under `/admin`: sign-in, labs, lab page, readiness, onboarding, providers, users |
+| 377 | `api/access.py` | Access middleware: policy loading, coverage check, rate limits, caller identification |
+| 377 | `api/access_policy.xml` | Every route: realm, allowed roles, rate limit, body cap (XML, not Python) |
+| 358 | `api/routes/admin_api.py` | Admin panel JSON under `/admin/api`: labs, steps, onboarding, autonomy, adaptation, platform users |
+| 325 | `api/routes/onboarding.py` | 17 routes: lab-side onboarding — consents and clinical approvals |
+| 289 | `api/routes/review.py` | 12 routes: queue, draft, revisions, signing, grading, feedback, audio |
+| 233 | `admin/modelconfig.py` | Providers, model definitions, per-lab per-step assignment |
+| 223 | `api/routes/review_ui.py` | Review screen + queue screen |
+| 185 | `admin/auth.py` | scrypt passwords, server-side sessions, revocation |
+| 154 | `api/routes/ga.py` | 6 routes: lab-side autonomy read/revoke, release coverage, HL7 + FHIR export, drift |
+| 117 | `admin/onboarding_steps.py` | The onboarding uploads and mining steps an admin runs, shared by the pages and the API |
+| 99 | `admin/users.py` | Add, deactivate, reactivate and reset product admin and support accounts |
+| 93 | `api/deps.py` | The caller the middleware identified, and one-lab session binding |
+| 88 | `admin/cli.py` | Create the first admin, reset a password, revoke sessions |
+| 87 | `api/app.py` | App factory, router wiring, access middleware, `/health` (liveness) and `/ready` (dependencies) |
+| 60 | `api/routes/ingest.py` | Capture-only upload: validate, store, audit |
+
+### `api/app.py` — the FastAPI application
+Assembles the routers and puts the access check in front of all of them.
+
+- `create_app()` mounts every router, runs `verify_coverage()` against the
+  policy — the app refuses to start on a mismatch — and installs `AccessMiddleware`
+- `current_revision()` / `head_revision()` so a schema drift is visible at boot
+
+### `api/access_policy.xml` — who may call what
+The single list of every route the app serves. Adding a role or a permission is
+an edit here, not in code.
+
+- `<roles>` — `product_admin` and `support` (admin realm); `lab_admin`,
+  `radiologist`, `transcriptionist`, `auditor` (lab realm)
+- `<rate-limits>` — named sliding-window limits, keyed by caller or by IP
+- `<routes realm="public|admin|lab">` — method, path, `<allow role>` list,
+  `rate-limit`, `max-body-bytes`, and `environments` for the dev-only docs routes
+- A role may only be allowed on a route of its own realm; the parser refuses the file otherwise
+
+### `api/access.py` — the access middleware
+Every request passes through it before any handler runs, so a route cannot be
+reached without a policy entry and a caller the policy allows.
+
+- `parse_policy()` / `load_policy()` — validate the XML once at startup
+- `verify_coverage()` — served routes and policy routes must match exactly
+- `AccessMiddleware` — unlisted route `404`; declared body over the cap `413`;
+  rate limit `429` with `Retry-After`; caller identification `401` (or a `303` to
+  `/admin/login` for a signed-out browser on a panel page); role check `403`
+- Admin realm: the `radreport_admin` session cookie. Lab realm: the placeholder
+  `X-User-Id` / `X-Tenant-Id` headers, with the user looked up inside that tenant
+  and their stored roles checked
+- `RateLimiter` — in-process sliding window, so limits are per worker
+- `AccessPolicy.allows()` — used by the panel to hide controls a role cannot use
+
+### `api/deps.py` — request dependencies
+Holds the boundary invariant: a request is bound to exactly one tenant before it
+touches a tenant-scoped table, and a product admin binding to a lab writes an
+audit row. Authentication itself happens in `api/access.py`.
+
+- `current_admin()` / `current_principal()` — read the caller the middleware identified
+- `get_db()` — a session bound to the lab user's own tenant
+- `admin_lab_session()` / `get_admin_lab_db()` — a session bound to the
+  `{tenant_id}` in the path, with `select_org()` writing `admin_org_selected`
+- `client_ip()` for audit rows
+
+### `api/routes/ingest.py` — capture-only ingest
+Upload → validate → store → `recording` row → audit. No pipeline kicked off
+here, deliberately.
+
+- `POST` upload returning `IngestResponse`, idempotent on re-upload
+
+### `api/routes/onboarding.py` — lab-side onboarding
+Only what the lab's own staff can do: the consents and the clinical approvals.
+Uploads and mining steps moved to the admin panel.
+
+- Voice enrollment and training consent
+- Template candidate list and review, merge decisions, batch apply/revert
+- Mapping verification, histogram, referrer prior; collision-finding resolution
+- Verbatim queue and submission; boilerplate export and promotion
+- Critical-rule authoring and approval — every clinical gate is a radiologist
+
+### `api/routes/review.py` — the review API
+Permissions loaded from the caller's `app_user` roles and built into a
+`Reviewer`, never trusted from a header.
+
+- Queue and stats, draft fetch, audio span fetch
+- Revisions, signature, addendum, alert acknowledgement
+- Grading, CSE rate, usefulness reporting
+- `active_edit_seconds` arrives from the browser because only the browser can measure focus
+
+### `api/routes/review_ui.py` — the review screen
+Server-rendered. A JavaScript build chain in the path of every clinical review,
+for a screen that is a form with a timer, is a dependency nobody needs.
+
+- `review_screen()` and `queue_screen()`; `render_field()`, `render_retractions()`
+- `static_file()` serves the two ES modules with no build step
+
+### `api/static/` — the two client-side pieces
+The only things the client genuinely must do.
+
+- `review.js` — focus-time timer and per-field click-to-listen
+- `review.css` — the review screen's styles, also used by the admin panel
+
+### `api/routes/admin_panel.py` — the admin panel's pages
+Server-rendered, for the same reason as the review screen. Every action is a
+form POST that redirects back with a URL-encoded `?error=` or `?notice=`.
+
+- Sign in / out; the login page shows configured demo accounts on a test-credentials tab
+- Lab list (offboarded hidden unless `?show=all`) and registration, with
+  server-side slug validation and `training_consent_ref` required when pooling
+  consent is ticked
+- Lab page: status-change form offering only legal targets, per-step model
+  proposal and *activate* buttons; readiness page, bound to the lab's session
+- Onboarding page: overview, roster and template uploads, a button per mining step, merge proposals
+- Providers and models; platform users
+- Controls a `support` account cannot use are hidden, by asking the access policy
+
+### `api/routes/admin_api.py` — the admin panel's JSON API
+The same operations as the pages, for scripts and tests, under `/admin/api`.
+Every lab-scoped route takes the lab from its `{tenant_id}` path segment.
+
+- Labs: list, register, readiness, status change
+- Models per step: steps view, propose, activate (gated on a gold-set eval run)
+- Onboarding: status, roster, templates, corpus, merge proposals, `steps/{step}`
+- Autonomy read, open accrual, grant, revoke; adaptation gates and require-gates
+- Platform users: list, create, deactivate, reactivate, reset password
+
+### `api/routes/ga.py` — autonomy, export, drift
+The lab side of the later-stage features. Opening accrual, granting and the
+adaptation gates moved to the admin API, so the permission asymmetry is now a
+realm boundary.
+
+- `get_accrual()` and `post_revoke()` — a lab can watch and revoke, never grant
+- `get_autonomy_coverage()` — what a grant actually removed
+- `get_hl7()` / `get_fhir()` export, `get_drift()`
+
+### `admin/auth.py` — product-admin authentication
+Replaces the header placeholder that made anyone with a UUID a product admin.
+
+- scrypt password hashing: `hash_password()`, `verify_password()`, `set_password()`
+- `login()` / `authenticate()` / `logout()` over `admin_session`
+- `revoke_all_sessions()` for a compromised account
+
+### `admin/users.py` — platform users
+Lets a product admin manage who signs in to the panel without a shell.
+
+- `list_platform_users()`, `create_platform_user()`, `set_active()`, `reset_password()`
+- Refuses to deactivate yourself or the last active product admin
+- Deactivation and password reset end every session; every change is audited
+
+### `admin/onboarding_steps.py` — onboarding steps an admin runs
+One implementation behind both the onboarding page and the admin API.
+
+- `onboarding_overview()` — corpus verification, gold progress, active rules, recent batches, readiness
+- `import_roster_file()`, `submit_template_files()`, `load_corpus_records()`, `propose_template_merges()`
+- `STEPS` — `derive-map`, `lexicon-mine`, `collision-audit`, `mine-variants`,
+  `boilerplate-mine`, `critical-rules-seed`; `run_step()` runs one by name
+- `StepRefused` carries the HTTP status the API answers with
+
+### `admin/modelconfig.py` — per-lab model configuration
+The missing half of the registry: the tables and resolver shipped, but nothing
+except the seed script could write them.
+
+- `create_provider()`, `create_definition()`, `propose_assignment()`
+- `step_configuration()`, `available_models()`, `unconfigured_steps()`
+- Cloud API keys stay in the process environment; `resolve_api_key()` reads them by reference
+
+### `admin/cli.py` — bootstrap from a shell
+Breaks the loop where signing in requires an account and creating one requires
+signing in. The right place for it: whoever can run this already has the
+database. Every later account is added from the panel's Users page.
+
+- `create` (`make admin EMAIL=...`), `set-password` (`make admin-password EMAIL=...`),
+  `revoke-sessions` — `python -m radreport.admin.cli`
+
+---
+
+## Placeholders
+
+Five directories exist in the tree and contain no code. They imply capability
+that is not there; fill them or delete them.
+
+| Path | Intended for |
+|---|---|
+| `radreport/workers/` | background job runners — the pipeline currently runs inline |
+| `radreport/prompts/` | prompt text as data — prompts are built in `adapters/llm/prompt.py` and the stages |
+| `radreport/adapters/dicom/` | DICOM metadata lookup |
+| `radreport/adapters/hl7/` | inbound HL7 (orders); outbound lives in `export/hl7.py` |
+| `radreport/pipeline/stages/specialists/` | per-modality specialist stages |
+
+---
+
+# Summary tables
+
+Counts from the filesystem on 2026-10-05. Package `__init__.py` stubs of three
+lines or fewer are included in the totals but omitted from the per-module tables
+above; the stub count is noted under each module heading.
+
+## By module
+
+Grouped by **when the code runs**, which is how the sections above are ordered.
+
+| # | Module | Files | Lines | Share | Runs |
+|---|---|---:|---:|---:|---|
+| 1 | [Foundation](#1-foundation) | 37 | 6,053 | 19.8% | always |
+| 2 | [Onboarding](#2-onboarding) | 12 | 4,808 | 15.8% | once per lab |
+| 3 | [Capture](#3-capture) | 5 | 645 | 2.1% | per recording |
+| 4 | [Pipeline](#4-pipeline) | 32 | 7,248 | 23.8% | per report |
+| 5 | [Engines](#5-engines) | 13 | 1,995 | 6.5% | called by the pipeline |
+| 6 | [Review and export](#6-review-and-export) | 10 | 2,371 | 7.8% | per draft, then per signature |
+| 7 | [Governance](#7-governance) | 16 | 3,341 | 10.9% | out of band |
+| 8 | [Surfaces](#8-surfaces) | 16 | 4,057 | 13.3% | per HTTP request |
+| | **Total** | **141** | **30,518** | | |
+
+The two largest are the ones to expect: the Pipeline is sixteen stages, and the
+Foundation carries the 58-table schema plus every shared primitive. Capture is
+the smallest at 2.1% and does the least on purpose — it validates, stores and
+audits, and kicks off nothing.
+
+## By category
+
+The same 141 files cut by **what a file is**, which is the cut that matters when
+you are deciding where a change belongs rather than when it runs.
+
+| Category | Files | Lines | Share |
+|---|---:|---:|---:|
+| Domain logic | 77 | 19,222 | 63.0% |
+| DB / schema | 24 | 4,304 | 14.1% |
+| Controllers (HTTP) | 12 | 3,084 | 10.1% |
+| Adapters (external I/O) | 16 | 2,159 | 7.1% |
+| Helpers / shared | 12 | 1,749 | 5.7% |
+| **Total** | **141** | **30,518** | |
+
+Adapters are listed apart from domain logic because they are the only code that
+talks to Postgres, S3, an LLM or an ASR engine. Counted as logic instead, that is
+**93 files and 21,381 lines**.
+
+`DB / schema` splits three ways, and the middle one is not editable code:
+
+| Kind | Files | Lines | Editing rule |
+|---|---:|---:|---|
+| ORM models | 13 | 3,110 | Declare the 58 tables. Edit freely — but **any change here needs a new migration.** |
+| Migrations | 5 | 517 | **Append-only history, not code.** See the table under [Foundation](#1-foundation). |
+| Infrastructure | 5 | 592 | The machinery both rely on: `session.py`, `introspect.py`, `base.py`, `bootstrap.py`, `env.py`. |
+
+## Data
+
+**58 tables, 752 columns.**
+
+| Tenancy class | Tables | Meaning |
+|---|---:|---|
+| Tenant-scoped | 43 | `tenant_id NOT NULL`, RLS policy with `FORCE`, composite FKs to other scoped tables |
+| Tenant-NULLable | 12 | NULL = global: model catalog, global lexicon, canonical eval sets, audit log |
+| No tenant | 3 | The platform realm: `tenant`, `platform_user`, `admin_session` |
+
+A new table on neither exception list and with no `tenant_id` **fails the
+build** — `core/tenancy.py` declares the lists and
+`tests/unit/test_schema_tenancy.py` enforces them.
+
+| Area | Tables | Declared in |
+|---|---:|---|
+| Onboarding | 10 | `db/models/onboarding.py` |
+| Knowledge | 8 | `db/models/knowledge.py` |
+| Reports | 8 | `db/models/reporting.py` |
+| Tenancy | 5 | `db/models/tenancy.py` |
+| Identity | 4 | `db/models/identity.py` |
+| ASR | 4 | `db/models/asr.py` |
+| Review | 4 | `db/models/review.py` |
+| Eval | 4 | `db/models/evaluation.py` |
+| Model config | 4 | `db/models/modelconfig.py` |
+| Orchestration | 3 | `db/models/orchestration.py` |
+| Adaptation | 3 | `db/models/adaptation.py` |
+| Ingestion | 1 | `db/models/ingestion.py` |
+
+Widest tables, which is where the detail lives: `recording` 27 columns (every
+§9.8 quality measurement plus the §10.4 consent-derivation inputs),
+`stage_execution` 21 (per-stage cost, tokens, cache hits, resolved model id),
+`study` 19, `autonomy_class` 19, `model_adaptation_run` 18,
+`template_version` 18.
+
+Three tables are partitioned by month because they grow per-event rather than
+per-report: `asr_segment`, `edit_event`, `audit_log`.
+
+## HTTP routes
+
+**93 routes: 89 across 8 files, plus FastAPI's four documentation routes.**
+Every one of them lives in [Surfaces](#8-surfaces) — it is the only module that
+speaks HTTP — and every one is listed in `api/access_policy.xml`, which
+`create_app()` checks at startup. [API.md](API.md#appendix-a--index-by-prefix)
+has the roles, rate limit and body cap of each.
+
+| Routes | File | Surface |
+|---:|---|---|
+| 24 | `api/routes/admin_panel.py` | Admin panel pages and form handlers (**renders HTML**) |
+| 24 | `api/routes/admin_api.py` | Admin panel JSON: labs, steps, onboarding, autonomy, adaptation, platform users |
+| 17 | `api/routes/onboarding.py` | Lab-side onboarding: consents and clinical approvals |
+| 12 | `api/routes/review.py` | Queue, draft, revisions, signing, grading, feedback, audio |
+| 6 | `api/routes/ga.py` | Lab-side autonomy read/revoke, release coverage, HL7 + FHIR export, drift |
+| 3 | `api/routes/review_ui.py` | Review screen, queue screen, static assets (**renders HTML**) |
+| 2 | `api/app.py` | `/health` (liveness) and `/ready` (connection + schema revision) |
+| 1 | `api/routes/ingest.py` | Capture-only upload: validate, store, audit |
+| 4 | FastAPI | `/openapi.json`, `/docs`, `/docs/oauth2-redirect`, `/redoc` — local, test and development only |
+
+`/health` returning 200 against an unreachable database was a real bug; `/ready`
+checks the connection **and** that the schema revision matches the code's head,
+and `make run` waits on it.
+
+### By the module behind them
+
+The same 89 routes, attributed to the module whose behaviour each one calls down
+into rather than to the file it sits in. This is the view to read when tracing a
+request. Most admin operations are served twice — a page and a JSON route — and
+both are counted.
+
+| Module | Routes | Prefix | File |
+|---|---:|---|---|
+| [2 Onboarding](#2-onboarding) — lab registration and lifecycle | 7 | `/admin`, `/admin/api` | `routes/admin_panel.py`, `routes/admin_api.py` |
+| [2 Onboarding](#2-onboarding) — uploads, mining steps, overview, readiness | 13 | `/admin/.../onboarding`, `/admin/api/.../onboarding` | `routes/admin_panel.py`, `routes/admin_api.py` |
+| [2 Onboarding](#2-onboarding) — lab-side approvals | 17 | `/onboarding` | `routes/onboarding.py` |
+| [3 Capture](#3-capture) | 1 | `/ingest` | `routes/ingest.py` |
+| [4 Pipeline](#4-pipeline) | **0** | — | **no HTTP trigger exists** |
+| [5 Engines](#5-engines) — providers, models, per-step assignment | 8 | `/admin`, `/admin/api` | `routes/admin_panel.py`, `routes/admin_api.py` |
+| [6 Review](#6-review-and-export) — API | 12 | `/review` | `routes/review.py` |
+| [6 Review](#6-review-and-export) — screens | 3 | `/ui` | `routes/review_ui.py` |
+| [6 Export](#6-review-and-export) — HL7 + FHIR | 2 | `/ga/export` | `routes/ga.py` |
+| [7 Governance](#7-governance) — autonomy and drift, lab side | 4 | `/ga` | `routes/ga.py` |
+| [7 Governance](#7-governance) — autonomy and adaptation, admin side | 6 | `/admin/api/labs/{tenant_id}` | `routes/admin_api.py` |
+| [8 Surfaces](#8-surfaces) — sign-in and platform users | 14 | `/admin`, `/admin/api` | `routes/admin_panel.py`, `routes/admin_api.py` |
+| [8 Surfaces](#8-surfaces) — ops | 2 | — | `app.py` |
+
+**The pipeline has no route.** Nothing under `api/` imports `pipeline/`, and the
+only callers of `build_v1_graph()` and `new_run()` are in
+`tests/db/test_pipeline_v1.py`. The largest module here — and the product
+itself — is unreachable over HTTP. That is the same fact as the empty
+`workers/` directory below: nothing exists to enqueue a run. Trace the pipeline
+from that test file, not from a request.
+
+**26 of the 89 render HTML or redirect** rather than return JSON: the admin
+panel's pages and form handlers (24, three of them public sign-in routes) and
+the two `/ui` screens. They are listed again under [UI](#ui).
+
+### Every route
+
+Grouped by prefix, in source order within each file. Who may call each one is
+in [API.md](API.md#appendix-a--index-by-prefix).
+
+#### `/admin` — 24, the admin panel's pages (**HTML**)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/admin/login` | Sign-in page (public) |
+| POST | `/admin/login` | scrypt check, server-side session (public, 5 a minute per IP) |
+| POST | `/admin/logout` | Revoke the session (public) |
+| GET | `/admin` | Redirect to the lab list |
+| GET | `/admin/labs` | Lab list and the onboard-a-lab form; `?show=all` includes offboarded labs |
+| POST | `/admin/labs` | Register a lab |
+| GET | `/admin/labs/{tenant_id}` | One lab: status, all pipeline steps and what serves each |
+| POST | `/admin/labs/{tenant_id}/status` | Lifecycle transition, through the readiness gate |
+| GET | `/admin/labs/{tenant_id}/readiness` | The seven checks gating onboarding → pilot |
+| POST | `/admin/labs/{tenant_id}/assign` | Propose a model for one step |
+| POST | `/admin/labs/{tenant_id}/assignments/{assignment_id}/activate` | Activate a proposal — refused without a gold-set eval run |
+| GET | `/admin/providers` | Providers and models, with add forms |
+| POST | `/admin/providers` | Add a provider |
+| POST | `/admin/models` | Add a model definition |
+| GET | `/admin/labs/{tenant_id}/onboarding` | Onboarding overview, uploads, step buttons |
+| POST | `/admin/labs/{tenant_id}/onboarding/roster` | Import the roster CSV |
+| POST | `/admin/labs/{tenant_id}/onboarding/templates` | Submit template documents |
+| POST | `/admin/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals` | Propose near-duplicate merges |
+| POST | `/admin/labs/{tenant_id}/onboarding/steps/{step}` | Run one mining or seeding step |
+| GET | `/admin/users` | Platform users, with add, deactivate, reactivate and password forms |
+| POST | `/admin/users` | Add a product admin or support account |
+| POST | `/admin/users/{user_id}/deactivate` | Switch an account off and end its sessions |
+| POST | `/admin/users/{user_id}/reactivate` | Switch an account back on |
+| POST | `/admin/users/{user_id}/password` | Set a password and end the account's sessions |
+
+#### `/admin/api` — 24, the admin panel's JSON
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/admin/api/labs` | List labs, every status |
+| POST | `/admin/api/labs` | Register a lab |
+| GET | `/admin/api/labs/{tenant_id}/readiness` | The readiness gate as JSON |
+| POST | `/admin/api/labs/{tenant_id}/status` | Lifecycle transition: onboarding → pilot → live |
+| GET | `/admin/api/labs/{tenant_id}/steps` | Each pipeline step and what serves it |
+| POST | `/admin/api/labs/{tenant_id}/assignments` | Propose a model for one step |
+| POST | `/admin/api/labs/{tenant_id}/assignments/{assignment_id}/activate` | Activate a proposal — refused without a gold-set eval run |
+| GET | `/admin/api/labs/{tenant_id}/onboarding` | Onboarding status across every stage |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/roster` | Import the roster CSV |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/templates` | Submit template documents |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/corpus` | Load the historical report corpus |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals` | Propose near-duplicate merges |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/steps/{step}` | Run `derive-map`, `lexicon-mine`, `collision-audit`, `mine-variants`, `boilerplate-mine` or `critical-rules-seed` |
+| GET | `/admin/api/labs/{tenant_id}/autonomy/{class_code}` | Accrual state and the Beta-Binomial posterior |
+| POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/open-accrual` | Start observing a class |
+| POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/grant` | The Bayesian sequential grant |
+| POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/revoke` | Withdraw autonomy from the vendor side |
+| POST | `/admin/api/labs/{tenant_id}/adaptation/gates` | Evaluate the six adaptation gates |
+| POST | `/admin/api/labs/{tenant_id}/adaptation/require-gates` | Enforce them — two are unimplemented and fail closed |
+| GET | `/admin/api/users` | List platform users |
+| POST | `/admin/api/users` | Add a product admin or support account |
+| POST | `/admin/api/users/{user_id}/deactivate` | Switch an account off and end its sessions |
+| POST | `/admin/api/users/{user_id}/reactivate` | Switch an account back on |
+| POST | `/admin/api/users/{user_id}/password` | Set a password and end the account's sessions |
+
+#### `/onboarding` — 17, lab-side onboarding
+
+| Method | Path | Stage | Purpose |
+|---|---|---|---|
+| POST | `/onboarding/radiologists/{radiologist_id}/voice-enrollment` | S0 | Enroll a voice sample |
+| POST | `/onboarding/radiologists/{radiologist_id}/training-consent` | S0 | Record training consent — separate from the clinical one |
+| GET | `/onboarding/templates/candidates` | S1 | List parsed candidates |
+| POST | `/onboarding/templates/candidates/{candidate_id}/review` | S1 | Accept or reject one candidate |
+| POST | `/onboarding/merge-proposals/{proposal_id}/decide` | S1 | Decide one merge |
+| POST | `/onboarding/batches/{batch_id}/apply` | — | Promote an approved batch |
+| POST | `/onboarding/batches/{batch_id}/revert` | — | Revert a batch |
+| POST | `/onboarding/corpus/mappings/{mapping_id}/verify` | S2 | Verify one derived mapping |
+| GET | `/onboarding/corpus/histogram` | S2 | Usage histogram |
+| GET | `/onboarding/corpus/referrer-prior` | S2 | Referrer prior |
+| POST | `/onboarding/collision-findings/{finding_id}/resolve` | S3 | Resolve one collision |
+| GET | `/onboarding/verbatim/queue` | S4 | The verbatim annotation queue |
+| POST | `/onboarding/verbatim` | S4 | Submit a verbatim transcript |
+| GET | `/onboarding/boilerplate/export` | S5 | CSV export |
+| POST | `/onboarding/boilerplate/{candidate_id}/promote` | S5 | Promote one normal |
+| POST | `/onboarding/critical-rules` | S6 | Author a rule |
+| POST | `/onboarding/critical-rules/{rule_id}/approve` | S6 | Approve a rule |
+
+The roster, template and corpus uploads, merge proposals, the mining and
+seeding steps and the onboarding status used to be here; they are now admin
+routes under `/admin/api/labs/{tenant_id}/onboarding`.
+
+#### `/ingest` — 1, capture
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/ingest/recordings` | Upload: §9.8 gates, store, audit. Idempotent by content hash. |
+
+#### `/review` — 12, the human loop
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/review/queue` | The queue: priority → alert → flagged count → oldest, role-filtered |
+| GET | `/review/queue/stats` | Counts for the header |
+| GET | `/review/drafts/{draft_id}` | One draft: fields with provenance |
+| GET | `/review/drafts/{draft_id}/audio` | The audio, for click-to-listen |
+| POST | `/review/drafts/{draft_id}/revisions` | Record a revision and its categorised edit events |
+| POST | `/review/drafts/{draft_id}/sign` | Sign — the four refusals stand here |
+| POST | `/review/reports/{report_id}/addendum` | Amend a signed report |
+| POST | `/review/alerts/{alert_id}/acknowledge` | Acknowledge a critical alert |
+| POST | `/review/reports/{report_id}/grade` | G0–G4 |
+| GET | `/review/metrics/cse-rate` | CSE rate |
+| POST | `/review/drafts/{draft_id}/usefulness` | §9.6's "this draft was useless" |
+| GET | `/review/metrics/usefulness` | Usefulness rollup |
+
+#### `/ui` — 3, the review screens (**HTML**)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/ui/queue` | Queue screen |
+| GET | `/ui/drafts/{draft_id}` | Review screen |
+| GET | `/ui/static/{name}` | `review.js` and `review.css` (public) |
+
+#### `/ga` — 6, lab-side governance and export
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/ga/autonomy/{class_code}` | Accrual state and the Beta-Binomial posterior |
+| POST | `/ga/autonomy/{class_code}/revoke` | Withdraw autonomy from the lab side |
+| GET | `/ga/autonomy-coverage` | Coverage: what a grant actually changed |
+| GET | `/ga/export/{report_id}/hl7` | HL7 v2 ORU^R01, MLLP-framed |
+| GET | `/ga/export/{report_id}/fhir` | FHIR R4 DiagnosticReport + transaction bundle |
+| GET | `/ga/drift` | PSI against an explicit baseline window |
+
+Opening accrual, granting and the adaptation gates moved to `/admin/api`.
+
+#### Ops — 2
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | Liveness only |
+| GET | `/ready` | Connection **and** schema revision matches the code's head |
+
+## UI
+
+**1,116 lines, 4 files.** Server-rendered HTML with no build step: no
+`package.json`, no bundler, no `node_modules`.
+
+| Lines | File | Purpose |
+|---:|---|---|
+| 731 | `api/routes/admin_panel.py` | Admin panel: 7 pages, plus 17 form handlers, sign-in routes and the `/admin` redirect |
+| 223 | `api/routes/review_ui.py` | Review screen + queue screen |
+| 102 | `api/static/review.js` | Focus timer (`active_edit_seconds`), click-to-listen, edit collection |
+| 60 | `api/static/review.css` | The entire stylesheet, light and dark; the admin panel uses it too |
+
+The two Python files are also counted under Surfaces above — they are Python
+that emits HTML, not a separate tree.
+
+| Route | Screen |
+|---|---|
+| `GET /admin/login` | Sign in, with a test-credentials tab when demo accounts are configured |
+| `GET /admin/labs` | Lab list + onboard-a-lab form |
+| `GET /admin/labs/{tenant_id}` | One lab: status change, all pipeline steps, propose and activate a model for each |
+| `GET /admin/labs/{tenant_id}/readiness` | The readiness checks, blocking first |
+| `GET /admin/labs/{tenant_id}/onboarding` | Onboarding overview, roster and template uploads, step buttons |
+| `GET /admin/providers` | Providers and models, with add forms |
+| `GET /admin/users` | Platform users, with add, deactivate, reactivate and password forms |
+| `GET /ui/queue` | Review queue |
+| `GET /ui/drafts/{draft_id}` | Review a draft |
+
+Plus the admin panel's form POST handlers, each of which redirects back to a
+page, and the `/ui/static/{name}` asset route.
+
+The browser JavaScript exists for the two things a server cannot do: measure
+**focus time** (blur/focus events plus a 20-second idle timeout — §15.2's
+commercial argument rests on that number) and **play a cited audio span** from
+`provenance_span.audio_start_ms`. Everything else is a form POST and a redirect.
+
+## Tests
+
+**40 files, 9,216 lines, 511 tests.** That is 30% of the repository's lines
+against 70% application code.
+
+DB-backed tests skip unless `RADREPORT_TEST_DATABASE_URL` is set, so the unit
+suite runs anywhere. They must connect as the **non-owner** `radreport_app_login`
+role: a superuser or table owner bypasses RLS, and the isolation tests — the
+highest-value tests in the suite — would pass without proving anything.
