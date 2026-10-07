@@ -53,6 +53,9 @@
   <routes realm="public">
     <route id="ops.health" method="GET" path="/health" rate-limit="probe" description="Liveness, with each dependency's state and this instance's id."/>
     <route id="ops.ready" method="GET" path="/ready" rate-limit="probe" description="Readiness of dependencies; 503 routes traffic away."/>
+    <route id="public.features" method="GET" path="/features" rate-limit="public" description="What the product does."/>
+    <route id="public.api-docs" method="GET" path="/api-docs" rate-limit="public" description="The HTTP API reference."/>
+    <route id="public.recruiter" method="GET" path="/recruiter" rate-limit="public" description="Project overview and read-only demo sign-ins."/>
     <route id="ui.static" method="GET" path="/ui/static/{name}" rate-limit="public" description="Stylesheets and scripts.">
       <param name="name" in="path" type="string" required="true" pattern="(review|app)\.(js|css)" max-length="200"/>
       <param name="v" in="query" type="string" pattern="[0-9a-f]{12}"/>

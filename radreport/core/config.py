@@ -162,7 +162,10 @@ class DemoAccount(BaseModel):
     email: str
     password: str
     role: str = "support"
-    """`support` is read-only; a public `product_admin` login lets any visitor lock the others out."""
+    """`support` is read-only; a public `product_admin` login lets any visitor lock the others out. Only read-only roles (support, auditor) are ever shown."""
+
+    lab: str | None = None
+    """For a lab account (an `auditor`), the lab's slug; empty for an admin-panel account."""
 
 
 class Settings(BaseSettings):

@@ -29,7 +29,7 @@ from radreport.api.access import load_policy
 from radreport.api.deps import CurrentAdmin, admin_lab_session, client_ip
 from radreport.api.pagination import Page, paginate
 from radreport.api.routes.admin_api import SLUG_PATTERN, lab_user_out
-from radreport.api.ui import admin_page, auth_page, badge, banner, card, esc, facts, flash, icon, pager, progress, stat, status_badge, steps, table
+from radreport.api.ui import admin_page, auth_page, badge, banner, card, esc, facts, flash, icon, pager, progress, stat, status_badge, steps, table, with_demo_tab
 from radreport.auth import lab as lab_auth
 from radreport.core.config import get_settings
 from radreport.core.errors import ModelResolutionError, UngatedActivation
@@ -88,17 +88,6 @@ def _lab_crumbs(tenant_id: uuid.UUID, name: str, *tail: str) -> tuple[tuple[str,
 
 
 # =================================================================== login ===
-def _demo_credentials_panel() -> str:
-    """The test-credentials tab body, one card per configured demo account."""
-    cards = "".join(
-        f"""<div class="cred"><div class="label">{_esc(a.label)} {badge(a.role, "brand")}</div>
-      <div>Email: <code>{_esc(a.email)}</code></div><div style="margin-top:4px">Password: <code>{_esc(a.password)}</code></div>
-      <div class="actions" style="margin-top:10px"><button type="button" class="sm" data-fill-email="{_esc(a.email)}" data-fill-password="{_esc(a.password)}">{icon("arrow")}Use these</button></div></div>"""
-        for a in get_settings().demo_accounts
-    )
-    return f'<p class="meta">Demo accounts for trying the product. They hold synthetic data only.</p>{cards}'
-
-
 @router.get("/login", response_class=HTMLResponse)
 def login_page(error: str | None = None) -> HTMLResponse:
     form = """<form method="post" action="/admin/login">
@@ -109,20 +98,7 @@ def login_page(error: str | None = None) -> HTMLResponse:
       <div class="actions"><button class="primary" type="submit">Sign in</button></div>
     </form>"""
     subtitle = "Product admins and support sign in here to configure labs, models and accounts."
-    if not get_settings().demo_accounts:
-        return auth_page("Sign in", f"{_messages(error, None)}{form}", subtitle=subtitle, realm="Admin panel")
-    return auth_page(
-        "Sign in",
-        f"""{_messages(error, None)}
-    <div class="tabs" role="tablist" data-tabs>
-      <button type="button" role="tab" aria-selected="true" data-panel="panel-signin">Sign in</button>
-      <button type="button" role="tab" aria-selected="false" data-panel="panel-demo">Test credentials</button>
-    </div>
-    <div id="panel-signin" role="tabpanel">{form}</div>
-    <div id="panel-demo" role="tabpanel" hidden>{_demo_credentials_panel()}</div>""",
-        subtitle=subtitle,
-        realm="Admin panel",
-    )
+    return auth_page("Sign in", f"{_messages(error, None)}{with_demo_tab(form, 'admin')}", subtitle=subtitle, realm="Admin panel")
 
 
 @router.post("/login")

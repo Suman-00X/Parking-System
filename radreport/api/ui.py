@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from fastapi.responses import HTMLResponse
 
@@ -199,9 +200,72 @@ def auth_page(title: str, card_html: str, *, subtitle: str, realm: str) -> HTMLR
       <h1>{esc(title)}</h1>
       <p class="subtitle">{esc(subtitle)}</p>
       {card_html}
+      {public_links()}
     </div>
   </section>
 </div>
+</body></html>""")
+
+
+PUBLIC_NAV: tuple[tuple[str, str, str], ...] = (("features", "Features", "/features"), ("api", "API docs", "/api-docs"), ("recruiter", "For recruiters", "/recruiter"))
+
+
+#: The only roles a demo sign-in shown to the public may have: each can see everything and change nothing.
+READ_ONLY_DEMO_ROLES = frozenset({"support", "auditor"})
+
+
+def demo_accounts(realm: str) -> list[Any]:
+    """Configured read-only demo sign-ins for `admin` (no lab) or `lab` (with a lab slug); any other role is never shown."""
+    from radreport.core.config import get_settings
+
+    return [a for a in get_settings().demo_accounts if a.role in READ_ONLY_DEMO_ROLES and (a.lab is None) == (realm == "admin")]
+
+
+def demo_credentials(realm: str) -> str:
+    """The cards on a sign-in page's Test credentials tab, or on the recruiter page."""
+    cards = "".join(
+        f"""<div class="cred"><div class="label">{esc(a.label)} {badge(a.role, "brand")}</div>
+      {f"<div>Lab: <code>{esc(a.lab)}</code></div>" if a.lab else ""}<div>Email: <code>{esc(a.email)}</code></div><div style="margin-top:4px">Password: <code>{esc(a.password)}</code></div>
+      <div class="actions" style="margin-top:10px"><button type="button" class="sm" data-fill-email="{esc(a.email)}" data-fill-password="{esc(a.password)}" data-fill-lab="{esc(a.lab or "")}">{icon("arrow")}Use these</button></div></div>"""
+        for a in demo_accounts(realm)
+    )
+    return f'<p class="meta">Read-only demo accounts: they can open every screen and change nothing. Synthetic data only.</p>{cards}'
+
+
+def with_demo_tab(form: str, realm: str) -> str:
+    """The sign-in form, plus a Test credentials tab when read-only demo accounts are configured."""
+    if not demo_accounts(realm):
+        return form
+    return f"""<div class="tabs" role="tablist" data-tabs>
+      <button type="button" role="tab" aria-selected="true" data-panel="panel-signin">Sign in</button>
+      <button type="button" role="tab" aria-selected="false" data-panel="panel-demo">Test credentials</button>
+    </div>
+    <div id="panel-signin" role="tabpanel">{form}</div>
+    <div id="panel-demo" role="tabpanel" hidden>{demo_credentials(realm)}</div>"""
+
+
+def public_links() -> str:
+    """The row of public pages under a sign-in form."""
+    return '<nav class="public-links" aria-label="About radreport">' + "".join(f'<a href="{href}">{esc(label)}</a>' for _key, label, href in PUBLIC_NAV) + "</nav>"
+
+
+def public_page(title: str, body: str, *, active: str, description: str) -> HTMLResponse:
+    """A page anyone may open: the product's features, its API, and the project overview."""
+    links = "".join(f'<a href="{href}"{' aria-current="page"' if key == active else ""}>{esc(label)}</a>' for key, label, href in PUBLIC_NAV)
+    head = _head(title, "radreport").replace("</head>", f'<meta name="description" content="{esc(description)}">\n</head>', 1)
+    return HTMLResponse(f"""{head}
+<body class="public">
+<header class="public-top">
+  <div class="public-bar">
+    {_brand("Radiology reporting", "/features")}
+    <input type="checkbox" id="public-menu" class="public-menu-toggle" aria-label="Open menu">
+    <label for="public-menu" class="public-menu-button ghost icon-btn" aria-hidden="true">{icon("menu")}</label>
+    <nav class="public-nav" aria-label="Pages">{links}</nav>
+    <div class="public-actions">{_theme_toggle()}<a class="btn ghost sm" href="/ui/login">Lab sign in</a><a class="btn primary sm" href="/admin/login">Admin sign in</a></div>
+  </div>
+</header>
+<main class="public-main fade-in">{body}</main>
+<footer class="public-foot"><span>radreport · synthetic data only on demo deployments</span><span>{"".join(f'<a href="{href}">{esc(label)}</a>' for _k, label, href in PUBLIC_NAV)}</span></footer>
 </body></html>""")
 
 

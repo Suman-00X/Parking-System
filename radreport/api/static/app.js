@@ -78,6 +78,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const password = document.getElementById("password");
       if (email) email.value = button.dataset.fillEmail;
       if (password) password.value = button.dataset.fillPassword;
+      const lab = document.getElementById("lab");
+      if (lab && button.dataset.fillLab) lab.value = button.dataset.fillLab;
       document.querySelector("[data-tabs] [role=tab]")?.click();
     }),
   );

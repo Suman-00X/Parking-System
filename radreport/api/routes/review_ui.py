@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from radreport.api.deps import CurrentPrincipal, DbSession, client_ip
 from radreport.api.routes.review import _reviewer, _tenant
-from radreport.api.ui import auth_page, badge, banner, card, empty, facts, flash, icon, lab_page, stat
+from radreport.api.ui import auth_page, badge, banner, card, empty, facts, flash, icon, lab_page, stat, with_demo_tab
 from radreport.auth import lab
 from radreport.auth.lab import ACCESS_COOKIE, REFRESH_COOKIE, REFRESH_COOKIE_PATH, SignInFailed, TokenInvalid
 from radreport.cache.lookups import user_roles
@@ -67,7 +67,7 @@ def login_page(error: str | None = None, next: str | None = None) -> HTMLRespons
     <label for="password">Password</label><input id="password" name="password" type="password" required autocomplete="current-password" placeholder="••••••••••••">
     <div class="actions"><button class="primary" type="submit">Sign in</button></div>
   </form>"""
-    return auth_page("Sign in", form, subtitle="Radiologists, transcriptionists and lab staff sign in with their lab's short name.", realm="Reporting")
+    return auth_page("Sign in", with_demo_tab(form, "lab"), subtitle="Radiologists, transcriptionists and lab staff sign in with their lab's short name.", realm="Reporting")
 
 
 @router.post("/login")

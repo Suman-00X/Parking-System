@@ -22,7 +22,7 @@ from sqlalchemy import text
 from radreport.api.access import AccessMiddleware, RateLimiter, load_policy, verify_coverage
 from radreport.api.input_check import InputValidationMiddleware, verify_params
 from radreport.api.read_your_writes import ReadYourWritesMiddleware
-from radreport.api.routes import admin_api, admin_ops_panel, admin_panel, auth, ga, health, ingest, lexicon, onboarding, ops, review, review_ui
+from radreport.api.routes import admin_api, admin_ops_panel, admin_panel, auth, ga, health, ingest, lexicon, onboarding, ops, review, review_ui, showcase
 from radreport.auth.lab import require_token_secret
 from radreport.cache import shared as shared_cache
 from radreport.cache.request import RequestCacheMiddleware
@@ -77,6 +77,8 @@ def create_app() -> FastAPI:
     app.include_router(admin_ops_panel.router)
 
     app.include_router(health.router)
+
+    app.include_router(showcase.router)
     shared_cache.register_health()
     if get_settings().db.replica_url:
         health.register_check("replica", _replica_health)

@@ -21,7 +21,8 @@ def fresh_settings(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_no_demo_accounts_means_no_credentials_tab(fresh_settings: pytest.MonkeyPatch) -> None:
-    fresh_settings.delenv("RADREPORT_DEMO_ACCOUNTS", raising=False)
+    # Explicitly empty: a developer's .env may list demo accounts.
+    fresh_settings.setenv("RADREPORT_DEMO_ACCOUNTS", "[]")
     page = TestClient(create_app()).get("/admin/login").text
     assert "Test credentials" not in page
     assert 'action="/admin/login"' in page
