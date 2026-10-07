@@ -80,7 +80,7 @@ class NavItem:
     count: int | None = None
 
 
-ADMIN_NAV: tuple[tuple[str, tuple[NavItem, ...]], ...] = (("Workspace", (NavItem("labs", "Labs", "/admin/labs", "labs"), NavItem("providers", "Models & providers", "/admin/providers", "providers"))), ("People", (NavItem("users", "Platform users", "/admin/users", "users"), NavItem("account", "Your account", "/admin/account", "account"))))
+ADMIN_NAV: tuple[tuple[str, tuple[NavItem, ...]], ...] = (("Workspace", (NavItem("labs", "Labs", "/admin/labs", "labs"), NavItem("providers", "Models & providers", "/admin/providers", "providers"))), ("Operations", (NavItem("costs", "Cost & usage", "/admin/costs", "cost"), NavItem("config", "System settings", "/admin/config", "config"))), ("People", (NavItem("users", "Platform users", "/admin/users", "users"), NavItem("account", "Your account", "/admin/account", "account"))))
 
 
 def _head(title: str, suffix: str) -> str:

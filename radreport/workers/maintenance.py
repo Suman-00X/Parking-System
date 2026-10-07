@@ -1,7 +1,8 @@
 """Platform jobs that keep the database healthy, run by the same workers as everything else.
 
 Order: bury leases that ran out on their last attempt (reap_dead_jobs) -> keep monthly partitions
-created ahead and detach months past their retention (ensure_partitions).
+created ahead and detach months past their retention (ensure_partitions) -> refresh the materialized
+canonical eval set (refresh_eval_set) -> announce cost spikes (cost_anomaly_scan).
 """
 
 from __future__ import annotations
@@ -62,3 +63,17 @@ async def reap_dead_jobs(session: Session, job: ClaimedJob) -> dict[str, Any]:
 async def ensure_partitions(session: Session, job: ClaimedJob) -> dict[str, Any]:
     """Keep monthly partitions ahead of the calendar; without this, rows fall into the default partition after the first year."""
     return ensure_partitions_now(session)
+
+
+@handler("refresh_eval_set")
+async def refresh_eval_set(session: Session, job: ClaimedJob) -> dict[str, Any]:
+    """Refresh mv_canonical_eval_set; concurrent, so readers keep the old copy until the new one is ready."""
+    return {"rows": int(session.execute(text("SELECT refresh_canonical_eval_set()")).scalar_one())}
+
+
+@handler("cost_anomaly_scan")
+async def cost_anomaly_scan(session: Session, job: ClaimedJob) -> dict[str, Any]:
+    """Look for labs whose daily spend jumped, and announce each new spike once."""
+    from radreport.monitoring.costs import scan_for_anomalies
+
+    return {"announced": scan_for_anomalies(session)}

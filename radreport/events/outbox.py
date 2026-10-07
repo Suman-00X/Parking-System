@@ -20,6 +20,7 @@ class Topic(StrEnum):
     DRAFT_READY = "draft.ready"
     REPORT_SIGNED = "report.signed"
     AUTONOMY_REVOKED = "autonomy.revoked"
+    COST_ANOMALY = "cost.anomaly"
 
 
 def emit(session: Session, topic: str, payload: dict[str, Any], *, tenant_id: uuid.UUID | None) -> OutboxEvent:

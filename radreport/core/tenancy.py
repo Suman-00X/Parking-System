@@ -158,6 +158,21 @@ CROSS_TENANT_VIEWS: Final[frozenset[str]] = frozenset(
         "tenant",  # the lab list
         "v_tenant_metering_rollup",  # aggregate spend per tenant
         "v_canonical_eval_set",  # the pooled gold set
+        "mv_canonical_eval_set",  # the same, materialized and refreshed daily
+    }
+)
+
+#: Functions that read or change every lab's rows, owned by the BYPASSRLS view role. The same rule as the views:
+#: enumerated here, each returning only what its caller needs.
+CROSS_TENANT_FUNCTIONS: Final[frozenset[str]] = frozenset(
+    {
+        "claim_jobs",  # leases the next jobs, whichever lab they belong to
+        "reap_jobs",
+        "claim_outbox",  # the relay's view of unsent events
+        "mark_outbox",
+        "tenant_daily_cost",  # spend per lab per day, for the cost dashboard
+        "tenant_stage_cost",  # spend per lab per stage
+        "refresh_canonical_eval_set",
     }
 )
 

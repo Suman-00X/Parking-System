@@ -204,6 +204,10 @@
       <param name="user_id" in="path" type="uuid" required="true"/>
       <param name="password" in="form" type="string" required="true" max-length="1024"/>
     </route>
+    <route id="admin.costs.page" method="GET" path="/admin/costs" roles="product_admin,support" rate-limit="admin-read" description="Spend per lab and per stage, with spikes marked.">
+      <param name="lab" in="query" type="uuid"/>
+      <param name="days" in="query" type="int" pattern="7|30|90"/>
+    </route>
     <route id="admin.config.page" method="GET" path="/admin/config" roles="product_admin,support" rate-limit="admin-read" description="Operational settings and where each value comes from.">
       <param name="lab" in="query" type="uuid"/>
       <param name="error" in="query" type="string" max-length="500"/>
@@ -346,6 +350,10 @@
       <param name="page_size" in="query" type="int" pattern="[1-9]\d{0,2}"/>
     </route>
     <route id="admin.api.ops.queries" method="GET" path="/admin/api/ops/queries" roles="product_admin,support" rate-limit="admin-read" description="Statement timings and statements per request, for this worker."/>
+    <route id="admin.api.costs" method="GET" path="/admin/api/costs" roles="product_admin,support" rate-limit="admin-read" description="Spend over 7, 30 or 90 days, across labs or for one lab by stage.">
+      <param name="tenant_id" in="query" type="uuid"/>
+      <param name="days" in="query" type="int" pattern="7|30|90"/>
+    </route>
     <route id="admin.api.ops.tables" method="GET" path="/admin/api/ops/tables" roles="product_admin,support" rate-limit="admin-read" description="Per-table dead rows, vacuum history and size, with bloat flagged."/>
     <route id="admin.api.ops.config" method="GET" path="/admin/api/ops/config" roles="product_admin,support" rate-limit="admin-read" description="Operational settings, effective values and their source.">
       <param name="tenant_id" in="query" type="uuid"/>

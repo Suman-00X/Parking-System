@@ -52,7 +52,7 @@ def test_platform_principal_carries_no_tenant() -> None:
 
 def test_cross_tenant_views_are_a_short_enumerated_list() -> None:
     """ "Enumerate them in one file. Anything not on that list is tenant-scoped, no exceptions." """
-    assert CROSS_TENANT_VIEWS == {"tenant", "v_tenant_metering_rollup", "v_canonical_eval_set"}
+    assert CROSS_TENANT_VIEWS == {"tenant", "v_tenant_metering_rollup", "v_canonical_eval_set", "mv_canonical_eval_set"}
 
 
 # ------------------------------------------------------------- lifecycle ----

@@ -1,7 +1,8 @@
-"""The admin panel's operations pages: settings ops may change without a release.
+"""The admin panel's operations pages: what the pipeline costs, and settings ops may change without a release.
 
-Order: the settings page, platform-wide or for one lab (config_page) -> change or clear one
-value (set_config_value, reset_config_value).
+Order: spend across labs, or one lab's by stage, with the spikes marked (costs_page) -> the
+settings page, platform-wide or for one lab (config_page) -> change or clear one value
+(set_config_value, reset_config_value).
 """
 
 from __future__ import annotations
@@ -16,11 +17,12 @@ from fastapi.responses import HTMLResponse, Response
 from radreport.api.deps import CurrentAdmin
 from radreport.api.routes.admin_panel import _can, _messages, _page, _redirect
 from radreport.api.routes.ops import config_session
-from radreport.api.ui import badge, card, esc, icon, table
+from radreport.api.ui import badge, bar_list, card, empty, esc, icon, line_chart, stat, table
 from radreport.core import system_config
 from radreport.core.types import TenantStatus
 from radreport.db.models.tenancy import Tenant
-from radreport.db.session import system_session
+from radreport.db.session import read_session, system_session
+from radreport.monitoring import costs
 
 router = APIRouter(prefix="/admin", tags=["admin-ops-panel"])
 
@@ -34,6 +36,96 @@ def _fmt(value: float | int | None, kind: type) -> str:
     if kind is int:
         return str(int(value))
     return f"{float(value):g}"
+
+
+_PERIODS = (7, 30, 90)
+
+
+def _money(value: float) -> str:
+    return f"${value:,.4f}" if 0 < value < 1 else f"${value:,.2f}"
+
+
+def _change(change: float | None) -> str:
+    if change is None:
+        return '<span class="muted">no earlier spend</span>'
+    direction = "up" if change > 0 else "down"
+    return f'<span class="delta {direction}">{"▲" if change > 0 else "▼"} {abs(change):.0%}</span> <span class="muted">vs previous period</span>'
+
+
+def _spike_rows(spikes: list[costs.Spike], *, lab: str | None = None) -> list[str]:
+    return [f"<tr>{f'<td><strong>{esc(lab)}</strong></td>' if lab is not None else ''}<td class='nowrap'>{esc(s.day.isoformat())}</td><td class='num'><strong>{_money(s.cost_usd)}</strong></td><td class='num'>{_money(s.baseline_usd)}</td><td class='num'>{badge(f'{s.ratio:g}x', 'danger')}</td></tr>" for s in spikes]
+
+
+def _stage_table(stages: list[dict]) -> str:
+    rows = [
+        f"""<tr><td><strong class="mono">{esc(st["stage_name"])}</strong><div class="cell-sub">{esc(st["task_key"] or "deterministic")}</div></td>
+        <td class="num">{st["executions"]:,}</td><td class="num"><strong>{_money(st["cost_usd"])}</strong></td>
+        <td class="num">{st["tokens_in"]:,} / {st["tokens_out"]:,}</td>
+        <td class="num">{badge(f"{st['cache_hit_ratio']:.0%}", "ok" if st["cache_hit_ratio"] >= 0.5 else "warn" if st["tokens_in"] else "muted", dot=False)}</td>
+        <td class="num">{st["avg_duration_ms"]:,.0f} ms</td><td class="num">{badge(str(st["failures"]), "danger") if st["failures"] else "0"}</td></tr>"""
+        for st in stages
+    ]
+    return table(("Stage", "Runs", "Spend", "Tokens in / out", "Cache hits", "Avg time", "Failures"), rows, empty_text="No stage has run in this period.", empty_icon="ops", numeric=(1, 2, 3, 4, 5, 6))
+
+
+@router.get("/costs", response_class=HTMLResponse)
+def costs_page(admin: CurrentAdmin, lab: uuid.UUID | None = None, days: int | None = None) -> HTMLResponse:
+    """Spend across every lab, or one lab's by stage, with the days that cost far more than usual."""
+    period = days if days in _PERIODS else 30
+    with read_session() as session:
+        names = {t.id: t.name for t in session.execute(sa.select(Tenant).order_by(Tenant.name)).scalars().all()}
+        if lab is not None and lab not in names:
+            return _redirect("/admin/costs")
+        summary = costs.lab_summary(session, lab, days=period) if lab else costs.platform_summary(session, days=period)
+
+    tabs = "".join(f'<a href="/admin/costs?{f"lab={lab}&" if lab else ""}days={d}" class="{"active" if d == period else ""}">{d} days</a>' for d in _PERIODS)
+    options = "".join(f'<option value="{i}"{" selected" if i == lab else ""}>{esc(n)}</option>' for i, n in names.items())
+    controls = f"""<div class="spread"><div class="tabs">{tabs}</div>
+      <form method="get" action="/admin/costs" class="row" style="gap:8px"><input type="hidden" name="days" value="{period}">
+      <select name="lab" onchange="this.form.submit()" style="width:auto;min-width:220px" aria-label="Lab"><option value="">All labs</option>{options}</select><noscript><button class="sm">Show</button></noscript></form></div>"""
+    chart_points = [(d.strftime("%d %b"), v) for d, v in summary["series"]]
+    spike_days = {s.day for s in summary["spikes"]} | {s.day for entry in summary.get("labs", []) for s in entry.spikes}
+    anomaly_index = [i for i, (d, _v) in enumerate(summary["series"]) if d in spike_days]
+    trend = card(f'{line_chart(chart_points, anomalies=anomaly_index)}<div class="legend" style="margin-top:10px"><span><i></i>daily spend</span><span><i class="anomaly"></i>spike: over {costs.SPIKE_RATIO:g}x the trailing {costs.SPIKE_WINDOW_DAYS}-day median and {costs.SPIKE_SIGMAS:g}σ above its mean</span></div>', title="Daily spend", subtitle=f"{esc(summary['start'].isoformat())} to {esc(summary['end'].isoformat())}, shadow runs excluded", icon_name="cost")
+    stages = card(_stage_table(summary["stages"]), title="Where the money goes", subtitle="Per pipeline stage. Cache hits are prompt-cache reads as a share of input tokens; a low share on a model stage is worth a look.", icon_name="ops", cls="flush")
+    by_stage_bars = card(bar_list([(st["stage_name"], st["cost_usd"]) for st in summary["stages"] if st["cost_usd"]][:10]), title="Spend by stage", icon_name="spark")
+
+    if lab:
+        kpis = f"""<div class="grid cols-4">
+          {stat("Spend", _money(summary["total_cost_usd"]), hint=_change(summary["change"]), icon_name="cost")}
+          {stat("Reports", f"{summary['runs']:,}", hint=f"{summary['failed_runs']} failed runs", icon_name="doc")}
+          {stat("Per report", _money(summary["avg_cost_per_report_usd"]), hint=f"most expensive run {_money(summary['max_run_cost_usd'])}", icon_name="spark")}
+          {stat("Spikes", str(len(summary["spikes"])), hint=f"{summary['budget_hits']} run(s) hit the budget cap", tone="danger" if summary["spikes"] or summary["budget_hits"] else "ok", icon_name="alert")}
+        </div>"""
+        alerts = card(table(("Day", "Spend", "Usual", "Ratio"), _spike_rows(summary["spikes"]), numeric=(1, 2, 3), empty_text="No unusual days in this period.", empty_icon="check"), title="Spikes", icon_name="alert", cls="flush")
+        body = f"""{controls}<div class="section">{kpis}</div><div class="section grid cols-2">{trend}{by_stage_bars}</div><div class="section">{stages}</div><div class="section">{alerts}</div>"""
+        return _page(f"Cost — {names[lab]}", body, admin=admin, active="costs", eyebrow="Operations", crumbs=(("Cost & usage", "/admin/costs"), (names[lab], None)), actions=f'<a class="btn ghost" href="/admin/api/costs?tenant_id={lab}&days={period}">{icon("doc")}JSON</a>')
+
+    labs = summary["labs"]
+    lab_rows = [
+        f"""<tr><td><strong><a href="/admin/costs?lab={entry.tenant_id}&days={period}">{esc(entry.name)}</a></strong></td>
+        <td class="num"><strong>{_money(entry.cost_usd)}</strong></td><td class="num">{entry.runs:,}</td><td class="num">{_money(entry.avg_cost_usd)}</td>
+        <td>{_change(entry.change)}</td><td class="num">{badge(str(len(entry.spikes)), "danger") if entry.spikes else "0"}</td></tr>"""
+        for entry in labs
+    ]
+    all_spikes = [row for entry in labs for row in _spike_rows(entry.spikes, lab=entry.name)]
+    kpis = f"""<div class="grid cols-4">
+      {stat("Platform spend", _money(summary["total_cost_usd"]), hint=_change(summary["change"]), icon_name="cost")}
+      {stat("Reports", f"{summary['runs']:,}", hint=f"across {len(labs)} lab(s)", icon_name="doc")}
+      {stat("Per report", _money(summary["avg_cost_per_report_usd"]), hint="the unit economics that matter", icon_name="spark")}
+      {stat("Spikes", str(len(all_spikes)), hint="labs with an unusual day", tone="danger" if all_spikes else "ok", icon_name="alert")}
+    </div>"""
+    spike_card = card(table(("Lab", "Day", "Spend", "Usual", "Ratio"), all_spikes, numeric=(2, 3, 4), empty_text="No lab had an unusual day in this period.", empty_icon="check"), title="Spikes", subtitle="Also sent as cost.anomaly events every six hours.", icon_name="alert", cls="flush")
+    top = card(bar_list([(entry.name, entry.cost_usd) for entry in labs[:10]]), title="Top labs by spend", icon_name="labs")
+    body = (
+        f"""{controls}<div class="section">{kpis}</div>
+      <div class="section grid cols-2">{trend}{top}</div>
+      <div class="section">{card(table(("Lab", "Spend", "Reports", "Per report", "Trend", "Spikes"), lab_rows, numeric=(1, 2, 3, 5), empty_text="No pipeline runs in this period.", empty_icon="cost"), title="By lab", icon_name="labs", cls="flush")}</div>
+      <div class="section">{spike_card}</div><div class="section">{stages}</div>"""
+        if summary["runs"] or labs
+        else f"{controls}<div class='section'>{kpis}</div><div class='section'>{card(empty('Pipeline runs appear here as soon as labs start dictating.', title='No spend yet', icon_name='cost'))}</div>"
+    )
+    return _page("Cost & usage", body, admin=admin, active="costs", eyebrow="Operations", subtitle="What every lab's reports cost to produce, where in the pipeline the money goes, and the days that cost far more than usual.", actions=f'<a class="btn ghost" href="/admin/api/costs?days={period}">{icon("doc")}JSON</a>')
 
 
 def _back(lab: uuid.UUID | None) -> str:

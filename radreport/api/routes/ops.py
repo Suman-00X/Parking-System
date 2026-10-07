@@ -1,7 +1,8 @@
 """The admin panel's operations API: how the database is being used, and the thresholds ops may change.
 
 Order: query metrics (query_metrics) -> table health, vacuum and bloat (table_health) ->
-operational settings (list_settings, set_setting, reset_setting).
+spend per lab and per stage (cost_summary) -> operational settings (list_settings, set_setting,
+reset_setting).
 """
 
 from __future__ import annotations
@@ -38,6 +39,26 @@ def table_health(admin: CurrentAdmin) -> dict[str, Any]:
     with read_session() as session:
         stats = table_stats(session)
     return {"bloat_ratio_threshold": BLOAT_RATIO, "bloated": [t.table for t in stats if t.bloated], "tables": [t.as_dict() for t in stats]}
+
+
+cost_router = APIRouter(prefix="/admin/api", tags=["admin-ops"])
+
+
+@cost_router.get("/costs")
+def cost_summary(admin: CurrentAdmin, tenant_id: uuid.UUID | None = None, days: int = 30) -> dict[str, Any]:
+    """Spend over the last `days` (7, 30 or 90): across labs, or for one lab by stage, with spikes."""
+    from radreport.monitoring import costs
+
+    if days not in (7, 30, 90):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "days must be 7, 30 or 90")
+    with read_session() as session:
+        summary = costs.lab_summary(session, tenant_id, days=days) if tenant_id else costs.platform_summary(session, days=days)
+    out = {**summary, "start": summary["start"].isoformat(), "end": summary["end"].isoformat(), "series": [{"day": d.isoformat(), "cost_usd": v} for d, v in summary["series"]], "spikes": [s.as_dict() for s in summary["spikes"]]}
+    if "labs" in out:
+        out["labs"] = [{"tenant_id": str(lab.tenant_id), "name": lab.name, "cost_usd": round(lab.cost_usd, 4), "runs": lab.runs, "avg_cost_usd": round(lab.avg_cost_usd, 4), "previous_cost_usd": round(lab.previous_cost_usd, 4), "change": lab.change, "failed_runs": lab.failed_runs, "budget_hits": lab.budget_hits, "spikes": [s.as_dict() for s in lab.spikes]} for lab in summary["labs"]]
+    else:
+        out["tenant_id"] = str(tenant_id)
+    return out
 
 
 @contextmanager

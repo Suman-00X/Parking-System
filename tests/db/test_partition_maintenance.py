@@ -90,9 +90,9 @@ def test_periodic_jobs_are_queued_once_per_period(migrated_db: str) -> None:
     with system_session(migrated_db) as session:
         first = schedule.enqueue_due(session, now=moment)
         second = schedule.enqueue_due(session, now=moment + 1)
-        session.execute(text("DELETE FROM job WHERE dedupe_key LIKE '%:' || :b"), {"b": str(int(moment // 600))})
-        session.execute(text("DELETE FROM job WHERE dedupe_key LIKE '%:' || :b"), {"b": str(int(moment // (6 * 3600)))})
-    assert set(first) == {"reap_jobs", "ensure_partitions"} and second == []
+        keys = [f"{kind}:{int(moment // every)}" for kind, every in schedule.PERIODIC.items()]
+        session.execute(text("DELETE FROM job WHERE dedupe_key = ANY(:k)"), {"k": keys})
+    assert set(first) == set(schedule.PERIODIC) and second == []
 
 
 def test_partitions_cannot_be_read_around_the_row_level_policy(app_db_url: str, migrated_db: str) -> None:
