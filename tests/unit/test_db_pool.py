@@ -15,7 +15,7 @@ def test_the_default_pool_is_sized_for_peak_load(clean_settings) -> None:
     assert options["pool_size"] == 30
     assert options["max_overflow"] == 10
     assert options["pool_timeout"] == 10.0
-    assert "connect_args" not in options
+    assert options["connect_args"] == {"connect_timeout": 5}
 
 
 def test_pool_settings_come_from_the_environment(clean_settings, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -32,4 +32,4 @@ def test_pgbouncer_mode_disables_server_side_prepared_statements(clean_settings,
     """In transaction pooling the next transaction may land on a server that never saw the statement."""
     monkeypatch.setenv("RADREPORT_DB__PGBOUNCER", "true")
     get_settings.cache_clear()
-    assert engine_options()["connect_args"] == {"prepare_threshold": None}
+    assert engine_options()["connect_args"] == {"connect_timeout": 5, "prepare_threshold": None}

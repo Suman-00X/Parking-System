@@ -45,12 +45,14 @@
     <rate-limit id="lab-write" requests="120" window-seconds="60" key="principal" store="shared"/>
     <rate-limit id="lab-upload" requests="30" window-seconds="60" key="principal" store="shared"/>
     <rate-limit id="token-refresh" requests="30" window-seconds="60" key="ip" store="shared"/>
+    <!-- Load-balancer probes: counted in memory so a probe writes nothing, and generous so probing never 429s. -->
+    <rate-limit id="probe" requests="1200" window-seconds="60" key="ip" store="memory"/>
   </rate-limits>
 
   <!-- ====================================================== public -->
   <routes realm="public">
-    <route id="ops.health" method="GET" path="/health" rate-limit="public" description="Liveness."/>
-    <route id="ops.ready" method="GET" path="/ready" rate-limit="public" description="Readiness of dependencies."/>
+    <route id="ops.health" method="GET" path="/health" rate-limit="probe" description="Liveness, with each dependency's state and this instance's id."/>
+    <route id="ops.ready" method="GET" path="/ready" rate-limit="probe" description="Readiness of dependencies; 503 routes traffic away."/>
     <route id="ui.static" method="GET" path="/ui/static/{name}" rate-limit="public" description="Stylesheets and scripts.">
       <param name="name" in="path" type="string" required="true" pattern="(review|app)\.(js|css)" max-length="200"/>
     </route>

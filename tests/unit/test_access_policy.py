@@ -314,8 +314,11 @@ def test_a_shared_limit_counts_in_fixed_windows() -> None:
 
 
 def test_every_shipped_limit_holds_across_workers() -> None:
-    """A per-worker count lets N workers allow N times the figure; none of the shipped limits may do that."""
-    assert {lid for lid, limit in load_policy().rate_limits.items() if limit.store != "shared"} == set()
+    """A per-worker count lets N workers allow N times the figure; only the load-balancer probe limit may do that."""
+    # The probe limit is the one exception: a shared count is a database write per probe, every few seconds on every instance.
+    assert {lid for lid, limit in load_policy().rate_limits.items() if limit.store != "shared"} == {"probe"}
+    probe_routes = {r.id for r in load_policy().routes if r.rate_limit is not None and r.rate_limit.id == "probe"}
+    assert probe_routes == {"ops.health", "ops.ready"}, "only the unauthenticated, read-only probes may use it"
 
 
 def test_a_shared_limiter_fails_open_when_its_store_is_down() -> None:

@@ -18,10 +18,9 @@ from sqlalchemy import text
 
 from radreport.api.access import AccessMiddleware, RateLimiter, load_policy, verify_coverage
 from radreport.api.input_check import InputValidationMiddleware, verify_params
-from radreport.api.routes import admin_api, admin_ops_panel, admin_panel, auth, ga, ingest, onboarding, ops, review, review_ui
+from radreport.api.routes import admin_api, admin_ops_panel, admin_panel, auth, ga, health, ingest, onboarding, ops, review, review_ui
 from radreport.auth.lab import require_token_secret
 from radreport.cache.request import RequestCacheMiddleware
-from radreport.core.config import get_settings
 from radreport.core.logging import configure_logging
 from radreport.db.instrumentation import QueryMetricsMiddleware
 from radreport.db.session import get_engine, system_session
@@ -40,7 +39,6 @@ def head_revision() -> str | None:
 
 def create_app() -> FastAPI:
     configure_logging()
-    settings = get_settings()
 
     app = FastAPI(title="radreport", version="0.1.0", description=("Radiology voice-to-structured-report: the admin panel, the 15-stage V1 pipeline, and the review surface."))
     app.include_router(auth.router)
@@ -54,10 +52,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_panel.router)
     app.include_router(admin_ops_panel.router)
 
-    @app.get("/health", tags=["ops"])
-    def health() -> dict[str, str]:
-        """Liveness: the process is up and serving."""
-        return {"status": "ok", "environment": settings.environment}
+    app.include_router(health.router)
 
     @app.get("/ready", tags=["ops"])
     def ready() -> JSONResponse:
@@ -85,7 +80,10 @@ def create_app() -> FastAPI:
             checks["migrations"] = f"{type(exc).__name__}: {exc}"[:200]
             ok = False
 
-        return JSONResponse({"status": "ready" if ok else "not_ready", "checks": checks}, status_code=200 if ok else 503)
+        extra_ok, extra = health.readiness_checks()
+        checks.update(extra)
+        ok = ok and extra_ok
+        return JSONResponse({"status": "ready" if ok else "not_ready", "instance_id": health.instance_id(), "checks": checks}, status_code=200 if ok else 503)
 
     require_token_secret()
     policy = load_policy()
@@ -97,6 +95,7 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestCacheMiddleware)
     # Outermost, so the statements the access check itself runs are counted against the request too.
     app.add_middleware(QueryMetricsMiddleware)
+    app.add_middleware(health.InstanceIdMiddleware)
     return app
 
 

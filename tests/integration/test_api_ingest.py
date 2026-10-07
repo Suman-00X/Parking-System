@@ -60,7 +60,7 @@ def _post(client: TestClient, seeded: dict, data: bytes, name: str = "d.flac"):
 
 
 def test_health(client: TestClient) -> None:
-    assert client.get("/health").json()["status"] == "ok"
+    assert client.get("/health").json()["status"] in ("healthy", "degraded")
 
 
 def test_upload_returns_the_measured_quality_fields(client: TestClient, seeded: dict) -> None:

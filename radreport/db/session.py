@@ -29,9 +29,11 @@ def engine_options() -> dict[str, Any]:
     """The pool and driver options every engine is created with, from settings."""
     db = get_settings().db
     options: dict[str, Any] = {"pool_pre_ping": True, "pool_size": db.pool_size, "max_overflow": db.max_overflow, "pool_timeout": db.pool_timeout_seconds, "pool_recycle": db.pool_recycle_seconds, "echo": db.echo if db.echo is not None else get_settings().environment == "test", "future": True}
+    connect_args: dict[str, Any] = {"connect_timeout": db.connect_timeout_seconds}
     if db.pgbouncer:
         # Transaction pooling hands each transaction any server connection, so a prepared statement may not exist there.
-        options["connect_args"] = {"prepare_threshold": None}
+        connect_args["prepare_threshold"] = None
+    options["connect_args"] = connect_args
     return options
 
 

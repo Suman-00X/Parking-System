@@ -26,6 +26,8 @@ class DatabaseSettings(BaseModel):
     """How long a request waits for a free connection before failing, instead of queueing forever."""
 
     pool_recycle_seconds: int = 1800
+    connect_timeout_seconds: int = Field(default=5, ge=1, le=120)
+    """How long opening a connection may take, so a health check against an unreachable database answers instead of hanging."""
     echo: bool | None = None
     """Log every statement. Unset means on in the test environment only."""
 
