@@ -308,6 +308,33 @@ admin panel. Platform and per-lab thresholds (adapter gates, lexicon matching,
 template import, languages, partition retention) are edited at **System
 settings**; each has an environment-variable fallback named on that page.
 
+### Demo data and the public pages
+
+```bash
+make seed-local                                              # accounts for every role -> local-credentials.md
+.venv/bin/python -m radreport.devtools.demo_lab              # fill the Sunrise lab through the write API
+.venv/bin/python -m radreport.devtools.demo_lab --only review  # rerun one phase
+```
+
+`demo_lab` signs in as the product admin, both radiologists and the transcriptionist, and does
+what they would: uploads templates, a shorthand sheet and 240 past reports, runs the mining
+steps, approves templates, verifies mappings, resolves collisions, authors critical rules,
+defines autonomy classes, registers studies, uploads 16 dictations, runs a worker over them,
+then edits, signs, grades and amends drafts, acknowledges alerts, and submits transcripts. It
+prints every failed call, so a run is also a check of the write routes. It refuses a lab that
+already has templates unless given `--force`, and it needs the server and the worker to share
+storage: on a machine without S3, set `RADREPORT_STORAGE__BACKEND=local` (audio goes to
+`.storage/`; refused outside local, test and development). The stub speech engine "hears" the
+words a demo WAV carries in its comment chunk, so the drafts differ by dictation. Drafts have
+no field values until an extraction model is wired in; see "What is deliberately not done yet".
+
+`/features`, `/api-docs` and `/recruiter` need no sign-in and are linked from both sign-in
+pages. The first two render FEATURES.md and API.md; the recruiter page counts its numbers from
+the code. Demo sign-ins come from `RADREPORT_DEMO_ACCOUNTS`
+(`[{"label", "email", "password", "role", "lab"}]`) and are shown on the sign-in pages' Test
+credentials tab and on `/recruiter`, but only for read-only roles: `support` (admin panel) and
+`auditor` (a lab, with `lab` set to its slug). Any other role in that list is never shown.
+
 ### Lexicon growth, template model and languages
 
 - **New terms**: the daily scan collects terms radiologists type that the lab's
@@ -550,6 +577,10 @@ Each has a test that fails loudly.
 - **No model assignments seeded.** An assignment cannot go active without a
   gold-set `eval_run`, and seeding one would bypass the gate the registry
   exists to enforce.
+- **No field extraction in the job runner.** `pipeline/runner.py` builds the graph with no
+  model client and no section specs, so the extraction stage never runs and every draft from an
+  upload has its template and alerts but no field values. Wiring it needs the lab's assigned
+  extraction model (and its evaluation run) resolved in `default_graph_factory`.
 - **Production measurements.** Query counts, statement times and a 500-user
   load test were measured locally (PERFORMANCE_BASELINE.md); DB CPU at peak,
   monthly query volume, real cost and the replica's share of reads need

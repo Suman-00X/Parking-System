@@ -9,6 +9,8 @@ use that when you already know where you are going.
 [Appendix A](#appendix-a--index-by-prefix) is the flat lookup table, with the
 realm, roles, rate limit and body cap of every route.
 
+Public pages, no sign-in: `/features`, `/api-docs` and `/recruiter` (see README, "Demo data and the public pages").
+
 | Phase | What happens | Routes | Prefixes |
 |---|---|---:|---|
 | [I](#part-i--ground-rules) | Access policy, auth, scoping, roles, errors — plus admin sign-in and platform users | 14 | `/admin`, `/admin/api` |
@@ -18,10 +20,10 @@ realm, roles, rate limit and body cap of every route.
 | [3](#phase-3--runtime-one-report-end-to-end) | A dictation becomes a signed report, and the lexicon learns from it | 20 | `/ingest`, `/review`, `/ui`, `/lexicon` |
 | [4](#phase-4--operate-it) | Measure it, export it, automate it, watch its cost | 26 | `/review`, `/ga`, `/admin/api` |
 
-**131 routes** — every one listed in
-[`api/access_policy.xml`](radreport/api/access_policy.xml): 126 on routers
-(including `/health`), `/ready` on the app, and FastAPI's four documentation
-routes. The phase table counts the 114 routes walked through in the phases; the
+**139 routes** — every one listed in
+[`api/access_policy.xml`](radreport/api/access_policy.xml): 134 on routers
+(including `/health` and the public `/features`, `/api-docs` and `/recruiter`
+pages), `/ready` on the app, and FastAPI's four documentation routes. The phase table counts the 114 routes walked through in the phases; the
 sign-in routes (`/auth/*`, `/ui/login`, `/ui/logout`) and a few admin reads and
 uploads are described in Part I and in prose rather than in a phase table.
 Most return JSON; the admin panel's pages under `/admin` (but not `/admin/api`)
@@ -921,6 +923,22 @@ readiness itself and refuses on any fail-severity check:
 pass first`. Checking first only tells you whether the write will succeed; it
 does not make it succeed.
 
+## 2.8a Lists a radiologist works from
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| GET | `/onboarding/corpus/mappings` | `lab_admin`, `radiologist` | [`onboarding.py`](radreport/api/routes/onboarding.py) |
+| GET | `/onboarding/collision-findings` | `lab_admin`, `radiologist` | [`onboarding.py`](radreport/api/routes/onboarding.py) |
+
+`corpus/mappings` lists past reports with the template each was matched to (unverified first,
+lowest confidence first; `verified=true` for the checked ones), each with a `mapping_id` for
+`POST /onboarding/corpus/mappings/{mapping_id}/verify`. `collision-findings` lists sound-alike
+pairs from the collision audit, blocking first (`resolution`, default `pending`), each with the
+`finding_id` that `.../resolve` takes. Both are paged. The merge-proposal step now returns
+`items` with each proposal's `id` beside the count, and the admin lab-users list includes each
+radiologist's `radiologist_profile_id`, which the voice, consent and upload routes take as
+`radiologist_id`.
+
 ## 2.9 Shorthand reference sheets
 
 | Method | Path | Who | Source |
@@ -977,6 +995,19 @@ product. Every route here is in the lab realm.
 route constructs a `Study` or a `Patient`; outside tests, neither type is
 instantiated anywhere in `radreport/`. A real deployment needs an
 ADT/ORM feed that does not exist yet.
+
+## 3.1a Register the study
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/ingest/studies` | `radiologist`, `lab_admin` | [`ingest.py`](radreport/api/routes/ingest.py) |
+
+Body: `{"mrn", "accession_number", "modality", "body_part_examined", "study_description",
+"referring_doctor", "priority": "routine"|"urgent"|"stat", "sex": "M"|"F"|"O", "age_years"}`.
+Returns `{"study_id", "patient_id", "created"}`: `201` for a new study, `200` with the same ids
+when the accession number is already registered. The patient is matched by MRN and given a
+server-made pseudonym; no patient name is accepted (`400`). This is what a hospital system
+would otherwise send; `/ingest/recordings` needs the `study_id`.
 
 ## 3.2 From upload to draft
 
@@ -1229,6 +1260,19 @@ may revoke at any time, with a mandatory non-empty `reason`.
 `autonomy-coverage` closes the loop: `window_days`, `signed`, `reviewed`,
 `released_without_review`, `share`, `target`, `meets_target`. A grant that
 removes no review is not worth its risk.
+
+## 4.5a Define the autonomy classes
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| GET | `/admin/api/labs/{tenant_id}/autonomy-classes` | `product_admin`, `support` | [`admin_api.py`](radreport/api/routes/admin_api.py) |
+| POST | `/admin/api/labs/{tenant_id}/autonomy-classes` | `product_admin` | [`admin_api.py`](radreport/api/routes/admin_api.py) |
+
+Body: `{"code": "ROUTINE_ABDOMEN", "display_name", "baseline_cse_rate", "required_n",
+"ni_margin_pp", "template_codes": [...]}`. The baseline must be a **measured** rate between 0
+and 1 (from grading already-signed reports); the templates must exist in the lab. A class can be
+changed while `not_evaluated`; once it is accruing, its baseline and size are fixed (`409`).
+Until a class exists, the accrual and lab autonomy routes in 4.5 answer `404` for its code.
 
 ## 4.6 Retrain the engines
 
