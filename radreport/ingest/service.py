@@ -11,9 +11,11 @@ import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from radreport.adapters.storage.object_store import ObjectStore, audio_key
+from radreport.cache import filters
 from radreport.core.config import AudioGateSettings, get_settings
 from radreport.core.errors import DuplicateRecording
 from radreport.core.hashing import hash_bytes
@@ -54,10 +56,9 @@ def ingest_recording(session: Session, store: ObjectStore, request: IngestReques
 
     content_hash = hash_bytes(request.data)
 
-    existing = session.execute(select(Recording).where(Recording.tenant_id == request.tenant_id, Recording.content_hash == content_hash)).scalar_one_or_none()
-    if existing is not None:
-        log.info("ingest_duplicate_ignored", tenant_id=str(request.tenant_id), recording_id=str(existing.id), content_hash=content_hash[:12])
-        raise DuplicateRecording(content_hash, str(existing.id))
+    # The filter only says "definitely new" or "maybe seen"; a maybe is checked against the database.
+    if filters.maybe_seen_recording(session, request.tenant_id, content_hash):
+        _raise_if_duplicate(session, request.tenant_id, content_hash)
 
     probe = probe_audio(request.data, gate_settings)
 
@@ -84,8 +85,15 @@ def ingest_recording(session: Session, store: ObjectStore, request: IngestReques
         is_training_corpus_eligible=False,
         **probe.as_recording_fields(),
     )
-    session.add(recording)
-    session.flush()
+    try:
+        # A savepoint, because another worker may have stored the same audio since this worker's filter was built.
+        with session.begin_nested():
+            session.add(recording)
+            session.flush()
+    except IntegrityError:
+        _raise_if_duplicate(session, request.tenant_id, content_hash)
+        raise
+    filters.remember_recording(request.tenant_id, content_hash)
 
     session.add(AuditLog(tenant_id=request.tenant_id, actor_id=request.actor_id, actor_type=ActorType.USER if request.actor_id else ActorType.SYSTEM, action="recording_ingested", entity_type="recording", entity_id=recording.id, after={"object_key": key, "content_hash": content_hash, "capture_device_class": request.capture_device_class, "warnings": probe.warnings}))
     session.flush()
@@ -94,6 +102,13 @@ def ingest_recording(session: Session, store: ObjectStore, request: IngestReques
         log.warning("ingest_quality_warnings", recording_id=str(recording.id), warnings=probe.warnings, snr_db=probe.measured_snr_db, silence_ratio=probe.silence_ratio)
 
     return IngestResult(recording=recording, probe=probe)
+
+
+def _raise_if_duplicate(session: Session, tenant_id: uuid.UUID, content_hash: str) -> None:
+    existing = session.execute(select(Recording).where(Recording.tenant_id == tenant_id, Recording.content_hash == content_hash)).scalar_one_or_none()
+    if existing is not None:
+        log.info("ingest_duplicate_ignored", tenant_id=str(tenant_id), recording_id=str(existing.id), content_hash=content_hash[:12])
+        raise DuplicateRecording(content_hash, str(existing.id))
 
 
 def _assert_same_tenant(session: Session, request: IngestRequest) -> None:
