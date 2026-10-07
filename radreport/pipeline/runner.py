@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from radreport.adapters.llm.registry import TaskModelResolver
@@ -21,9 +21,12 @@ from radreport.adapters.storage.object_store import ObjectStore, S3ObjectStore
 from radreport.core.config import get_settings
 from radreport.core.errors import BudgetExceeded, StageFailed
 from radreport.core.logging import get_logger
-from radreport.core.types import PipelineTrigger
+from radreport.core.types import PathType, PipelineTrigger
 from radreport.db.models.ingestion import Recording
 from radreport.db.models.knowledge import Template, TemplateVersion
+from radreport.db.models.reporting import CriticalFindingAlert, ReportDraft
+from radreport.db.models.review import FinalReport
+from radreport.events.outbox import Topic, emit
 from radreport.pipeline.graph import PipelineGraph, new_run
 from radreport.pipeline.stages.providers import StaticKnowledgeProvider, load_tenant_knowledge
 from radreport.pipeline.stages.routing import TemplateCandidate
@@ -81,7 +84,21 @@ async def run_recording(session: Session, *, tenant_id: uuid.UUID, recording_id:
         await graph.run(state, ctx, session)
     except (StageFailed, BudgetExceeded) as exc:
         log.warning("pipeline_run_failed", pipeline_run_id=str(run.id), recording_id=str(recording_id), error=str(exc)[:300])
+    else:
+        _announce(session, tenant_id=tenant_id, recording_id=recording_id, pipeline_run_id=run.id)
     return {"pipeline_run_id": str(run.id), "status": run.status, "cost_usd": float(run.total_cost_usd or 0)}
+
+
+def _announce(session: Session, *, tenant_id: uuid.UUID, recording_id: uuid.UUID, pipeline_run_id: uuid.UUID) -> None:
+    """Emit draft.ready for the run's draft, and report.signed when stage 17 released it without review."""
+    draft = session.execute(select(ReportDraft).where(ReportDraft.tenant_id == tenant_id, ReportDraft.pipeline_run_id == pipeline_run_id)).scalars().first()
+    if draft is None:
+        return
+    alerts = session.execute(select(func.count()).select_from(CriticalFindingAlert).where(CriticalFindingAlert.tenant_id == tenant_id, CriticalFindingAlert.recording_id == recording_id)).scalar_one()
+    emit(session, Topic.DRAFT_READY, {"draft_id": draft.id, "recording_id": recording_id, "pipeline_run_id": pipeline_run_id, "flagged_fields": draft.flagged_field_count, "critical_alerts": int(alerts)}, tenant_id=tenant_id)
+    released = session.execute(select(FinalReport).where(FinalReport.tenant_id == tenant_id, FinalReport.report_draft_id == draft.id, FinalReport.path_type == PathType.AUTONOMOUS)).scalars().first()
+    if released is not None:
+        emit(session, Topic.REPORT_SIGNED, {"report_id": released.id, "draft_id": draft.id, "path_type": released.path_type}, tenant_id=tenant_id)
 
 
 @handler("run_pipeline")

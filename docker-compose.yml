@@ -32,6 +32,14 @@ services:
     volumes:
       - miniodata:/data
 
+  # Kafka-compatible broker for RADREPORT_EVENTS__BUS=kafka. Optional: the default bus is Postgres.
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    command: ["redpanda", "start", "--overprovisioned", "--smp", "1", "--memory", "512M", "--reserve-memory", "0M", "--node-id", "0", "--check=false", "--kafka-addr", "PLAINTEXT://0.0.0.0:9092", "--advertise-kafka-addr", "PLAINTEXT://localhost:9092"]
+    ports:
+      - "9092:9092"
+    profiles: ["kafka"]
+
 volumes:
   pgdata:
   miniodata:

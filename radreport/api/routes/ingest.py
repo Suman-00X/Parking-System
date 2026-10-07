@@ -20,6 +20,7 @@ from radreport.core.config import get_settings
 from radreport.core.errors import DuplicateRecording, IngestRejected
 from radreport.core.types import CaptureDeviceClass
 from radreport.db.models.ingestion import Recording
+from radreport.events.outbox import Topic, emit
 from radreport.ingest.service import IngestRequest, ingest_recording
 from radreport.workers.queue import enqueue
 
@@ -66,6 +67,7 @@ async def upload_recording(session: DbSession, principal: CurrentPrincipal, file
     recording = result.recording
     # Queued in the ingest transaction: the job exists exactly when the recording does, and a retried upload queues nothing new.
     pipeline_job = enqueue(session, "run_pipeline", {"recording_id": str(recording.id)}, tenant_id=principal.tenant_id, dedupe_key=f"recording:{recording.id}")
+    emit(session, Topic.RECORDING_INGESTED, {"recording_id": recording.id, "study_id": recording.study_id, "radiologist_id": recording.radiologist_id, "capture_device_class": recording.capture_device_class}, tenant_id=principal.tenant_id)
     return IngestResponse(pipeline_job_id=pipeline_job, recording_id=recording.id, content_hash=recording.content_hash, duration_seconds=float(recording.duration_seconds or 0), sample_rate_hz=recording.sample_rate_hz or 0, audio_format=recording.audio_format, measured_snr_db=(float(recording.measured_snr_db) if recording.measured_snr_db is not None else None), silence_ratio=(float(recording.silence_ratio) if recording.silence_ratio is not None else None), capture_device_class=recording.capture_device_class, warnings=result.probe.warnings)
 
 

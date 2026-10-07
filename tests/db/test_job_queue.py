@@ -175,6 +175,8 @@ def test_an_upload_queues_a_pipeline_run_that_a_worker_executes(migrated_db: str
             run = session.execute(select(PipelineRun).where(PipelineRun.recording_id == recording_id)).scalar_one()
             assert run.status == RunStatus.SUCCEEDED
             assert job.result["pipeline_run_id"] == str(run.id)
+            topics = session.execute(text("SELECT topic FROM outbox_event WHERE tenant_id = :t AND payload->>'recording_id' = :r"), {"t": tenant_id, "r": str(recording_id)}).scalars().all()
+            assert "recording.ingested" in topics, "the upload announced itself in the same transaction"
     finally:
         runner.set_graph_factory(None)
 

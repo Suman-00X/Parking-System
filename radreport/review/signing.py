@@ -21,6 +21,7 @@ from radreport.db.models.ingestion import Recording
 from radreport.db.models.orchestration import AuditLog
 from radreport.db.models.reporting import CriticalFindingAlert, ReportDraft, ReportFieldValue, VerificationFinding
 from radreport.db.models.review import FinalReport, ReportRevision
+from radreport.events.outbox import Topic, emit
 from radreport.review.rbac import Permission, Reviewer, require
 
 log = get_logger(__name__)
@@ -137,6 +138,7 @@ def sign_report(session: Session, *, tenant_id: uuid.UUID, draft_id: uuid.UUID, 
 
     session.add(AuditLog(tenant_id=tenant_id, actor_id=reviewer.user_id, actor_type=ActorType.USER, action="report_signed", entity_type="final_report", entity_id=final.id, after={"draft_id": str(draft_id), "path_type": path_type, "content_hash": final.content_hash}))
     session.flush()
+    emit(session, Topic.REPORT_SIGNED, {"report_id": final.id, "draft_id": draft_id, "study_id": recording.study_id, "path_type": path_type}, tenant_id=tenant_id)
 
     log.info("report_signed", final_report_id=str(final.id), draft_id=str(draft_id), path_type=path_type, signed_by=str(reviewer.user_id))
     return final

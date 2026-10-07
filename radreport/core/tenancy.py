@@ -114,6 +114,8 @@ UNTENANTED_TABLES: Final[frozenset[str]] = frozenset(
         "admin_session",
         # Request counts for the rate limits every worker must share; keyed by caller, not lab.
         "rate_limit_counter",
+        # Which consumer has applied which event: keyed by consumer and event id, never read for lab data.
+        "consumed_event",
         "alembic_version",
     }
 )
@@ -142,6 +144,8 @@ NULLABLE_TENANT_TABLES: Final[frozenset[str]] = frozenset(
         "system_config",
         # Background work: a lab's job carries its id; platform maintenance (partitions, reaping) carries none.
         "job",
+        # Domain events waiting for the relay; a platform event (none yet) would carry no lab.
+        "outbox_event",
         # System actions have no tenant.
         "audit_log",
     }

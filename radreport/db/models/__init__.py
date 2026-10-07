@@ -4,6 +4,7 @@ from radreport.db.base import Base
 from radreport.db.models.adaptation import ModelAdaptationRun, TrainingCorpusSnapshot, VerbatimTranscript
 from radreport.db.models.asr import AsrRun, AsrSegment, Transcript, TranscriptUtterance
 from radreport.db.models.evaluation import EvalItem, EvalResult, EvalRun, EvalSet
+from radreport.db.models.events import ConsumedEvent, OutboxEvent
 from radreport.db.models.identity import AppUser, LabRefreshToken, Patient, RadiologistProfile, Study
 from radreport.db.models.ingestion import Recording
 from radreport.db.models.jobs import Job
@@ -92,4 +93,6 @@ __all__ = [
     # operations
     "SystemConfig",
     "Job",
+    "OutboxEvent",
+    "ConsumedEvent",
 ]

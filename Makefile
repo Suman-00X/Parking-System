@@ -10,7 +10,7 @@
 #               vacuously)
 
 .PHONY: help install up down migrate migrate-owner revision seed seed-local admin admin-password pg-observe \
-        run dev stop restart status logs worker test test-unit lint fmt check clean
+        run dev stop restart status logs worker relay test test-unit lint fmt check clean
 
 PORT ?= 8000
 HOST ?= 127.0.0.1
@@ -99,6 +99,9 @@ status:  ## Is the server up, and are its dependencies reachable?
 
 worker:  ## Run a job worker in the foreground: make worker CONCURRENCY=2
 	.venv/bin/python -m radreport.workers --concurrency $(or $(CONCURRENCY),1)
+
+relay:  ## Publish committed outbox events to the configured bus (RADREPORT_EVENTS__BUS)
+	.venv/bin/python -m radreport.events relay
 
 logs:  ## Follow the background server's log
 	@tail -f $(LOGFILE)

@@ -1,6 +1,6 @@
 """All runtime settings, read from the environment, including the pinned model identifiers.
 
-Defines: the settings groups (DatabaseSettings, StorageSettings, AudioGateSettings, LLMSettings,
+Defines: the settings groups (DatabaseSettings, EventSettings, StorageSettings, AudioGateSettings, LLMSettings,
 ASRSettings, ObservabilitySettings, DemoAccount) gathered into one Settings object, reached through
 get_settings.
 """
@@ -36,6 +36,17 @@ class DatabaseSettings(BaseModel):
 
     pgbouncer: bool = False
     """Connect through PgBouncer in transaction mode: server-side prepared statements are turned off, since the next transaction may land on another server connection."""
+
+
+class EventSettings(BaseModel):
+    """Where the outbox relay sends domain events."""
+
+    bus: str = Field(default="postgres", pattern="^(postgres|kafka)$")
+    """`postgres` applies events to in-process consumers; `kafka` produces them to topics for consumers anywhere."""
+
+    kafka_bootstrap: str = "localhost:9092"
+    topic_prefix: str = "radreport."
+    relay_batch_size: int = Field(default=100, ge=1, le=10_000)
 
 
 class StorageSettings(BaseModel):
@@ -124,6 +135,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://radreport:radreport@localhost:5433/radreport"
     test_database_url: str | None = None
     db: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    events: EventSettings = Field(default_factory=EventSettings)
 
     storage: StorageSettings = Field(default_factory=StorageSettings)
     audio: AudioGateSettings = Field(default_factory=AudioGateSettings)

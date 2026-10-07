@@ -20,6 +20,7 @@ from radreport.core.logging import get_logger
 from radreport.core.types import CSE_GRADES, ActorType, AutonomyStatus
 from radreport.db.models.knowledge import AutonomyClass
 from radreport.db.models.orchestration import AuditLog
+from radreport.events.outbox import Topic, emit
 
 log = get_logger(__name__)
 
@@ -148,6 +149,7 @@ def revoke(session: Session, *, tenant_id: uuid.UUID, class_code: str, reason: s
         )
     )
     session.flush()
+    emit(session, Topic.AUTONOMY_REVOKED, {"class_code": class_code, "autonomy_class_id": klass.id, "reason": reason[:200], "automatic": actor_id is None}, tenant_id=tenant_id)
 
     log.warning("autonomy_revoked", class_code=class_code, previous=previous, reason=reason, automatic=actor_id is None)
     return klass

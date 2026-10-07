@@ -24,6 +24,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+kafka = ["confluent-kafka>=2.5"]
+redis = ["redis>=5.0"]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -72,5 +74,5 @@ plugins = []
 
 [[tool.mypy.overrides]]
 # These ship no type information; faster_whisper is optional and absent in most environments.
-module = ["metaphone", "soundfile", "boto3", "botocore.*", "faster_whisper"]
+module = ["metaphone", "soundfile", "boto3", "botocore.*", "faster_whisper", "confluent_kafka", "redis", "redis.*"]
 ignore_missing_imports = true
