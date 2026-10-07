@@ -10,7 +10,7 @@
 #               vacuously)
 
 .PHONY: help install up down migrate migrate-owner revision seed seed-local admin admin-password pg-observe \
-        run dev stop restart status logs worker relay test test-unit lint fmt check clean
+        run dev stop restart status logs worker relay pgbouncer pgbouncer-stop test test-unit lint fmt check clean
 
 PORT ?= 8000
 HOST ?= 127.0.0.1
@@ -59,6 +59,20 @@ pg-observe:  ## Turn on the slow-query log and pg_stat_statements (superuser; ne
 	psql "$(subst +psycopg,,$(OWNER_URL))" -f ops/postgres/observability.sql
 	psql "$(subst +psycopg,,$(OWNER_URL))" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements"
 	@echo "now restart Postgres, e.g. 'brew services restart postgresql@16' or 'docker compose restart db'"
+
+PGBOUNCER_DIR := $(CURDIR)/.pgbouncer
+PGBOUNCER_PORT ?= 6432
+
+pgbouncer:  ## Run PgBouncer (transaction mode) on 127.0.0.1:6432 in front of the local Postgres; point the app at it with RADREPORT_DB__PGBOUNCER=true
+	@mkdir -p $(PGBOUNCER_DIR)
+	@sed -e 's|@PGHOST@|127.0.0.1|' -e 's|@PGPORT@|5432|' -e 's|@LISTEN_PORT@|$(PGBOUNCER_PORT)|' -e 's|@DIR@|$(PGBOUNCER_DIR)|g' -e 's|@APP_USER@|radreport_app_login|' ops/pgbouncer/pgbouncer.ini.template > $(PGBOUNCER_DIR)/pgbouncer.ini
+	@printf '"radreport_app_login" "%s"\n' "$${RADREPORT_APP_PASSWORD:-testpw}" > $(PGBOUNCER_DIR)/userlist.txt
+	@chmod 600 $(PGBOUNCER_DIR)/userlist.txt
+	pgbouncer -d $(PGBOUNCER_DIR)/pgbouncer.ini
+	@echo "PgBouncer on 127.0.0.1:$(PGBOUNCER_PORT); e.g. RADREPORT_DATABASE_URL=postgresql+psycopg://radreport_app_login:...@127.0.0.1:$(PGBOUNCER_PORT)/radreport RADREPORT_DB__PGBOUNCER=true"
+
+pgbouncer-stop:  ## Stop the local PgBouncer
+	@if [ -f $(PGBOUNCER_DIR)/pgbouncer.pid ]; then kill `cat $(PGBOUNCER_DIR)/pgbouncer.pid` && echo stopped; else echo "not running"; fi
 
 # ---------------------------------------------------------------- server ----
 dev:  ## Run the API in the foreground with auto-reload (Ctrl-C to stop)

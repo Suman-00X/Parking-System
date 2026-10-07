@@ -1,0 +1,32 @@
+;; PgBouncer in front of Postgres, in transaction mode: thousands of app connections share a
+;; small, fixed set of server connections. `make pgbouncer` renders this into .pgbouncer/ and runs it;
+;; docker compose --profile pool runs the same settings in a container.
+;;
+;; Transaction mode is safe for this app because every per-request setting is transaction-scoped
+;; (set_config(..., true) for the lab and principal) and the app turns off server-side prepared
+;; statements when RADREPORT_DB__PGBOUNCER=true. Never use a session-level SET, LISTEN or advisory
+;; lock through it: the next transaction may run on a different server connection.
+
+[databases]
+radreport = host=@PGHOST@ port=@PGPORT@ dbname=radreport
+radreport_test = host=@PGHOST@ port=@PGPORT@ dbname=radreport_test
+
+[pgbouncer]
+listen_addr = 127.0.0.1
+listen_port = @LISTEN_PORT@
+auth_type = scram-sha-256
+auth_file = @DIR@/userlist.txt
+pool_mode = transaction
+;; Client side: what the app's workers may open in total.
+max_client_conn = 2000
+;; Server side: what Postgres actually sees, per database and user.
+default_pool_size = 20
+min_pool_size = 2
+reserve_pool_size = 5
+reserve_pool_timeout = 3
+server_idle_timeout = 300
+query_wait_timeout = 30
+ignore_startup_parameters = extra_float_digits,options
+stats_users = @APP_USER@
+logfile = @DIR@/pgbouncer.log
+pidfile = @DIR@/pgbouncer.pid

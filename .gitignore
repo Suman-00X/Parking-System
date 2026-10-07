@@ -18,3 +18,5 @@ local-credentials.md
 # Written by `make run`.
 .uvicorn.log
 .uvicorn.pid
+# Written by `make pgbouncer`: rendered config and a clear-text userlist.
+.pgbouncer/

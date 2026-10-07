@@ -9,8 +9,11 @@ from radreport.core.config import get_settings
 from radreport.db.session import engine_options
 
 
-def test_the_default_pool_is_sized_for_peak_load(clean_settings) -> None:
+def test_the_default_pool_is_sized_for_peak_load(clean_settings, monkeypatch: pytest.MonkeyPatch) -> None:
     """Thirty kept connections per worker, plus a bounded burst."""
+    for name in ("RADREPORT_DB__POOL_SIZE", "RADREPORT_DB__MAX_OVERFLOW", "RADREPORT_DB__PGBOUNCER"):
+        monkeypatch.delenv(name, raising=False)
+    get_settings.cache_clear()
     options = engine_options()
     assert options["pool_size"] == 30
     assert options["max_overflow"] == 10

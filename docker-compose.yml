@@ -32,6 +32,23 @@ services:
     volumes:
       - miniodata:/data
 
+  # Connection pooler in transaction mode; run the app with RADREPORT_DB__PGBOUNCER=true against port 6432.
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      DATABASE_URL: postgres://radreport:radreport@db:5432/radreport
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "2000"
+      DEFAULT_POOL_SIZE: "20"
+      RESERVE_POOL_SIZE: "5"
+      AUTH_TYPE: scram-sha-256
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits,options
+    ports:
+      - "6432:5432"
+    depends_on:
+      - db
+    profiles: ["pool"]
+
   # Kafka-compatible broker for RADREPORT_EVENTS__BUS=kafka. Optional: the default bus is Postgres.
   redpanda:
     image: redpandadata/redpanda:v24.2.7
