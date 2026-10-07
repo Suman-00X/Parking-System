@@ -257,6 +257,18 @@ def test_the_queue_hides_radiologist_only_work_from_an_assistant(review_fixture)
         assert for_assistant == []
 
 
+def test_an_auditor_sees_the_radiologist_only_work_too(review_fixture) -> None:
+    """The riskiest drafts are the ones an audit exists for; hiding them from a read-only role audits nothing."""
+    f = review_fixture
+    auditor = Reviewer(user_id=uuid.uuid4(), roles=(UserRole.AUDITOR,))
+    with tenant_session(f["tenant_id"], url=f["db"]) as session:
+        draft = session.get(ReportDraft, f["draft_id"])
+        draft.overall_confidence = 0.40
+        session.flush()
+        [item] = review_queue.build_queue(session, tenant_id=f["tenant_id"], reviewer=auditor)
+        assert item.requires_radiologist is True
+
+
 def test_the_sign_button_state_matches_what_signing_will_do(review_fixture) -> None:
     """A button that looks available while the call behind it refuses is the "click and see" behaviour preflight exists to prevent."""
     f = review_fixture

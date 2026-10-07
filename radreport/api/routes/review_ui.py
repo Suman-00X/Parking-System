@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from radreport.api.deps import CurrentPrincipal, DbSession, client_ip
 from radreport.api.routes.review import _reviewer, _tenant
+from radreport.api.routing import BridgedRoute
 from radreport.api.ui import auth_page, badge, banner, card, empty, facts, flash, icon, lab_page, stat, with_demo_tab
 from radreport.auth import lab
 from radreport.auth.lab import ACCESS_COOKIE, REFRESH_COOKIE, REFRESH_COOKIE_PATH, SignInFailed, TokenInvalid
@@ -30,7 +31,7 @@ from radreport.review import session as review_session
 from radreport.review import signing
 from radreport.review.rbac import PermissionDenied
 
-router = APIRouter(prefix="/ui", tags=["review-ui"])
+router = APIRouter(prefix="/ui", tags=["review-ui"], route_class=BridgedRoute)
 
 _STATIC = Path(__file__).resolve().parent.parent / "static"
 #: Where a browser may be sent back to after signing in: a review page, never another site.
@@ -228,6 +229,8 @@ def review_screen(draft_id: uuid.UUID, session: DbSession, principal: CurrentPri
 
     can_sign = reviewer.can("sign_report") and checks.may_sign
     sign_note = "" if reviewer.can("sign_report") else " (an assistant may revise; a radiologist signs)"
+    # A control the role cannot use is shown disabled, never live and then refused.
+    can_revise, can_flag = reviewer.can("revise_draft"), reviewer.can("report_useless")
     flagged = len([f for f in view.fields if f.is_flagged])
     critical = len([f for f in view.fields if f.is_critical])
 
@@ -243,9 +246,9 @@ def review_screen(draft_id: uuid.UUID, session: DbSession, principal: CurrentPri
     <div>
       <form id="review-form">{fields_html}</form>
       <div class="review-actions">
-        <button type="button" id="save" class="primary">{icon("check")}Save revision</button>
+        <button type="button" id="save" class="primary" {"" if can_revise else 'disabled title="Your role can read drafts but not change them"'}>{icon("check")}Save revision{"" if can_revise else " (read-only)"}</button>
         <button type="button" id="sign" {"" if can_sign else "disabled"}>{icon("shield")}Sign{_esc(sign_note)}</button>
-        <button type="button" id="useless" class="ghost">This draft was useless</button>
+        <button type="button" id="useless" class="ghost" {"" if can_flag else "disabled"}>This draft was useless</button>
         <span id="status" class="meta" role="status"></span>
       </div>
     </div>

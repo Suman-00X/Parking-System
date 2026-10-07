@@ -93,7 +93,8 @@ def build_queue(session: Session, *, tenant_id: uuid.UUID, reviewer: Reviewer, l
 
         items.append(QueueItem(draft_id=draft.id, recording_id=recording.id, study_id=study.id, template_code=template.code, template_display_name=template.display_name, priority=study.priority, confidence=confidence, flagged_field_count=draft.flagged_field_count, status=draft.status, created_at=created, has_critical_alert=alert_severity is not None, critical_alert_severity=alert_severity, path_type=path_type, waiting_minutes=int((now - created).total_seconds() // 60)))
 
-    if not reviewer.is_radiologist:
+    # Only someone who works drafts is spared the ones they cannot complete; an auditor or a lab admin sees every draft.
+    if reviewer.can(Permission.REVISE_DRAFT) and not reviewer.is_radiologist:
         items = [i for i in items if not i.requires_radiologist]
 
     return sorted(items, key=sort_key)[:limit]
