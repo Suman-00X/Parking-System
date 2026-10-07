@@ -57,7 +57,7 @@ def test_the_audio_route_redirects_to_the_signed_link(migrated_db: str, two_tena
         def signed_url(self, key: str, *, expires_seconds: int, content_type: str) -> str:
             return f"https://bucket.example/{key}?ttl={expires_seconds}"
 
-    monkeypatch.setattr(review_route, "S3ObjectStore", SigningStore)
+    monkeypatch.setattr(review_route, "object_store", lambda _settings=None: SigningStore(None))
     response = TestClient(create_app(), follow_redirects=False).get(f"/review/drafts/{draft_id}/audio", headers=lab_headers(migrated_db, lab, "radiologist"))
     assert response.status_code == 307
     assert response.headers["location"].startswith("https://bucket.example/") and response.headers["location"].endswith("ttl=60")

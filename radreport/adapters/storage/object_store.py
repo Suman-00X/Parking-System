@@ -1,7 +1,8 @@
 """Stores and retrieves recorded audio in S3-compatible object storage.
 
-Defines: ObjectStore, the interface; S3ObjectStore for real buckets; InMemoryObjectStore for
-tests; and audio_key, which builds the storage path for a recording.
+Defines: ObjectStore, the interface; S3ObjectStore for real buckets; LocalFileObjectStore, a folder,
+for developer machines without S3; InMemoryObjectStore for tests; object_store, which picks one from
+settings; and audio_key, which builds the storage path for a recording.
 """
 
 from __future__ import annotations
@@ -119,3 +120,50 @@ class InMemoryObjectStore:
 
     def delete(self, key: str) -> None:
         self._data.pop(key, None)
+
+
+class LocalFileObjectStore:
+    """Objects as files under one folder. Developer machines only: nothing is encrypted."""
+
+    def __init__(self, root: str) -> None:
+        from pathlib import Path
+
+        self._root = Path(root).resolve()
+
+    def _path(self, key: str) -> Any:
+        path = (self._root / key).resolve()
+        if not path.is_relative_to(self._root):
+            raise ValueError(f"object key escapes the store: {key!r}")
+        return path
+
+    def put(self, key: str, data: bytes, *, content_type: str) -> StoredObject:
+        from radreport.core.hashing import hash_bytes
+
+        path = self._path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return StoredObject(key=key, size_bytes=len(data), content_hash=hash_bytes(data))
+
+    def get(self, key: str) -> bytes:
+        return self._path(key).read_bytes()
+
+    def open(self, key: str) -> BinaryIO:
+        return self._path(key).open("rb")
+
+    def exists(self, key: str) -> bool:
+        return self._path(key).is_file()
+
+    def delete(self, key: str) -> None:
+        self._path(key).unlink(missing_ok=True)
+
+
+def object_store(settings: StorageSettings | None = None) -> ObjectStore:
+    """The store the settings name; the local folder only where the environment allows it."""
+    from radreport.core.config import get_settings
+
+    config = settings or get_settings().storage
+    if config.backend == "local":
+        if get_settings().environment not in ("local", "test", "development"):
+            raise RuntimeError("RADREPORT_STORAGE__BACKEND=local is for developer machines; use S3 here")
+        return LocalFileObjectStore(config.local_path)
+    return S3ObjectStore(config)

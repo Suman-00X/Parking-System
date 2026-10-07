@@ -23,7 +23,7 @@ def client(migrated_db: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     from radreport.api.routes import ingest as ingest_route
 
     store = InMemoryObjectStore()
-    monkeypatch.setattr(ingest_route, "S3ObjectStore", lambda _settings: store)
+    monkeypatch.setattr(ingest_route, "object_store", lambda _settings=None: store)
 
     from radreport.api.app import create_app
 

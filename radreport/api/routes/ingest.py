@@ -2,6 +2,7 @@
 
 Order: upload_recording does all four, queues a run_pipeline job in the same transaction, and
 returns an IngestResponse. Nothing is transcribed in the request; a worker does that. list_recordings pages through what a lab has captured.
+register_study_route records the study (and patient) a recording belongs to, when no hospital system sends it.
 """
 
 from __future__ import annotations
@@ -10,10 +11,10 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from radreport.adapters.storage.object_store import S3ObjectStore
+from radreport.adapters.storage.object_store import object_store
 from radreport.api.deps import CurrentPrincipal, DbSession
 from radreport.api.pagination import Page, paginate_async, set_page_headers
 from radreport.core.config import get_settings
@@ -23,6 +24,7 @@ from radreport.db.async_session import async_read_session
 from radreport.db.models.ingestion import Recording
 from radreport.events.outbox import Topic, emit
 from radreport.ingest.service import IngestRequest, ingest_recording
+from radreport.ingest.studies import StudyIn, register_study
 from radreport.workers.queue import enqueue
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -54,7 +56,7 @@ async def upload_recording(session: DbSession, principal: CurrentPrincipal, file
 
     request = IngestRequest(tenant_id=principal.tenant_id, study_id=study_id, radiologist_id=radiologist_id, filename=file.filename or "recording", data=data, device_id=device_id, capture_device_class=capture_device_class, is_push_to_talk=is_push_to_talk, actor_id=principal.id)
 
-    store = S3ObjectStore(settings.storage)
+    store = object_store(settings.storage)
     try:
         result = ingest_recording(session, store, request)
     except DuplicateRecording as exc:
@@ -93,3 +95,26 @@ async def list_recordings(principal: CurrentPrincipal, response: Response, radio
         paged = await paginate_async(session, query.order_by(Recording.uploaded_at.desc(), Recording.id), Page.of(page, page_size))
     set_page_headers(response, paged, "/ingest/recordings", {"radiologist_id": str(radiologist_id)} if radiologist_id else None)
     return [RecordingSummary(recording_id=r.id, study_id=r.study_id, radiologist_id=r.radiologist_id, uploaded_at=r.uploaded_at.isoformat(), duration_seconds=float(r.duration_seconds) if r.duration_seconds is not None else None, audio_format=r.audio_format, capture_device_class=r.capture_device_class, measured_snr_db=float(r.measured_snr_db) if r.measured_snr_db is not None else None) for r in paged.rows]
+
+
+class StudyBody(BaseModel):
+    mrn: str = Field(min_length=1, max_length=64)
+    accession_number: str = Field(min_length=1, max_length=64)
+    modality: str | None = Field(default=None, max_length=16)
+    body_part_examined: str | None = Field(default=None, max_length=64)
+    study_description: str | None = Field(default=None, max_length=200)
+    referring_doctor: str | None = Field(default=None, max_length=120)
+    priority: str = Field(default="routine", pattern="^(routine|urgent|stat)$")
+    sex: str | None = Field(default=None, pattern="^[MFO]$")
+    age_years: int | None = Field(default=None, ge=0, le=130)
+
+
+@router.post("/studies", status_code=status.HTTP_201_CREATED)
+def register_study_route(body: StudyBody, session: DbSession, principal: CurrentPrincipal, response: Response) -> dict[str, object]:
+    """The study for an accession number, created with its patient if new; 200 with the same ids when it already exists."""
+    if principal.tenant_id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no tenant bound to this request")
+    result = register_study(session, principal.tenant_id, StudyIn(**body.model_dump()), actor_id=principal.id)
+    if not result.created:
+        response.status_code = status.HTTP_200_OK
+    return {"study_id": str(result.study_id), "patient_id": str(result.patient_id), "created": result.created}

@@ -157,7 +157,7 @@ def test_an_upload_queues_a_pipeline_run_that_a_worker_executes(migrated_db: str
     from tests.integration.test_api_ingest import _post
 
     store = InMemoryObjectStore()
-    monkeypatch.setattr(ingest_route, "S3ObjectStore", lambda _settings: store)
+    monkeypatch.setattr(ingest_route, "object_store", lambda _settings=None: store)
     runner.set_graph_factory(lambda session, tenant_id: (build_v1_graph(store=store, asr_engine=StubASREngine(text="study type ultrasound abdomen. no free fluid."), knowledge=StaticKnowledgeProvider(load_tenant_knowledge(session, tenant_id)), templates=runner.load_template_candidates(session, tenant_id), sections=[]), store))
     try:
         tenant_id, _ = two_tenants

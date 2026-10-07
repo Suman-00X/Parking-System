@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
-from radreport.adapters.storage.object_store import S3ObjectStore
+from radreport.adapters.storage.object_store import object_store
 from radreport.api.deps import CurrentPrincipal, DbSession
 from radreport.cache.lookups import user_roles
 from radreport.core.config import get_settings
@@ -149,7 +149,7 @@ def get_audio(draft_id: uuid.UUID, session: DbSession, principal: CurrentPrincip
     if recording is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no recording for this draft")
 
-    store = S3ObjectStore(get_settings().storage)
+    store = object_store()
     media = "audio/flac" if recording.audio_format == "flac" else "audio/wav"
     signer = getattr(store, "signed_url", None)
     if signer is not None:

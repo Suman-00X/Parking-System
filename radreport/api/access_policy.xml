@@ -408,6 +408,17 @@
       <param name="study_id" in="form" type="uuid" required="true"/>
       <param name="file" in="file" type="file" required="true"/>
     </route>
+    <route id="ingest.studies.register" method="POST" path="/ingest/studies" roles="radiologist,lab_admin" rate-limit="lab-write" max-body-bytes="4096" description="Register the study (and patient) a recording belongs to.">
+      <param name="mrn" in="json" type="string" required="true" max-length="64"/>
+      <param name="accession_number" in="json" type="string" required="true" max-length="64"/>
+      <param name="modality" in="json" type="string" max-length="16"/>
+      <param name="body_part_examined" in="json" type="string" max-length="64"/>
+      <param name="study_description" in="json" type="string" max-length="200"/>
+      <param name="referring_doctor" in="json" type="string" max-length="120"/>
+      <param name="priority" in="json" type="string" pattern="routine|urgent|stat"/>
+      <param name="sex" in="json" type="string" pattern="[MFO]"/>
+      <param name="age_years" in="json" type="int" pattern="\d{1,3}"/>
+    </route>
     <route id="ingest.recordings.list" method="GET" path="/ingest/recordings" roles="radiologist,lab_admin,auditor" rate-limit="lab-read" description="The lab's recordings, newest first, paged.">
       <param name="radiologist_id" in="query" type="uuid"/>
       <param name="page" in="query" type="int" pattern="[1-9]\d{0,5}"/>

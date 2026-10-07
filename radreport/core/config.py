@@ -77,13 +77,17 @@ class EventSettings(BaseModel):
 class StorageSettings(BaseModel):
     """S3-compatible object store for audio, kept as lossless FLAC or WAV indefinitely."""
 
+    backend: str = Field(default="s3", pattern="^(s3|local)$")
+    """`local` keeps objects in a folder (local_path); refused outside local, test and development."""
+
+    local_path: str = ".storage"
     bucket: str = "radreport-audio"
     endpoint_url: str | None = None
     access_key_id: str | None = None
     secret_access_key: str | None = None
     region: str = "us-east-1"
     sse_kms_key_id: str | None = None
-    """None => SSE-term mining. Production must set a KMS key."""
+    """None => SSE-S3 (AES256). Production must set a KMS key."""
 
     signed_url_seconds: int = 60
     """How long a signed audio link stays valid. Audio is never cached or served through a CDN; the browser fetches it from the bucket directly."""

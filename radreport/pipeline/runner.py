@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from radreport.adapters.llm.base import LLMClient
 from radreport.adapters.llm.registry import TaskModelResolver
 from radreport.adapters.llm.response_cache import with_response_cache
-from radreport.adapters.storage.object_store import ObjectStore, S3ObjectStore
+from radreport.adapters.storage.object_store import ObjectStore, object_store
 from radreport.core.config import get_settings
 from radreport.core.errors import BudgetExceeded, StageFailed
 from radreport.core.logging import get_logger
@@ -62,7 +62,7 @@ def _llm_client(tenant_id: uuid.UUID) -> LLMClient | None:
 
 def default_graph_factory(session: Session, tenant_id: uuid.UUID) -> tuple[PipelineGraph, ObjectStore]:
     """The V1 graph from this lab's own knowledge, templates and the configured engines."""
-    store = S3ObjectStore(get_settings().storage)
+    store = object_store()
     knowledge = StaticKnowledgeProvider(load_tenant_knowledge(session, tenant_id))
     client = _llm_client(tenant_id)
     if client is not None:
