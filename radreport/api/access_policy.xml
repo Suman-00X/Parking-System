@@ -53,9 +53,14 @@
   <routes realm="public">
     <route id="ops.health" method="GET" path="/health" rate-limit="probe" description="Liveness, with each dependency's state and this instance's id."/>
     <route id="ops.ready" method="GET" path="/ready" rate-limit="probe" description="Readiness of dependencies; 503 routes traffic away."/>
+    <route id="ops.metrics" method="GET" path="/metrics" rate-limit="probe" description="Prometheus scrape; needs the metrics bearer token, or a development deployment."/>
     <route id="public.features" method="GET" path="/features" rate-limit="public" description="What the product does."/>
+    <route id="public.demo" method="GET" path="/demo" rate-limit="public" description="Read-only demo sign-ins."/>
     <route id="public.api-docs" method="GET" path="/api-docs" rate-limit="public" description="The HTTP API reference."/>
-    <route id="public.recruiter" method="GET" path="/recruiter" rate-limit="public" description="Project overview and read-only demo sign-ins."/>
+    <route id="public.recruiter" method="GET" path="/recruiter" rate-limit="public" description="Recruiter tour: demo sign-ins, recordings, system design and crash test."/>
+    <route id="public.media" method="GET" path="/media/{name}" rate-limit="public" description="Screen recordings shown on the recruiter tour.">
+      <param name="name" in="path" type="string" required="true" pattern="[a-z0-9-]+\.(gif|mp4)" max-length="80"/>
+    </route>
     <route id="ui.static" method="GET" path="/ui/static/{name}" rate-limit="public" description="Stylesheets and scripts.">
       <param name="name" in="path" type="string" required="true" pattern="(review|app)\.(js|css)" max-length="200"/>
       <param name="v" in="query" type="string" pattern="[0-9a-f]{12}"/>
@@ -216,6 +221,7 @@
       <param name="lab" in="query" type="uuid"/>
       <param name="days" in="query" type="int" pattern="7|30|90"/>
     </route>
+    <route id="admin.pools.page" method="GET" path="/admin/pools" roles="product_admin,support" rate-limit="admin-read" description="PgBouncer's connection pools, with waiting clients and busy pools flagged."/>
     <route id="admin.config.page" method="GET" path="/admin/config" roles="product_admin,support" rate-limit="admin-read" description="Operational settings and where each value comes from.">
       <param name="lab" in="query" type="uuid"/>
       <param name="error" in="query" type="string" max-length="500"/>
@@ -378,6 +384,7 @@
       <param name="tenant_id" in="query" type="uuid"/>
       <param name="days" in="query" type="int" pattern="7|30|90"/>
     </route>
+    <route id="admin.api.ops.pgbouncer" method="GET" path="/admin/api/ops/pgbouncer" roles="product_admin,support" rate-limit="admin-read" description="PgBouncer's pools: clients waiting, server connections in use, and the limits."/>
     <route id="admin.api.ops.tables" method="GET" path="/admin/api/ops/tables" roles="product_admin,support" rate-limit="admin-read" description="Per-table dead rows, vacuum history and size, with bloat flagged."/>
     <route id="admin.api.ops.config" method="GET" path="/admin/api/ops/config" roles="product_admin,support" rate-limit="admin-read" description="Operational settings, effective values and their source.">
       <param name="tenant_id" in="query" type="uuid"/>

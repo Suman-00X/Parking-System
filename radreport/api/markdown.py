@@ -86,18 +86,35 @@ def _cells(row: str) -> list[str]:
     return [c.strip() for c in re.split(r"(?<!\\)\|", row)]
 
 
-def render(text: str, *, link_base: str | LinkMap = "") -> Rendered:
-    """Markdown to HTML; `link_base` prefixes relative links, or maps each one, so repository paths can point somewhere real."""
+def _reason(title: str, body_html: str, anchor: str) -> str:
+    """A Reason button and the dialog it opens, titled with the feature it explains."""
+    dialog = f"reason-{anchor}"
+    return f'<div class="reason"><button type="button" class="btn ghost sm reason-open" data-dialog-open="{dialog}" aria-haspopup="dialog">Reason</button></div><dialog class="reason-dialog" id="{dialog}" aria-labelledby="{dialog}-title"><div class="reason-inner"><div class="reason-head"><div><div class="reason-eyebrow">Why it works this way</div><div class="reason-title" id="{dialog}-title">{html.escape(title)}</div></div><button type="button" class="ghost icon-btn reason-close" data-dialog-close aria-label="Close">&times;</button></div><div class="reason-body">{body_html}</div></div></dialog>'
+
+
+def render(text: str, *, link_base: str | LinkMap = "", reasons: bool = False) -> Rendered:
+    """Markdown to HTML; `link_base` maps relative links, and `reasons` turns a **Why:** quote into a Reason dialog for the feature above it."""
     lines = _COMMENT.sub("", text).splitlines()
     out: list[str] = []
     toc: list[tuple[int, str, str]] = []
     used: dict[str, int] = {}
     i = 0
     paragraph: list[str] = []
+    last_title = ""
 
     def flush() -> None:
+        nonlocal last_title
         if paragraph:
-            out.append(f"<p>{_inline(' '.join(p.strip() for p in paragraph), link_base)}</p>")
+            joined = " ".join(p.strip() for p in paragraph)
+            lead = _BOLD.match(joined)
+            last_title = re.sub(r"[`*]", "", lead.group(1)) if lead else ""
+            named = _BOLD.fullmatch(paragraph[0].strip()) if len(paragraph) > 1 else None
+            if named:
+                # A line that is all bold, with text under it, is a named item: the name sits on its own line.
+                rest = " ".join(p.strip() for p in paragraph[1:])
+                out.append(f'<p class="named"><strong class="named-title">{_inline(named.group(1), link_base)}</strong>{_inline(rest, link_base)}</p>')
+            else:
+                out.append(f"<p>{_inline(joined, link_base)}</p>")
             paragraph.clear()
 
     while i < len(lines):
@@ -155,6 +172,17 @@ def render(text: str, *, link_base: str | LinkMap = "") -> Rendered:
             while i < len(lines) and lines[i].lstrip().startswith(">"):
                 quoted.append(lines[i].lstrip()[1:].removeprefix(" "))
                 i += 1
+            if reasons and quoted and quoted[0].startswith("**Why:**"):
+                quoted[0] = quoted[0].removeprefix("**Why:**").lstrip()
+                title = last_title or "Why"
+                anchor = slug(title) or "why"
+                if f"reason-{anchor}" in used:
+                    used[f"reason-{anchor}"] += 1
+                    anchor = f"{anchor}-{used[f'reason-{anchor}']}"
+                else:
+                    used[f"reason-{anchor}"] = 0
+                out.append(_reason(title, render(chr(10).join(quoted), link_base=link_base).html, anchor))
+                continue
             out.append(f"<blockquote>{render(chr(10).join(quoted), link_base=link_base).html}</blockquote>")
             continue
         if _LIST_ITEM.match(line):

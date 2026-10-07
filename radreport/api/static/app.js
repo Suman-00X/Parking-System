@@ -83,4 +83,48 @@ document.addEventListener("DOMContentLoaded", () => {
       document.querySelector("[data-tabs] [role=tab]")?.click();
     }),
   );
+
+  // Tabs a link can open: /features#hld opens a tab by its key, and #some-heading opens the tab holding it.
+  document.querySelectorAll("[data-hash-tabs]").forEach((group) => {
+    const tabs = [...group.querySelectorAll("[role=tab]")];
+    const open = () => {
+      const id = decodeURIComponent(location.hash.slice(1));
+      if (!id) return;
+      const byKey = tabs.find((t) => t.dataset.key === id);
+      const target = byKey ? null : document.getElementById(id);
+      const panel = target?.closest("[role=tabpanel]");
+      const tab = byKey || tabs.find((t) => t.dataset.panel === panel?.id);
+      if (!tab) return;
+      if (tab.getAttribute("aria-selected") !== "true") tab.click();
+      if (target) target.scrollIntoView();
+      else group.scrollIntoView({ block: "start" });
+    };
+    tabs.forEach((tab) =>
+      tab.addEventListener("click", (e) => {
+        if (e.isTrusted) history.replaceState(null, "", "#" + tab.dataset.key);
+      }),
+    );
+    window.addEventListener("hashchange", open);
+    open();
+  });
+
+  // Recordings play while on screen and pause when scrolled away; the autoplay attribute alone is skipped for video below the fold.
+  const videos = document.querySelectorAll("figure.media video");
+  if (videos.length && "IntersectionObserver" in window) {
+    const watch = new IntersectionObserver((entries) =>
+      entries.forEach((entry) => (entry.isIntersecting ? entry.target.play().catch(() => {}) : entry.target.pause())),
+    { threshold: 0.35 });
+    videos.forEach((video) => watch.observe(video));
+  }
+
+  // Reason dialogs: the button opens one; the close button, Esc and a click on the backdrop shut it.
+  document.querySelectorAll("[data-dialog-open]").forEach((button) =>
+    button.addEventListener("click", () => document.getElementById(button.dataset.dialogOpen)?.showModal()),
+  );
+  document.querySelectorAll("dialog").forEach((dialog) => {
+    dialog.addEventListener("click", (e) => {
+      if (e.target === dialog) dialog.close();
+    });
+    dialog.querySelectorAll("[data-dialog-close]").forEach((b) => b.addEventListener("click", () => dialog.close()));
+  });
 });

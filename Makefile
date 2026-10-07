@@ -10,12 +10,13 @@
 #               vacuously)
 
 .PHONY: help install up down migrate migrate-owner revision seed seed-local admin admin-password pg-observe \
-        run dev stop restart status logs worker relay pgbouncer pgbouncer-stop test test-unit lint fmt check clean
+        run dev stop restart status logs crash-test gifs worker relay pgbouncer pgbouncer-stop test test-unit lint fmt check clean
 
 PORT ?= 8000
 HOST ?= 127.0.0.1
 WORKERS ?= 2
 PIDFILE := .uvicorn.pid
+METRICS_DIR := .metrics
 LOGFILE := .uvicorn.log
 OWNER_URL ?= postgresql+psycopg://$(shell whoami)@localhost:5432/radreport
 
@@ -25,7 +26,7 @@ help:  ## Show this help
 
 # --------------------------------------------------------------- setup -----
 install:  ## Create the venv and install the project with dev extras
-	python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+	python3 -m venv .venv && .venv/bin/pip install -e ".[dev,observability]"
 
 up:  ## Start Postgres 16 + pgvector and MinIO via docker compose
 	docker compose up -d
@@ -81,7 +82,10 @@ dev:  ## Run the API in the foreground with auto-reload (Ctrl-C to stop)
 run:  ## Start the API in the background (writes .uvicorn.pid)
 	@if [ -f $(PIDFILE) ] && kill -0 `cat $(PIDFILE)` 2>/dev/null; then \
 	  echo "already running (pid `cat $(PIDFILE)`) — use 'make restart'"; exit 1; fi
-	@.venv/bin/uvicorn radreport.api.app:app --host $(HOST) --port $(PORT) \
+	@# Each worker process writes its metrics here and /metrics merges them; files left by an
+	@# earlier run would be counted again, so the folder starts empty.
+	@rm -rf $(METRICS_DIR) && mkdir -p $(METRICS_DIR)
+	@PROMETHEUS_MULTIPROC_DIR=$(METRICS_DIR) .venv/bin/uvicorn radreport.api.app:app --host $(HOST) --port $(PORT) \
 	  --workers $(WORKERS) > $(LOGFILE) 2>&1 & echo $$! > $(PIDFILE)
 	@# Wait for the port to answer rather than guessing with sleep: with
 	@# multiple workers uvicorn takes a moment to bind, and a target that
@@ -111,8 +115,14 @@ status:  ## Is the server up, and are its dependencies reachable?
 	  curl -sS http://$(HOST):$(PORT)/ready && echo; \
 	else echo "not running"; fi
 
-worker:  ## Run a job worker in the foreground: make worker CONCURRENCY=2
-	.venv/bin/python -m radreport.workers --concurrency $(or $(CONCURRENCY),1)
+crash-test:  ## Break the system on purpose against the test database; writes docs/CRASH_TEST.md
+	RADREPORT_OBSERVABILITY__LOG_LEVEL=WARNING .venv/bin/python -m radreport.devtools.crash_test
+
+gifs:  ## Record the features page's screen recordings from the running app (needs playwright + ffmpeg)
+	.venv/bin/python -m radreport.devtools.record_gifs --base-url http://$(HOST):$(PORT)
+
+worker:  ## Run a job worker in the foreground, metrics on :9101: make worker CONCURRENCY=2 METRICS_PORT=9101
+	.venv/bin/python -m radreport.workers --concurrency $(or $(CONCURRENCY),1) --metrics-port $(or $(METRICS_PORT),9101)
 
 relay:  ## Publish committed outbox events to the configured bus (RADREPORT_EVENTS__BUS)
 	.venv/bin/python -m radreport.events relay
@@ -136,5 +146,5 @@ fmt:  ## Apply formatting
 check: lint test  ## Lint and test — what CI runs
 
 clean:  ## Remove caches and the server pid/log
-	rm -rf .pytest_cache .ruff_cache $(PIDFILE) $(LOGFILE)
+	rm -rf .pytest_cache .ruff_cache $(PIDFILE) $(LOGFILE) $(METRICS_DIR)
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +

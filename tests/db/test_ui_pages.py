@@ -61,7 +61,7 @@ def test_admin_screens(migrated_db: str, seeded) -> None:
     admin = signed_in(make_platform_user(migrated_db))
     support = signed_in(make_platform_user(migrated_db, role="support"))
     lab = seeded["lab"]
-    pages = ["/admin/labs", f"/admin/labs/{lab}", f"/admin/labs/{lab}/readiness", f"/admin/labs/{lab}/onboarding", "/admin/providers", "/admin/users", "/admin/account", "/admin/costs", "/admin/config"]
+    pages = ["/admin/labs", f"/admin/labs/{lab}", f"/admin/labs/{lab}/readiness", f"/admin/labs/{lab}/onboarding", "/admin/providers", "/admin/users", "/admin/account", "/admin/costs", "/admin/pools", "/admin/config"]
     for path in pages:
         for client in (admin, support):
             response = client.get(path)
@@ -82,16 +82,31 @@ def test_lab_screens(migrated_db: str, seeded) -> None:
     assert client.get("/ui/lexicon", headers=lab_headers(migrated_db, lab, "transcriptionist")).status_code == 403
 
 
+def test_a_read_only_role_sees_the_controls_it_cannot_use_disabled(migrated_db: str, seeded) -> None:
+    client = TestClient(create_app())
+    draft = f"/ui/drafts/{seeded['draft_id']}"
+    auditor = client.get(draft, headers=lab_headers(migrated_db, seeded["lab"], "auditor")).text
+    assert 'id="save" class="primary" disabled' in auditor and "(read-only)" in auditor
+    assert 'id="useless" class="ghost" disabled' in auditor
+    radiologist = client.get(draft, headers=lab_headers(migrated_db, seeded["lab"], "radiologist")).text
+    assert 'id="save" class="primary" >' in radiologist and 'id="useless" class="ghost" >' in radiologist
+
+
 def test_public_pages_and_sign_in_pages(migrated_db: str) -> None:
     client = TestClient(create_app())
-    for path, active in (("/features", "Features"), ("/api-docs", "API docs"), ("/recruiter", "For recruiters")):
+    for path, active in (("/features", "Features"), ("/demo", "Try the demo"), ("/api-docs", "API docs"), ("/recruiter", "Recruiter tour")):
         response = client.get(path)
         assert response.status_code == 200, path
         _check_frame(path, response.text)
         assert f'aria-current="page">{active}</a>' in response.text, f"{path}: the current page is not marked"
         assert 'class="public-menu-toggle"' in response.text, f"{path}: no phone menu"
     assert 'id="phase-0--is-the-service-up"' in client.get("/api-docs").text, "headings carry the anchors the docs link to"
+    features = client.get("/features").text
+    assert 'role="tab"' not in features
+    assert features.count("data-dialog-open=") == features.count("<dialog") > 20, "every feature carries a Reason dialog"
     recruiter = client.get("/recruiter").text
+    assert recruiter.count('role="tab"') == 4 and 'data-key="demo"' in recruiter and 'data-key="in-action"' in recruiter
+    assert '<svg viewBox="0 0 1100 580"' in recruiter, "the system-design tab draws the architecture"
     assert "HTTP routes" in recruiter and "test functions" in recruiter
     for path in ("/admin/login", "/ui/login"):
         page = client.get(path).text
@@ -105,11 +120,11 @@ def test_only_read_only_demo_accounts_are_ever_shown(migrated_db: str, monkeypat
     get_settings.cache_clear()
     try:
         client = TestClient(create_app())
-        admin_login, lab_login, recruiter = client.get("/admin/login").text, client.get("/ui/login").text, client.get("/recruiter").text
+        admin_login, lab_login, recruiter, demo = client.get("/admin/login").text, client.get("/ui/login").text, client.get("/recruiter").text, client.get("/demo").text
         assert "Test credentials" in admin_login and "pw-support" in admin_login and "pw-auditor" not in admin_login
         assert "Test credentials" in lab_login and "pw-auditor" in lab_login and 'data-fill-lab="sunrise"' in lab_login and "pw-support" not in lab_login
-        assert "pw-support" in recruiter and "pw-auditor" in recruiter
-        for page in (admin_login, lab_login, recruiter):
+        assert "pw-support" in recruiter and "pw-auditor" in recruiter and "pw-support" in demo and "pw-auditor" in demo
+        for page in (admin_login, lab_login, recruiter, demo):
             assert "pw-admin" not in page and "pw-rad" not in page, "a write-capable account must never be published"
     finally:
         get_settings.cache_clear()

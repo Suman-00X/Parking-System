@@ -81,7 +81,7 @@ class NavItem:
     count: int | None = None
 
 
-ADMIN_NAV: tuple[tuple[str, tuple[NavItem, ...]], ...] = (("Workspace", (NavItem("labs", "Labs", "/admin/labs", "labs"), NavItem("providers", "Models & providers", "/admin/providers", "providers"))), ("Operations", (NavItem("costs", "Cost & usage", "/admin/costs", "cost"), NavItem("config", "System settings", "/admin/config", "config"))), ("People", (NavItem("users", "Platform users", "/admin/users", "users"), NavItem("account", "Your account", "/admin/account", "account"))))
+ADMIN_NAV: tuple[tuple[str, tuple[NavItem, ...]], ...] = (("Workspace", (NavItem("labs", "Labs", "/admin/labs", "labs"), NavItem("providers", "Models & providers", "/admin/providers", "providers"))), ("Operations", (NavItem("costs", "Cost & usage", "/admin/costs", "cost"), NavItem("pools", "Connection pools", "/admin/pools", "database"), NavItem("config", "System settings", "/admin/config", "config"))), ("People", (NavItem("users", "Platform users", "/admin/users", "users"), NavItem("account", "Your account", "/admin/account", "account"))))
 
 
 def _head(title: str, suffix: str) -> str:
@@ -207,7 +207,7 @@ def auth_page(title: str, card_html: str, *, subtitle: str, realm: str) -> HTMLR
 </body></html>""")
 
 
-PUBLIC_NAV: tuple[tuple[str, str, str], ...] = (("features", "Features", "/features"), ("api", "API docs", "/api-docs"), ("recruiter", "For recruiters", "/recruiter"))
+PUBLIC_NAV: tuple[tuple[str, str, str], ...] = (("features", "Features", "/features"), ("demo", "Try the demo", "/demo"), ("api", "API docs", "/api-docs"), ("recruiter", "Recruiter tour", "/recruiter"))
 
 
 #: The only roles a demo sign-in shown to the public may have: each can see everything and change nothing.
@@ -250,7 +250,7 @@ def public_links() -> str:
 
 
 def public_page(title: str, body: str, *, active: str, description: str) -> HTMLResponse:
-    """A page anyone may open: the product's features, its API, and the project overview."""
+    """A page anyone may open: the product's features, the demo sign-ins, its API, and the recruiter tour."""
     links = "".join(f'<a href="{href}"{' aria-current="page"' if key == active else ""}>{esc(label)}</a>' for key, label, href in PUBLIC_NAV)
     head = _head(title, "radreport").replace("</head>", f'<meta name="description" content="{esc(description)}">\n</head>', 1)
     return HTMLResponse(f"""{head}

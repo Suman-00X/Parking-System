@@ -538,3 +538,62 @@ body.public { background: var(--bg); min-height: 100vh; display: flex; flex-dire
 .step-form { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); margin: 0 8px 8px 0; }
 .step-form button { white-space: nowrap; }
 @media (max-width: 640px) { .step-form { display: flex; width: 100%; margin-right: 0; } }
+/* Features page: the hero above the tabs, the tab bar, Reason dialogs and the architecture diagram. */
+.feature-hero { padding-bottom: 4px; }
+.feature-hero h1 { margin-top: 0; }
+.feature-hero p:first-of-type strong { font-size: 18px; }
+.feature-tabs { margin: 18px 0 26px; }
+.md p.named { margin: 18px 0 8px; }
+.md .named-title { display: block; font-size: 16px; margin-bottom: 2px; }
+.feature-panel .doc-toc .toc-2 > a, .feature-single .doc-toc .toc-2 > a { padding-left: 8px; font-weight: 600; color: var(--fg); }
+.feature-panel .doc-toc .toc-3 > a, .feature-single .doc-toc .toc-3 > a { padding-left: 20px; }
+.feature-panel[hidden] { display: none; }
+#tab-hld table td:first-child strong, #tab-crash-test table td:first-child strong { font-size: inherit; background: none; -webkit-background-clip: initial; background-clip: initial; color: var(--fg); }
+#tab-crash-test table td:last-child { white-space: nowrap; }
+.reason { margin: -2px 0 14px; }
+.reason-open { gap: 6px; color: var(--brand); font-weight: 600; border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent); background: var(--brand-soft); }
+.reason-open::before { content: "?"; display: inline-grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; background: var(--brand); color: var(--brand-fg); font-size: 11px; font-weight: 800; }
+.reason-dialog { padding: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); color: var(--fg); width: min(560px, calc(100vw - 32px)); box-shadow: var(--shadow-lg); }
+.reason-dialog::backdrop { background: rgba(10, 14, 35, .45); backdrop-filter: blur(2px); }
+.reason-dialog[open] { animation: reason-in .16s ease-out; }
+@keyframes reason-in { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
+.reason-inner { padding: 20px 22px 18px; }
+.reason-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.reason-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--brand); }
+.reason-title { font-size: 18px; font-weight: 700; line-height: 1.3; margin-top: 2px; }
+.reason-close { font-size: 22px; line-height: 1; padding: 4px 10px; color: var(--muted); }
+.reason-body { line-height: 1.65; color: var(--fg-soft); }
+.reason-body p { margin: 6px 0; }
+.arch { margin: 6px 0 28px; }
+.arch-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 12px; }
+.arch svg { display: block; min-width: 760px; width: 100%; height: auto; }
+.arch figcaption { font-size: 13px; color: var(--muted); margin-top: 8px; }
+.arch-box rect { fill: var(--surface-2); stroke: var(--line-strong); stroke-width: 1.2; }
+.arch-edge rect { fill: var(--surface-2); stroke-dasharray: none; }
+.arch-core rect { fill: var(--brand-soft); stroke: color-mix(in srgb, var(--brand) 55%, transparent); }
+.arch-store rect { fill: var(--info-soft); stroke: color-mix(in srgb, var(--info) 40%, transparent); }
+.arch-obs rect { fill: var(--ok-soft); stroke: color-mix(in srgb, var(--ok) 40%, transparent); }
+.arch-title { font: 700 13.5px ui-sans-serif, system-ui, sans-serif; fill: var(--fg); text-anchor: middle; }
+.arch-sub { font: 11.5px ui-sans-serif, system-ui, sans-serif; fill: var(--muted); text-anchor: middle; }
+.arch-line { fill: none; stroke: var(--faint); stroke-width: 1.5; }
+.arch-dashed { stroke-dasharray: 5 4; }
+.arch-head { fill: var(--faint); }
+@media (max-width: 760px) { #tab-crash-test table td:last-child { white-space: normal; } }
+.feature-tabs { scroll-margin-top: 84px; }
+.media { margin: 14px 0 22px; }
+.media video { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); box-shadow: var(--shadow); }
+.media figcaption { font-size: 13px; color: var(--muted); margin-top: 8px; }
+/* Recruiter tour: the single-page features layout, and the sparkling "For Recruiters" tab that asks to be opened. */
+.feature-single { margin-top: 18px; }
+.tour-demo { max-width: 920px; }
+.tabs button.tab-sparkle { position: relative; display: inline-flex; align-items: center; gap: 6px; color: var(--brand); background: linear-gradient(110deg, var(--brand-soft) 0%, var(--brand-soft) 40%, color-mix(in srgb, var(--brand) 22%, var(--surface)) 50%, var(--brand-soft) 60%, var(--brand-soft) 100%); background-size: 250% 100%; box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 45%, transparent); animation: tab-shimmer 2.6s linear infinite, tab-glow 2.6s ease-in-out infinite; }
+.tabs button.tab-sparkle[aria-selected="true"] { color: var(--fg); background: var(--surface); animation: none; box-shadow: var(--shadow-sm), 0 0 0 1px color-mix(in srgb, var(--brand) 35%, transparent); }
+.sparkle-star { display: inline-block; font-size: 12px; line-height: 1; color: var(--brand); animation: star-twinkle 1.3s ease-in-out infinite; }
+.tabs button.tab-sparkle[aria-selected="true"] .sparkle-star { animation: none; }
+.tabs button.tab-sparkle::after { content: "✦"; position: absolute; top: 2px; right: 3px; font-size: 9px; color: var(--brand); opacity: 0; animation: star-pop 2.6s ease-in-out infinite .9s; pointer-events: none; }
+.tabs button.tab-sparkle[aria-selected="true"]::after { display: none; }
+@keyframes tab-shimmer { from { background-position: 125% 0; } to { background-position: -125% 0; } }
+@keyframes tab-glow { 0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 45%, transparent); } 50% { box-shadow: 0 0 0 1px var(--brand), 0 0 14px color-mix(in srgb, var(--brand) 45%, transparent); } }
+@keyframes star-twinkle { 0%, 100% { transform: scale(1) rotate(0); opacity: 1; } 50% { transform: scale(1.35) rotate(45deg); opacity: .65; } }
+@keyframes star-pop { 0%, 60%, 100% { opacity: 0; transform: scale(.4); } 70% { opacity: 1; transform: scale(1.1); } 85% { opacity: 0; transform: scale(.6) translate(3px, -3px); } }
+@media (prefers-reduced-motion: reduce) { .tabs button.tab-sparkle, .sparkle-star, .tabs button.tab-sparkle::after { animation: none; } }

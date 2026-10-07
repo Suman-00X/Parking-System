@@ -1,9 +1,12 @@
-"""The public pages: what the product does, its HTTP API, and an overview of the project for recruiters.
+"""The public pages: what the product does, a way into the demo, its HTTP API, and a tour of the project for recruiters.
 
-Order: the features page renders FEATURES.md (features) -> the API page renders API.md beside a
-table of contents and points at the live OpenAPI docs where the environment serves them
-(api_docs) -> the recruiter page summarises what was built, with numbers counted from the code
-itself and the read-only demo sign-ins (recruiter). Nothing here needs a sign-in or reads lab data.
+Order: FEATURES.md is split at its tab markers; the features page renders the features tab, each
+feature with its Reason (features) -> the demo page lists the read-only demo sign-ins (demo) -> the
+API page renders API.md beside a table of contents and points at the live OpenAPI docs where the
+environment serves them (api_docs) -> the recruiter tour summarises what was built, with numbers
+counted from the code itself, then tabs: the demo sign-ins, the screen recordings, the system design
+with the architecture diagram, and the crash test's last results (recruiter). Nothing here needs a
+sign-in or reads lab data.
 """
 
 from __future__ import annotations
@@ -12,13 +15,15 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
+from radreport.api.diagram import ARCHITECTURE_SVG
 from radreport.api.markdown import render
+from radreport.api.routing import BridgedRoute
 from radreport.api.ui import demo_accounts, demo_credentials, esc, icon, public_page
 
-router = APIRouter(tags=["public"])
+router = APIRouter(tags=["public"], route_class=BridgedRoute)
 
 _ROOT = Path(__file__).resolve().parents[3]
 _PACKAGE = Path(__file__).resolve().parents[2]
@@ -29,10 +34,15 @@ def _doc(name: str) -> str | None:
     return path.read_text(encoding="utf-8") if path.is_file() else None
 
 
+#: The FEATURES.md tabs shown on the recruiter tour, in order, after its own demo tab; the rest is the features page.
+_TOUR_TABS = ("in-action", "hld", "crash-test")
+_SPARKLE_TAB = "in-action"
+
+
 def _site_link(href: str) -> str | None:
     """Repository links in the docs, pointed at the matching page, or dropped when there is none."""
     target, _, anchor = href.partition("#")
-    pages = {"FEATURES.md": "/features", "API.md": "/api-docs", "": ""}
+    pages = {"FEATURES.md": "/recruiter" if anchor in _TOUR_TABS else "/features", "API.md": "/api-docs", "": ""}
     if target in pages:
         return pages[target] + (f"#{anchor}" if anchor else "")
     return None
@@ -57,15 +67,108 @@ def _missing(title: str, active: str) -> HTMLResponse:
     return public_page(title, body, active=active, description=title)
 
 
+_MEDIA_DIR = _ROOT / "docs" / "media"
+_MEDIA_NAME = re.compile(r"[a-z0-9-]+\.(gif|mp4)")
+_MEDIA = re.compile(r"^<!--\s*media:\s*([a-z0-9-]+)\s*\|\s*(.+?)\s*-->\s*$", re.M)
+_TAB = re.compile(r"^<!--\s*tab:\s*([a-z0-9-]+)\s*\|\s*(.+?)\s*-->\s*$", re.M)
+_INCLUDE = re.compile(r"^<!--\s*include:\s*(docs/[\w-]+\.md)\s*-->\s*$", re.M)
+
+
+def _include(match: re.Match[str]) -> str:
+    """A generated document pulled into a tab, without its own title; only Markdown under docs/ may be included."""
+    text = _doc(match.group(1))
+    if text is None:
+        return "*Not run on this deployment yet.*"
+    return re.sub(r"\A#\s+[^\n]*\n", "", text.lstrip())
+
+
+def _media_markers(text: str) -> tuple[str, list[str]]:
+    """Each media marker swapped for a placeholder the renderer leaves alone, and the figure that replaces it afterwards."""
+    figures: list[str] = []
+
+    def swap(match: re.Match[str]) -> str:
+        name, caption = match.group(1), match.group(2)
+        if not (_MEDIA_DIR / f"{name}.mp4").is_file():
+            return ""
+        figures.append(f'<figure class="media"><video src="/media/{name}.mp4" autoplay muted loop playsinline preload="metadata" aria-label="{esc(caption)}"></video><figcaption>{esc(caption)}</figcaption></figure>')
+        return f"\n\nMEDIAFIGURE{len(figures) - 1}\n\n"
+
+    return _MEDIA.sub(swap, text), figures
+
+
+def _split_tabs(text: str) -> tuple[str, list[tuple[str, str, str]]]:
+    """The text before the first tab marker, then (key, label, body) for each tab."""
+    parts = _TAB.split(text)
+    return parts[0], [(parts[i], parts[i + 1], parts[i + 2]) for i in range(1, len(parts) - 2, 3)]
+
+
+@lru_cache(maxsize=1)
+def _feature_doc() -> tuple[str, dict[str, tuple[str, str]]] | None:
+    """FEATURES.md as the hero above its first tab, then each tab's label and panel content by key."""
+    text = _doc("FEATURES.md")
+    if text is None:
+        return None
+    text, figures = _media_markers(_INCLUDE.sub(_include, text))
+    intro, tabs = _split_tabs(text)
+    hero = render(intro, link_base=_site_link).html
+    panels = {}
+    for key, label, body in tabs:
+        out = render(body, link_base=_site_link, reasons=True)
+        out.html = re.sub(r"<p>MEDIAFIGURE(\d+)</p>", lambda m: figures[int(m.group(1))], out.html)
+        lead = ARCHITECTURE_SVG if key == "hld" else ""
+        panels[key] = (label, f'<div class="doc-layout">{_toc(out.toc, deepest=3)}<article class="md doc-features">{lead}{out.html}</article></div>')
+    return hero, panels
+
+
+def _tabs(tabs: list[tuple[str, str, str]]) -> str:
+    """A tab bar a link can open by key, and its panels; the first tab starts open."""
+    def button(n: int, key: str, label: str) -> str:
+        sparkle = key == _SPARKLE_TAB
+        return f'<button type="button" role="tab" id="tab-btn-{key}" aria-controls="tab-{key}" aria-selected="{str(n == 0).lower()}" data-panel="tab-{key}" data-key="{key}"{' class="tab-sparkle"' if sparkle else ""}>{'<span class="sparkle-star" aria-hidden="true">✦</span>' if sparkle else ""}{esc(label)}</button>'
+
+    bar = "".join(button(n, key, label) for n, (key, label, _content) in enumerate(tabs))
+    panels = "".join(f'<section id="tab-{key}" role="tabpanel" aria-labelledby="tab-btn-{key}" class="feature-panel"{"" if n == 0 else " hidden"}>{content}</section>' for n, (key, _label, content) in enumerate(tabs))
+    return f'<div class="tabs feature-tabs" role="tablist" aria-label="Sections" data-tabs data-hash-tabs>{bar}</div>{panels}'
+
+
+@router.get("/media/{name}")
+def media(name: str) -> Response:
+    """A screen recording for the recruiter tour; byte ranges are honoured, which Safari needs to play video."""
+    path = _MEDIA_DIR / name
+    if not _MEDIA_NAME.fullmatch(name) or not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such recording")
+    return FileResponse(path, media_type="video/mp4" if name.endswith(".mp4") else "image/gif", headers={"Cache-Control": "public, max-age=86400"})
+
+
 @router.get("/features", response_class=HTMLResponse)
 def features() -> HTMLResponse:
-    """What radreport does, for anyone."""
-    rendered = _rendered("FEATURES.md")
-    if rendered is None:
+    """What radreport does, feature by feature, each with the reason it exists."""
+    doc = _feature_doc()
+    if doc is None or "features" not in doc[1]:
         return _missing("Features", "features")
-    html, toc = rendered
-    body = f"""<div class="doc-layout">{_toc(toc, deepest=2)}<article class="md doc-features">{html}</article></div>"""
+    hero, panels = doc
+    body = f'<section class="md doc-features feature-hero">{hero}</section><div class="feature-single">{panels["features"][1]}</div>'
     return public_page("Features", body, active="features", description="What radreport does: dictation in, a structured, checked report out.")
+
+
+def _demo_section() -> str:
+    """The read-only demo sign-ins for the admin panel and the lab screens, or why there are none."""
+    admin_demo, lab_demo = demo_accounts("admin"), demo_accounts("lab")
+    intro = "<p>The demo lab, Sunrise Imaging, holds synthetic data only: templates, a report history, drafts at every stage, signed and graded reports, critical alerts and lexicon suggestions. The accounts below can open every screen and change nothing.</p>"
+    if not (admin_demo or lab_demo):
+        return intro + '<p class="meta">No demo sign-ins are configured on this deployment. Set <code>RADREPORT_DEMO_ACCOUNTS</code> to read-only accounts (support for the admin panel, an auditor for a lab) to show them here.</p>'
+    return f"""{intro}<div class="show-demo">
+      <div><h3>{icon("labs")} Admin panel</h3>{demo_credentials("admin") if admin_demo else '<p class="meta">No admin demo account on this deployment.</p>'}<a class="btn primary" href="/admin/login">Open the admin panel</a></div>
+      <div><h3>{icon("queue")} Lab screens</h3>{demo_credentials("lab") if lab_demo else '<p class="meta">No lab demo account on this deployment.</p>'}<a class="btn primary" href="/ui/login">Open the lab screens</a></div>
+    </div>"""
+
+
+@router.get("/demo", response_class=HTMLResponse)
+def demo() -> HTMLResponse:
+    """The read-only demo sign-ins, one click from every public page."""
+    body = f"""<section class="show-hero"><div class="eyebrow">Try the demo</div><h1>Open radreport with a read-only account.</h1></section>
+    <section>{_demo_section()}</section>"""
+    return public_page("Try the demo", body, active="demo", description="Read-only demo sign-ins for radreport's admin panel and lab screens, on synthetic data.")
 
 
 @router.get("/api-docs", response_class=HTMLResponse)
@@ -121,26 +224,22 @@ def recruiter() -> HTMLResponse:
         for glyph, title, text, points in _BUILT
     )
     stack = "".join(f'<span class="chip">{esc(item)}</span>' for item in _STACK)
-    admin_demo, lab_demo = demo_accounts("admin"), demo_accounts("lab")
-    if admin_demo or lab_demo:
-        demo = f"""<div class="show-demo">
-          <div><h3>{icon("labs")} Admin panel</h3>{demo_credentials("admin") if admin_demo else '<p class="meta">No admin demo account on this deployment.</p>'}<a class="btn primary" href="/admin/login">Open the admin panel</a></div>
-          <div><h3>{icon("queue")} Lab screens</h3>{demo_credentials("lab") if lab_demo else '<p class="meta">No lab demo account on this deployment.</p>'}<a class="btn primary" href="/ui/login">Open the lab screens</a></div>
-        </div>"""
-    else:
-        demo = '<p class="meta">No demo sign-ins are configured on this deployment. Set <code>RADREPORT_DEMO_ACCOUNTS</code> to read-only accounts (support for the admin panel, an auditor for a lab) to show them here.</p>'
     body = f"""
     <section class="show-hero">
       <div class="eyebrow">Project overview</div>
       <h1>radreport: radiology reports, dictated once and checked before they leave.</h1>
       <p class="lead">A multi-lab platform that turns a radiologist's dictation into a structured, grounded draft, puts the risky parts in front of a person, and earns the right to skip review only where the evidence says it is safe. Built as a production-shaped system: isolation in the database, every route declared, measured performance work, and a test suite that tries to break it.</p>
-      <div class="show-cta"><a class="btn primary" href="#try-it">Try the demo</a><a class="btn" href="/features">Features</a><a class="btn" href="/api-docs">API docs</a></div>
+      <div class="show-cta"><a class="btn primary" href="#demo">Try the demo</a><a class="btn" href="#in-action">For Recruiters</a><a class="btn" href="/features">Features</a><a class="btn" href="/api-docs">API docs</a></div>
     </section>
-    <section class="show-stats" aria-label="Project in numbers">{stat_html}</section>
-    <section><h2 class="show-h2">What it demonstrates</h2><div class="show-grid">{built}</div></section>
-    <section><h2 class="show-h2">Built with</h2><div class="chips">{stack}</div></section>
-    <section id="try-it"><h2 class="show-h2">Try it</h2>
-      <p>The demo lab, Sunrise Imaging, holds synthetic data only: templates, a report history, drafts at every stage, signed and graded reports, critical alerts and lexicon suggestions. The accounts below can open every screen and change nothing.</p>
-      {demo}
-    </section>"""
-    return public_page("For recruiters", body, active="recruiter", description="radreport, a multi-lab radiology reporting platform: what was built and how to try it.")
+    <section class="show-stats" aria-label="Project in numbers">{stat_html}</section>"""
+    doc = _feature_doc()
+    panels = doc[1] if doc else {}
+    design = f"""<section><h2 class="show-h2">What it demonstrates</h2><div class="show-grid">{built}</div></section>
+    <section><h2 class="show-h2">Built with</h2><div class="chips">{stack}</div></section>"""
+    tabs = [("demo", "Try the demo", f'<div class="tour-demo">{_demo_section()}</div>')]
+    for key in _TOUR_TABS:
+        if key in panels:
+            label, content = panels[key]
+            tabs.append((key, label, design + content if key == "hld" else content))
+    body += _tabs(tabs)
+    return public_page("Recruiter tour", body, active="recruiter", description="radreport, a multi-lab radiology reporting platform: how to try it, recordings of it running, its system design and a crash test.")

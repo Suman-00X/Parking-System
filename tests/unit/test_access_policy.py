@@ -318,7 +318,7 @@ def test_every_shipped_limit_holds_across_workers() -> None:
     # The probe limit is the one exception: a shared count is a database write per probe, every few seconds on every instance.
     assert {lid for lid, limit in load_policy().rate_limits.items() if limit.store != "shared"} == {"probe"}
     probe_routes = {r.id for r in load_policy().routes if r.rate_limit is not None and r.rate_limit.id == "probe"}
-    assert probe_routes == {"ops.health", "ops.ready"}, "only the unauthenticated, read-only probes may use it"
+    assert probe_routes == {"ops.health", "ops.ready", "ops.metrics"}, "only the read-only probes and the metrics scrape may use it"
 
 
 def test_a_shared_limiter_fails_open_when_its_store_is_down() -> None:
