@@ -319,6 +319,12 @@ def test_s4_mines_variants_back_into_s3(migrated_db: str, lab, recording) -> Non
 
         variants = session.query(LexiconSurfaceVariant).filter(LexiconSurfaceVariant.lexicon_term_id == term.id).all()
         assert "echo texture" in {v.surface_text for v in variants}
+        split = next(v for v in variants if v.surface_text == "echo texture")
+        assert split.review_status == "auto_approved" and float(split.confidence) > 0.85 and split.threshold_arm == "A"
+        assert result.auto_approved >= 1
+        from radreport.db.models.orchestration import AuditLog
+
+        assert session.query(AuditLog).filter(AuditLog.action == "lexicon_variant_auto_approved", AuditLog.entity_id == term.id).count() >= 1
 
 
 # =========================================================== boilerplate =====

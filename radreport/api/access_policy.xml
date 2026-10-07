@@ -555,6 +555,16 @@
     <route id="lexicon.reject" method="POST" path="/lexicon/candidates/reject" roles="radiologist" rate-limit="lab-write" max-body-bytes="16384">
       <param name="ids" in="json" type="array" required="true" max-length="100"/>
     </route>
+    <route id="lexicon.variants" method="GET" path="/lexicon/variants" roles="radiologist,lab_admin" rate-limit="lab-read" description="Sound-alike matches waiting for an answer, or automatic approvals to spot-check.">
+      <param name="review_status" in="query" type="string" pattern="pending|auto_approved|approved|rejected"/>
+      <param name="page" in="query" type="int" pattern="[1-9]\d{0,5}"/>
+      <param name="page_size" in="query" type="int" pattern="[1-9]\d{0,2}"/>
+    </route>
+    <route id="lexicon.variants.stats" method="GET" path="/lexicon/variants/stats" roles="radiologist,lab_admin" rate-limit="lab-read" description="Automatic approvals and overrides per threshold arm."/>
+    <route id="lexicon.variants.decide" method="POST" path="/lexicon/variants/{variant_id}/decide" roles="radiologist" rate-limit="lab-write" max-body-bytes="1024" description="Answer whether a heard phrase means the term.">
+      <param name="variant_id" in="path" type="uuid" required="true"/>
+      <param name="answer" in="json" type="string" required="true" pattern="same|different|unsure"/>
+    </route>
     <route id="ui.lexicon" method="GET" path="/ui/lexicon" roles="radiologist,lab_admin" rate-limit="lab-read" description="The new-terms review page."/>
   </routes>
 

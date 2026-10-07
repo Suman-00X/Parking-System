@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from radreport.db.models.ingestion import Recording
-from radreport.db.models.knowledge import LexiconSet, LexiconSurfaceVariant, LexiconTerm
+from radreport.db.models.knowledge import USED_VARIANTS, LexiconSet, LexiconSurfaceVariant, LexiconTerm
 from radreport.knowledge.bloom import BloomFilter
 from radreport.knowledge.lexicon_versions import current_set
 
@@ -65,7 +65,7 @@ def _recording_hashes(session: Session, tenant_id: uuid.UUID) -> list[str]:
 def _known_terms(session: Session, tenant_id: uuid.UUID) -> list[str]:
     forms = session.execute(select(LexiconTerm.canonical_form).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where((LexiconSet.tenant_id == tenant_id) | LexiconSet.tenant_id.is_(None), current_set())).scalars().all()
     shorts = session.execute(select(LexiconTerm.short_form).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where(LexiconSet.tenant_id == tenant_id, LexiconTerm.short_form.isnot(None), current_set())).scalars().all()
-    variants = session.execute(select(LexiconSurfaceVariant.surface_text).where(LexiconSurfaceVariant.tenant_id == tenant_id)).scalars().all()
+    variants = session.execute(select(LexiconSurfaceVariant.surface_text).where(LexiconSurfaceVariant.tenant_id == tenant_id, LexiconSurfaceVariant.review_status.in_(USED_VARIANTS))).scalars().all()
     from radreport.knowledge.synonyms import normalise
 
     # The same normalised form the lexicon lookup compares, so the filter never calls "ground-glass" new when "ground glass" is known.

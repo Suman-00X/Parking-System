@@ -194,7 +194,7 @@ def record_surface_variants(session: Session, *, tenant_id: uuid.UUID, term_id: 
     return record_surface_variants_bulk(session, tenant_id=tenant_id, per_term={term_id: variants}, source=source)
 
 
-def record_surface_variants_bulk(session: Session, *, tenant_id: uuid.UUID, per_term: dict[uuid.UUID, dict[str, int]], source: str = VariantSource.MINED) -> int:
+def record_surface_variants_bulk(session: Session, *, tenant_id: uuid.UUID, per_term: dict[uuid.UUID, dict[str, int]], source: str = VariantSource.MINED, meta: dict[tuple[uuid.UUID, str], dict[str, object]] | None = None) -> int:
     """Record surface variants for many terms: one read of what exists, one batched insert of what is new."""
     if not per_term:
         return 0
@@ -211,7 +211,7 @@ def record_surface_variants_bulk(session: Session, *, tenant_id: uuid.UUID, per_
                 seen.observed_count += count
                 continue
             primary, _ = double_metaphone(surface)
-            new_rows.append({"tenant_id": tenant_id, "lexicon_term_id": term_id, "surface_text": surface, "phonetic_key": primary, "observed_count": count, "source": source})
+            new_rows.append({"tenant_id": tenant_id, "lexicon_term_id": term_id, "surface_text": surface, "phonetic_key": primary, "observed_count": count, "source": source, **(meta or {}).get((term_id, raw_surface), {})})
             added.add((term_id, surface))
     session.flush()
     return bulk_insert(session, LexiconSurfaceVariant, new_rows)

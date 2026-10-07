@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from radreport.cache import request
 from radreport.cache.filters import maybe_known_term
 from radreport.cache.keys import key
-from radreport.db.models.knowledge import LexiconSet, LexiconSurfaceVariant, LexiconTerm
+from radreport.db.models.knowledge import USED_VARIANTS, LexiconSet, LexiconSurfaceVariant, LexiconTerm
 from radreport.knowledge.lexicon_versions import current_set
 from radreport.knowledge.synonyms import concept_of, normalise
 
@@ -52,7 +52,7 @@ def lab_terms(session: Session, tenant_id: uuid.UUID) -> LabTerms:
             if concept:
                 by_concept.setdefault(concept, (term_id, form))
         names = {term_id: form for term_id, form, _ in rows}
-        for term_id, surface in session.execute(select(LexiconSurfaceVariant.lexicon_term_id, LexiconSurfaceVariant.surface_text).where(LexiconSurfaceVariant.tenant_id == tenant_id)).all():
+        for term_id, surface in session.execute(select(LexiconSurfaceVariant.lexicon_term_id, LexiconSurfaceVariant.surface_text).where(LexiconSurfaceVariant.tenant_id == tenant_id, LexiconSurfaceVariant.review_status.in_(USED_VARIANTS))).all():
             if term_id in names:
                 by_form.setdefault(normalise(surface), (term_id, names[term_id], "variant"))
         return LabTerms(by_form=by_form, by_concept=by_concept)

@@ -20,6 +20,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 from radreport.core.types import AbsencePolicy, ExpansionPolicy, FieldDataType, LexiconScope, Sex, TermType, VariantSource
 from radreport.db.base import Base, TenantOptional, TenantScoped, TimestampMixin, array_enum_check, enum_check, tenant_fk, tenant_table_args, uuid_pk
 
+#: Variant review statuses the pipeline uses; pending and rejected variants are ignored.
+USED_VARIANTS = ("auto_approved", "approved")
+
 
 class LexiconSet(Base, TenantOptional, TimestampMixin):
     """A versioned bundle of terms used as ASR bias and correction targets."""
@@ -74,7 +77,7 @@ class LexiconSurfaceVariant(Base, TenantOptional, TimestampMixin):
     """How each term actually comes back from ASR."""
 
     __tablename__ = "lexicon_surface_variant"
-    __table_args__ = (ForeignKeyConstraint(["lexicon_term_id"], ["lexicon_term.id"], ondelete="CASCADE"), enum_check("source", VariantSource.values()), UniqueConstraint("lexicon_term_id", "surface_text"), Index("ix_surface_variant_phonetic", "phonetic_key"))
+    __table_args__ = (ForeignKeyConstraint(["lexicon_term_id"], ["lexicon_term.id"], ondelete="CASCADE"), enum_check("source", VariantSource.values()), enum_check("review_status", ("auto_approved", "approved", "pending", "rejected")), UniqueConstraint("lexicon_term_id", "surface_text"), Index("ix_surface_variant_phonetic", "phonetic_key"), Index("ix_surface_variant_review", "tenant_id", "review_status"))
 
     id: Mapped[uuid.UUID] = uuid_pk()
     lexicon_term_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
@@ -84,6 +87,18 @@ class LexiconSurfaceVariant(Base, TenantOptional, TimestampMixin):
     source: Mapped[str] = mapped_column(String(16), nullable=False)
     min_confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
     """Threshold below which a match escalates rather than resolving silently."""
+
+    confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    """How sure the miner was that this is the term, 0-1; see knowledge/variant_review.py."""
+
+    review_status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="approved")
+    """auto_approved and approved variants are used; pending waits for a radiologist; rejected is kept so it is not proposed again."""
+
+    threshold_arm: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    """Which threshold arm (A or B) the lab was in when the variant was decided, for the threshold experiment."""
+
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    decided_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AutonomyClass(Base, TenantScoped, TimestampMixin):

@@ -13,7 +13,7 @@ import re
 import uuid
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Cookie, Form, HTTPException, Request, status
@@ -346,6 +346,7 @@ def lexicon_screen(session: DbSession, principal: CurrentPrincipal) -> HTMLRespo
     """Terms radiologists keep using that the lab's lexicon lacks; a radiologist approves them into a new version."""
     from radreport.api.routes.ga import _require_lab_role
     from radreport.core.types import UserRole
+    from radreport.knowledge import variant_review
     from radreport.onboarding import term_watch
 
     _require_lab_role(session, principal, UserRole.RADIOLOGIST, UserRole.LAB_ADMIN)
@@ -376,8 +377,33 @@ def lexicon_screen(session: DbSession, principal: CurrentPrincipal) -> HTMLRespo
         subtitle="Collected from report edits every night. Approving makes a new version of the lab's lexicon; earlier versions are kept.",
         icon_name="lexicon",
     )
+    unsure = list(session.execute(variant_review.queue(principal.tenant_id, "pending").limit(30)).all())
+    let_through = list(session.execute(variant_review.queue(principal.tenant_id, "auto_approved").limit(12)).all())
+
+    def _pair(variant: Any, canonical: str, term_type: str, *, spot_check: bool) -> str:
+        confidence = float(variant.confidence or 0)
+        if spot_check:
+            answers = f'<button type="button" class="ghost" data-variant="{variant.id}" data-answer="different">Not the same</button>' if can_decide else ""
+        else:
+            answers = (f'<button type="button" class="primary" data-variant="{variant.id}" data-answer="same">Yes, same</button><button type="button" data-variant="{variant.id}" data-answer="different">No, different</button><button type="button" class="ghost" data-variant="{variant.id}" data-answer="unsure">Unsure</button>') if can_decide else ""
+        return f"""<div class="pair" id="v-{variant.id}">
+          <div class="pair-terms"><span class="pair-heard">{_esc(variant.surface_text)}</span><span class="pair-arrow" aria-hidden="true">↔</span><span class="pair-term">{_esc(canonical)}</span></div>
+          <div class="pair-meta"><span class="meter" style="--v:{confidence * 100:.0f}%" title="Match confidence"><i></i></span><span class="cell-sub">{confidence:.0%} sure · heard {variant.observed_count}× · {_esc(term_type.replace("_", " "))}</span></div>
+          <div class="pair-actions">{answers}</div></div>"""
+
+    review_card = card("".join(_pair(*row, spot_check=False) for row in unsure) or empty("When the system is not sure a heard phrase means a term, it asks here instead of guessing.", title="Nothing to confirm", icon_name="check"), title="Is this the same term?", subtitle="Sound-alike matches between what was dictated and your lexicon. Only answered or confident matches are used to correct transcripts.", icon_name="mic")
+    spot_card = card("".join(_pair(*row, spot_check=True) for row in let_through) or empty("Matches the system approves on its own appear here for a spot check.", title="No automatic approvals yet", icon_name="spark"), title="Approved automatically", subtitle="Confident matches used without asking. Mark any that are wrong; overrides tune the thresholds.", icon_name="shield")
+    variants_block = f'<div class="grid cols-2" style="margin-top:18px">{review_card}{spot_card}</div>'
     script = """<script>
 const statusLine = document.getElementById("status");
+document.querySelectorAll("[data-variant]").forEach((button) => button.addEventListener("click", async () => {
+  const res = await fetch(`/lexicon/variants/${button.dataset.variant}/decide`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ answer: button.dataset.answer }) });
+  if (res.status === 401) { location.href = "/ui/refresh?next=" + encodeURIComponent(location.pathname); return; }
+  const row = document.getElementById(`v-${button.dataset.variant}`);
+  if (!res.ok) { row.querySelector(".pair-actions").textContent = "Could not save — try again."; return; }
+  if (button.dataset.answer === "unsure") { row.classList.add("is-unsure"); return; }
+  row.classList.add("is-done"); setTimeout(() => row.remove(), 350);
+}));
 async function send(url, body) {
   const res = await fetch(url, { method: "POST", headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
   if (res.status === 401) { location.href = "/ui/refresh?next=" + encodeURIComponent(location.pathname); return null; }
@@ -396,4 +422,4 @@ document.getElementById("scan").addEventListener("click", async () => {
   if (done) { statusLine.textContent = `${done.unknown_terms} new term(s) in ${done.edit_events} edit(s).`; setTimeout(() => location.reload(), 900); }
 });
 </script>"""
-    return lab_page("New terms", kpis + listing + script, user_name=name, user_role="Radiologist" if can_decide else "Lab admin", roles=roles, active="lexicon", eyebrow="Lexicon", subtitle="Grow the lab's vocabulary from how its radiologists actually write.")
+    return lab_page("New terms", kpis + listing + variants_block + script, user_name=name, user_role="Radiologist" if can_decide else "Lab admin", roles=roles, active="lexicon", eyebrow="Lexicon", subtitle="Grow the lab's vocabulary from how its radiologists actually write.")

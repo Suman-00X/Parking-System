@@ -25,6 +25,7 @@ from radreport.db.models.ingestion import Recording
 from radreport.db.models.knowledge import LexiconSet, LexiconTerm
 from radreport.db.models.onboarding import CorpusReport, ImportBatch
 from radreport.db.models.orchestration import AuditLog
+from radreport.knowledge import variant_review
 from radreport.knowledge.lexicon_versions import current_set
 from radreport.knowledge.phonetics import double_metaphone, phonetic_distance
 from radreport.onboarding.batches import open_batch, record_counts, transition
@@ -42,6 +43,8 @@ LEGACY_GOLD_TARGET = 100
 
 #: A mined variant must be this close phonetically to count as the same term.
 VARIANT_MAX_DISTANCE = 0.12
+#: How far apart a heard phrase and a term may sound and still be scored at all; the thresholds then decide what is used.
+CANDIDATE_MAX_DISTANCE = 0.45
 
 _WORD = re.compile(r"[A-Za-z][A-Za-z'-]*")
 
@@ -193,6 +196,10 @@ class VariantMiningResult:
     transcripts_scanned: int = 0
     variants_written: int = 0
     terms_touched: int = 0
+    auto_approved: int = 0
+    pending_review: int = 0
+    hidden: int = 0
+    """Matches too weak to show anyone; counted so the threshold's effect is visible."""
     unmatched_frequent: list[tuple[str, int]] = field(default_factory=list)
     """High-frequency surfaces that matched no term."""
 
@@ -230,6 +237,8 @@ def mine_surface_variants(session: Session, *, tenant_id: uuid.UUID, min_occurre
             by_key[term.phonetic_key_secondary].append(term)
 
     per_term: dict[uuid.UUID, dict[str, int]] = defaultdict(dict)
+    meta: dict[tuple[uuid.UUID, str], dict[str, object]] = {}
+    limits_by_type: dict[str, variant_review.Thresholds] = {}
     for surface, count in surfaces.items():
         if count < min_occurrences:
             continue
@@ -243,11 +252,26 @@ def mine_surface_variants(session: Session, *, tenant_id: uuid.UUID, min_occurre
         for term in matches:
             if surface.lower() == term.canonical_form.lower():
                 continue
-            if phonetic_distance(surface, term.canonical_form) > VARIANT_MAX_DISTANCE:
+            if phonetic_distance(surface, term.canonical_form) > CANDIDATE_MAX_DISTANCE:
+                continue
+            confidence = variant_review.match_confidence(surface, term.canonical_form)
+            limits = limits_by_type.setdefault(term.term_type, variant_review.thresholds(session, tenant_id, term.term_type))
+            status = variant_review.decide(confidence, limits)
+            if status is None:
+                result.hidden += 1
                 continue
             per_term[term.id][surface] = count
+            meta[(term.id, surface)] = {"confidence": confidence, "review_status": status, "threshold_arm": limits.arm}
+            if status == "auto_approved":
+                result.auto_approved += 1
+            else:
+                result.pending_review += 1
 
-    result.variants_written += record_surface_variants_bulk(session, tenant_id=tenant_id, per_term=dict(per_term), source=VariantSource.MINED)
+    result.variants_written += record_surface_variants_bulk(session, tenant_id=tenant_id, per_term=dict(per_term), source=VariantSource.MINED, meta=meta)
+    auto = [(term_id, surface, m["confidence"]) for (term_id, surface), m in meta.items() if m["review_status"] == "auto_approved"]
+    if auto:
+        # Every automatic approval is on the record, so a radiologist can audit what was let through unasked.
+        session.add_all(AuditLog(tenant_id=tenant_id, actor_id=None, actor_type=ActorType.SYSTEM, action="lexicon_variant_auto_approved", entity_type="lexicon_term", entity_id=term_id, after={"surface": surface, "confidence": confidence}) for term_id, surface, confidence in auto)
     result.terms_touched = len(per_term)
     result.unmatched_frequent.sort(key=lambda pair: -pair[1])
     result.unmatched_frequent = result.unmatched_frequent[:50]

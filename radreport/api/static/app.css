@@ -409,3 +409,21 @@ dl.facts dd { margin: 0; font-weight: 560; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 mark { background: var(--warn-soft); color: var(--fg); padding: 0 3px; border-radius: 4px; font-weight: 600; }
+
+/* Sound-alike review ------------------------------------------------- */
+.pair { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); transition: opacity .3s ease, transform .3s ease; }
+.pair:last-child { border-bottom: 0; }
+.pair-terms { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-weight: 600; min-width: 0; }
+.pair-heard { padding: 3px 10px; border-radius: 999px; background: var(--surface-3); font-style: italic; overflow-wrap: anywhere; }
+.pair-term { padding: 3px 10px; border-radius: 999px; background: var(--ok-soft); color: var(--ok); overflow-wrap: anywhere; }
+.pair-arrow { color: var(--muted); }
+.pair-meta { grid-column: 1; display: flex; align-items: center; gap: 10px; }
+.pair-actions { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.pair.is-done { opacity: 0; transform: translateX(12px); }
+.pair.is-unsure .pair-heard { outline: 2px dashed var(--warn); }
+.meter { position: relative; display: inline-block; width: 72px; height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.meter i { position: absolute; inset: 0 auto 0 0; width: var(--v); border-radius: inherit; background: linear-gradient(90deg, var(--warn), var(--ok)); }
+@media (max-width: 640px) {
+  .pair { grid-template-columns: 1fr; }
+  .pair-actions { grid-column: 1; grid-row: auto; justify-content: flex-start; }
+}

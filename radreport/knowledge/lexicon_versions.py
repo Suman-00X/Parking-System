@@ -18,7 +18,7 @@ from radreport.db.bulk import bulk_insert
 from radreport.db.models.knowledge import LexiconSet, LexiconSurfaceVariant, LexiconTerm
 
 _TERM_COPY = ("canonical_form", "short_form", "term_type", "phonetic_key_primary", "phonetic_key_secondary", "frequency_rank", "radlex_id", "snomed_ct_id", "is_ambiguous", "expansion_policy")
-_VARIANT_COPY = ("surface_text", "phonetic_key", "observed_count", "source")
+_VARIANT_COPY = ("surface_text", "phonetic_key", "observed_count", "source", "confidence", "review_status", "threshold_arm", "decided_by", "decided_at")
 
 
 def current_set() -> ColumnElement[bool]:
