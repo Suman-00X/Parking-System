@@ -181,8 +181,13 @@ def api_docs() -> HTMLResponse:
         return _missing("API docs", "api")
     html, toc = rendered
     live = get_settings().environment in ("local", "test", "development")
-    banner = f"""<div class="banner info doc-banner">{icon("info")}<div>{'The live, interactive OpenAPI reference is at <a href="/docs">/docs</a> (and <a href="/openapi.json">/openapi.json</a>) on this deployment.' if live else "This page is the full reference. The interactive OpenAPI pages are switched off outside development deployments."} Every route and parameter is also declared in the access policy, which the server enforces on each request.</div></div>"""
-    body = f"""<div class="doc-layout">{_toc(toc, deepest=2)}<article class="md doc-api">{banner}{html}</article></div>"""
+    banner = f"""<div class="banner info doc-banner">{icon("info")}<div>Every route and parameter is also declared in the access policy, which the server enforces on each request. {'The Swagger tab runs requests against this deployment; routes that need a sign-in answer 401 without one.' if live else "The Swagger tab is available on local and development deployments."}</div></div>"""
+    reference = f"""<div class="doc-layout">{_toc(toc, deepest=2)}<article class="md doc-api">{banner}{html}</article></div>"""
+    if live:
+        swagger = '<p class="swagger-open"><a href="/docs" target="_blank" rel="noopener">Open Swagger in its own tab</a> · <a href="/openapi.json">openapi.json</a></p><iframe class="swagger-frame" src="/docs" title="Swagger UI" loading="lazy"></iframe>'
+    else:
+        swagger = f"""<div class="banner info doc-banner">{icon("info")}<div>Swagger UI is switched off on this deployment. Run the app locally (<code>make run</code>) and open this tab, or <a href="http://localhost:8000/docs">localhost:8000/docs</a>.</div></div>"""
+    body = _tabs([("reference", "Reference", reference), ("swagger", "Swagger", swagger)])
     return public_page("API docs", body, active="api", description="radreport's HTTP API: every route, who may call it, and what it does.")
 
 

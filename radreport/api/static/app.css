@@ -456,6 +456,8 @@ body.public { background: var(--bg); min-height: 100vh; display: flex; flex-dire
 .doc-toc .toc-1 > a { font-weight: 700; color: var(--fg); margin-top: 6px; }
 .doc-toc .toc-2 > a { padding-left: 16px; }
 .doc-banner { margin-bottom: 22px; }
+.swagger-open { margin: 0 0 10px; font-size: 14px; }
+.swagger-frame { display: block; width: 100%; height: calc(100vh - 180px); min-height: 560px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
 
 .md { min-width: 0; line-height: 1.7; color: var(--fg); font-size: 15.5px; }
 .md h1, .md h2, .md h3, .md h4 { position: relative; line-height: 1.25; scroll-margin-top: 84px; }
