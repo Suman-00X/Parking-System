@@ -26,7 +26,6 @@ from typing import Any, Final
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import FastAPI
-from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
@@ -38,6 +37,8 @@ from radreport.auth.lab import ACCESS_COOKIE, REFRESH_COOKIE, TokenInvalid, veri
 from radreport.core.config import get_settings
 from radreport.core.logging import get_logger
 from radreport.core.tenancy import Principal
+from radreport.db import bridge
+from radreport.observability.metrics import RATE_LIMITED
 
 log = get_logger(__name__)
 
@@ -414,7 +415,8 @@ class AccessMiddleware(BaseHTTPMiddleware):
         if rule.realm == "public":
             identity = Identity(realm="public", key=f"ip:{ip}")
         else:
-            resolved = await run_in_threadpool(self._identify, rule, request)
+            # Bridged: its lookups await the async driver on this loop rather than holding a thread.
+            resolved = await bridge.run(self._identify, rule, request)
             if isinstance(resolved, Response):
                 return resolved
             identity = resolved
@@ -448,12 +450,13 @@ class AccessMiddleware(BaseHTTPMiddleware):
     async def _limit(self, rule: RouteRule, who: str) -> Response | None:
         assert rule.rate_limit is not None
         if rule.rate_limit.store == "shared":
-            wait = await run_in_threadpool(self.shared_limiter.hit, rule.rate_limit, who)
+            wait = await bridge.run(self.shared_limiter.hit, rule.rate_limit, who)
         else:
             wait = self.limiter.hit(rule.rate_limit, who)
         if wait is None:
             return None
         log.warning("rate_limited", route=rule.id, limit=rule.rate_limit.id, who=who)
+        RATE_LIMITED.labels(rule.rate_limit.id).inc()
         return _deny(429, "too many requests; slow down", headers={"Retry-After": str(max(1, math.ceil(wait)))})
 
     def _identify(self, rule: RouteRule, request: Request) -> Identity | Response:

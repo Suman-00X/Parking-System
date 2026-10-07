@@ -175,6 +175,7 @@ CROSS_TENANT_FUNCTIONS: Final[frozenset[str]] = frozenset(
         "tenant_daily_cost",  # spend per lab per day, for the cost dashboard
         "tenant_stage_cost",  # spend per lab per stage
         "refresh_canonical_eval_set",
+        "work_backlog",  # job and outbox counts per kind for the metrics scrape; never a row
     }
 )
 

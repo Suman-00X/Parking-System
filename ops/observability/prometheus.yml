@@ -1,0 +1,17 @@
+# Scrapes the app and a worker running on the host (make run, make worker).
+# On a deployment with RADREPORT_OBSERVABILITY__METRICS_TOKEN set, add
+#   authorization: { type: Bearer, credentials: <token> }
+# to the radreport-web job.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: radreport-web
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8000"]
+
+  - job_name: radreport-worker
+    static_configs:
+      - targets: ["host.docker.internal:9101"]

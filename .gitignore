@@ -22,5 +22,7 @@ local-credentials.md
 .pgbouncer/
 exports/
 .storage/
+# Written by `make run`: per-process Prometheus metric files.
+.metrics/
 # Values to paste into Render and GitHub secrets; holds demo passwords.
 .env.render

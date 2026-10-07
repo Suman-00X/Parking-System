@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from radreport.core.logging import get_logger
 from radreport.db.instrumentation import query_scope
 from radreport.db.session import system_session, tenant_session
+from radreport.observability.metrics import observe_job
 from radreport.workers import handlers, queue, schedule
 from radreport.workers.queue import ClaimedJob
 
@@ -120,6 +121,7 @@ class Worker:
 
     async def _process(self, job: ClaimedJob) -> None:
         log.info("job_started", job_id=str(job.id), kind=job.kind, attempt=job.attempts, tenant_id=str(job.tenant_id) if job.tenant_id else None)
+        started = time.perf_counter()
         try:
             run = handlers.get(job.kind)
             with _Heartbeat(job, worker_id=self.worker_id, visibility_seconds=self.visibility_seconds, url=self.url), query_scope(f"job:{job.kind}"), job_session(job, self.url) as session:
@@ -129,7 +131,9 @@ class Worker:
                 if not queue.complete(session, job, worker_id=self.worker_id, result=result):
                     raise RuntimeError("lease was lost to another worker before the job finished")
             log.info("job_succeeded", job_id=str(job.id), kind=job.kind)
+            observe_job(job.kind, "succeeded", time.perf_counter() - started)
         except Exception as exc:  # noqa: BLE001 - any failure is recorded on the job
+            observe_job(job.kind, "failed", time.perf_counter() - started)
             detail = f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=8)}"
             try:
                 with job_session(job, self.url) as session:

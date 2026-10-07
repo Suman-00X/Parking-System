@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from radreport.cache.keys import CacheKey
+from radreport.observability.metrics import CACHE_REQUESTS
 
 _MISSING = object()
 _scope: contextvars.ContextVar[dict[CacheKey, Any] | None] = contextvars.ContextVar("radreport_request_cache", default=None)
@@ -24,6 +25,9 @@ _scope: contextvars.ContextVar[dict[CacheKey, Any] | None] = contextvars.Context
 class HitStats:
     """Hits and misses, for the hit-rate check."""
 
+    name: str = ""
+    """Which cache this counts, as its label in the exported metrics; empty means not exported."""
+
     hits: int = 0
     misses: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -31,10 +35,14 @@ class HitStats:
     def hit(self) -> None:
         with self._lock:
             self.hits += 1
+        if self.name:
+            CACHE_REQUESTS.labels(self.name, "hit").inc()
 
     def miss(self) -> None:
         with self._lock:
             self.misses += 1
+        if self.name:
+            CACHE_REQUESTS.labels(self.name, "miss").inc()
 
     @property
     def hit_rate(self) -> float:
@@ -49,7 +57,7 @@ class HitStats:
             self.hits = self.misses = 0
 
 
-STATS = HitStats()
+STATS = HitStats(name="request")
 
 
 @contextmanager

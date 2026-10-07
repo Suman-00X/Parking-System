@@ -3,7 +3,8 @@
 Order: create_app assembles the app, refuses to start if the access policy disagrees with the
 routes or their parameters, and installs AccessMiddleware (who may call) in front of
 InputValidationMiddleware (with what), all inside RequestCacheMiddleware (one lookup per request)
-and QueryMetricsMiddleware (how many statements); on start, a database with no labs is seeded once
+and QueryMetricsMiddleware (how many statements), with HttpMetricsMiddleware (rates and latency) outermost
+and tracing and error reporting set up first; on start, a database with no labs is seeded once
 (_first_seed); current_revision and head_revision report whether the database schema is up to date.
 """
 
@@ -22,7 +23,9 @@ from sqlalchemy import text
 from radreport.api.access import AccessMiddleware, RateLimiter, load_policy, verify_coverage
 from radreport.api.input_check import InputValidationMiddleware, verify_params
 from radreport.api.read_your_writes import ReadYourWritesMiddleware
-from radreport.api.routes import admin_api, admin_ops_panel, admin_panel, auth, ga, health, ingest, lexicon, onboarding, ops, review, review_ui, showcase
+from radreport.api.routes import admin_api, admin_ops_panel, admin_panel, auth, ga, health, ingest, lexicon, metrics, onboarding, ops, review, review_ui, showcase
+from radreport.api.routing import BridgedRoute
+from radreport.api.unavailable import DatabaseUnavailableMiddleware
 from radreport.auth.lab import require_token_secret
 from radreport.cache import shared as shared_cache
 from radreport.cache.request import RequestCacheMiddleware
@@ -32,6 +35,9 @@ from radreport.core.logging import configure_logging, get_logger
 from radreport.db import sharding
 from radreport.db.instrumentation import QueryMetricsMiddleware
 from radreport.db.session import get_engine, system_session
+from radreport.observability.errors import setup_error_reporting
+from radreport.observability.metrics import HttpMetricsMiddleware
+from radreport.observability.tracing import setup_tracing
 
 
 def current_revision() -> str | None:
@@ -66,16 +72,21 @@ def _first_seed() -> None:
 
 def create_app() -> FastAPI:
     configure_logging()
+    setup_error_reporting()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):  # type: ignore[no-untyped-def]
-        # More threads than connections, so handlers that need no connection are never starved by ones waiting for one.
+        # Threads for threaded routes and offloaded blocking work; more than connections, so work that needs none is never starved.
         anyio.to_thread.current_default_thread_limiter().total_tokens = get_settings().db.threadpool_size
         if get_settings().seed_on_start:
             await anyio.to_thread.run_sync(_first_seed)
         yield
 
     app = FastAPI(lifespan=lifespan, title="radreport", version="0.1.0", description=("Radiology voice-to-structured-report: the admin panel, the 15-stage V1 pipeline, and the review surface."))
+    # Routes declared on the app itself (/ready) run bridged too.
+    app.router.route_class = BridgedRoute
+    # Before any route runs a query: tracing patches engine creation.
+    setup_tracing(app)
     app.include_router(auth.router)
     app.include_router(ingest.router)
     app.include_router(admin_api.router)
@@ -90,6 +101,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_ops_panel.router)
 
     app.include_router(health.router)
+    app.include_router(metrics.router)
 
     app.include_router(showcase.router)
     shared_cache.register_health()
@@ -151,6 +163,10 @@ def create_app() -> FastAPI:
     # Outermost, so the statements the access check itself runs are counted against the request too.
     app.add_middleware(QueryMetricsMiddleware)
     app.add_middleware(health.InstanceIdMiddleware)
+    # Around everything that queries, the access check included: a lost database is 503 Retry-After, not 500.
+    app.add_middleware(DatabaseUnavailableMiddleware)
+    # Outermost of all, so a request refused by the access check is still counted and timed.
+    app.add_middleware(HttpMetricsMiddleware, route_of=lambda method, path: rule.id if (rule := policy.match(method, path)) else "unmatched")
     return app
 
 

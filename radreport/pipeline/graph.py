@@ -17,6 +17,8 @@ from radreport.core.errors import BudgetExceeded, StageFailed
 from radreport.core.logging import get_logger
 from radreport.core.types import RunStatus
 from radreport.db.models.orchestration import PipelineRun, StageExecution
+from radreport.observability.metrics import observe_stage
+from radreport.observability.tracing import span
 from radreport.pipeline.context import RunContext
 from radreport.pipeline.contracts import Stage, StageResult
 from radreport.pipeline.state import PipelineState
@@ -107,10 +109,12 @@ class PipelineGraph:
         buffer.append(execution)
 
         try:
-            result: StageResult = await stage.run(state, ctx)
+            with span(f"stage {stage.name}", stage=stage.name, task_key=spec.task_key, tenant_id=str(ctx.tenant_id)):
+                result: StageResult = await stage.run(state, ctx)
         except Exception as exc:
             execution.status = RunStatus.FAILED
             execution.duration_ms = timing.elapsed_ms()
+            observe_stage(stage.name, "failed", execution.duration_ms)
             execution.output_ref = {"error": type(exc).__name__, "detail": str(exc)[:500]}
             if spec.optional:
                 log.warning("optional_stage_failed", stage=stage.name, error=str(exc)[:200], **ctx.as_log_context())
@@ -132,6 +136,7 @@ class PipelineGraph:
         execution.cache_read_tokens = result.cache_read_tokens
         execution.cache_write_tokens = result.cache_write_tokens
         execution.cost_usd = result.cost_usd
+        observe_stage(stage.name, "succeeded", execution.duration_ms, tokens_in=result.tokens_in, tokens_out=result.tokens_out, cache_read_tokens=result.cache_read_tokens, cache_write_tokens=result.cache_write_tokens, cost_usd=result.cost_usd)
         execution.output_ref = {"warnings": result.warnings} if result.warnings else {}
 
         # Domain writes belong to the orchestrator, never to the stage.

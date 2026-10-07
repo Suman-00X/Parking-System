@@ -1,0 +1,54 @@
+# Light, steady traffic against the hosted demo: keeps a free host from sleeping and keeps the
+# Grafana dashboards showing live numbers. Labelled synthetic wherever it is reported.
+#
+# Repository secrets (Settings -> Secrets and variables -> Actions):
+#   RADREPORT_BASE_URL                       e.g. https://radreport.example.com
+#   DEMO_ADMIN_EMAIL, DEMO_ADMIN_PASSWORD    the read-only support account
+#   DEMO_LAB, DEMO_LAB_EMAIL, DEMO_LAB_PASSWORD  the read-only lab auditor account
+#
+# GitHub may delay scheduled runs under load and disables them after 60 days without a commit.
+name: synthetic-load
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      vus:
+        description: Virtual users (keep at 3 or below to stay under the per-address rate limits)
+        default: "3"
+      duration:
+        description: How long to run, e.g. 1m or 5m
+        default: "1m"
+
+concurrency:
+  group: synthetic-load
+  cancel-in-progress: false
+
+jobs:
+  k6:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: grafana/setup-k6-action@v1
+      - name: Run k6
+        env:
+          BASE_URL: ${{ secrets.RADREPORT_BASE_URL }}
+          ADMIN_EMAIL: ${{ secrets.DEMO_ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.DEMO_ADMIN_PASSWORD }}
+          LAB: ${{ secrets.DEMO_LAB }}
+          LAB_EMAIL: ${{ secrets.DEMO_LAB_EMAIL }}
+          LAB_PASSWORD: ${{ secrets.DEMO_LAB_PASSWORD }}
+          VUS: ${{ inputs.vus || '3' }}
+          DURATION: ${{ inputs.duration || '1m' }}
+        run: k6 run ops/k6/synthetic.js
+      - name: Publish the summary
+        if: always()
+        run: test -f k6-summary.md && cat k6-summary.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k6-summary
+          path: k6-summary.json
+          if-no-files-found: ignore

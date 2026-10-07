@@ -21,10 +21,11 @@ from radreport.cache.keys import CacheKey
 from radreport.cache.request import HitStats
 from radreport.core.config import get_settings
 from radreport.core.logging import get_logger
+from radreport.db.bridge import offload
 
 log = get_logger(__name__)
 
-STATS = HitStats()
+STATS = HitStats(name="shared")
 _MISSING = object()
 
 
@@ -106,7 +107,8 @@ class RedisBackend:
 
     def _safely(self, op: str, fn: Callable[[], Any], default: Any = None) -> Any:
         try:
-            return fn()
+            # A network round trip; on a thread when called from bridged request code, so the event loop keeps serving.
+            return offload(fn)
         except Exception as exc:  # noqa: BLE001 - fail open
             log.warning("shared_cache_unavailable", op=op, error=type(exc).__name__)
             return default
