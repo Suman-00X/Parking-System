@@ -128,13 +128,17 @@ make run PORT=9000 HOST=0.0.0.0 WORKERS=4
 make dev PORT=8001
 ```
 
-**`/health` and `/ready` are not the same check.** `/health` is liveness — the
-process is up, and it checks nothing else on purpose, because a liveness probe
-that fails during a brief database blip gets the container killed, which does
-not reconnect the database and does lose every in-flight request. `/ready` is
-readiness: it opens a database connection and compares the schema revision
-against the code's head, returning 503 if either is wrong. Point your deploy
-check and your load balancer at `/ready`.
+**`/health` and `/ready` are not the same check.** `/health` is liveness: it
+always answers 200 while the process serves, because a liveness probe that fails
+during a brief database blip gets the container killed, which does not reconnect
+the database and does lose every in-flight request. Its body still reports each
+dependency for operators (database latency, connection pool use, memory, the
+shared cache, and the replica when one is configured), the `instance_id` (`INSTANCE_ID`, or generated
+at start-up; every response also carries `x-instance-id`) and `status:
+"degraded"` when a check fails. It never writes. `/ready` is readiness: it opens
+a database connection, compares the schema revision against the code's head, and
+checks every shard, returning 503 if anything is wrong. Point your deploy check
+and your load balancer at `/ready`.
 
 ```bash
 curl -s localhost:8000/ready | jq
@@ -260,7 +264,65 @@ Settings are read from the environment and `.env`, prefixed `RADREPORT_`, with
 | `RADREPORT_LAB_AUTH__TOKEN_SECRET` | Signs lab users' access tokens. **Required outside local/test/development** (32+ random characters); the app refuses to start without it. |
 | `RADREPORT_TRUSTED_ORIGINS` | JSON list of extra origins allowed to send admin writes, for a public hostname in front of a proxy, e.g. `["https://admin.example.com"]`. A cross-site admin write from anywhere else is refused (CSRF). |
 | `RADREPORT_SEED_ADMIN_PASSWORD` | Read only by `make seed`, to set the first product admin's password. |
+| `RADREPORT_DB__POOL_SIZE`, `__MAX_OVERFLOW`, `__WORKERS_HINT` | Per-worker pool (30 + 10 by default) and how many workers share the server, for the start-up connection-budget warning. |
+| `RADREPORT_LLM__RESPONSE_CACHE` | `postgres` (default), `shared` (Redis) or `off`: identical model requests are answered from the cache, per lab. |
+| `INSTANCE_ID` | Names this instance in `/health` and `x-instance-id`; generated when unset. |
+| `GOOGLE_TRANSLATE_API_KEY` | Only for labs that turn on online translation. |
 | `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, … | **Unprefixed, and not settings.** Each provider row names the variable it reads, so a second account is a second variable plus a second provider in the admin panel — no code change. |
+
+### Background work and events
+
+```bash
+make worker CONCURRENCY=2    # drain the job queue: pipeline runs and the periodic jobs
+make relay                   # publish committed outbox events to RADREPORT_EVENTS__BUS
+```
+
+An upload enqueues a `run_pipeline` job and returns; workers claim jobs with
+`FOR UPDATE SKIP LOCKED`, so any number can run, and a job whose worker died is
+reclaimed after its visibility timeout (dead-lettered after its last attempt).
+The worker also runs the periodic jobs: reclaiming stuck jobs (10 min), keeping
+monthly partitions 3 months ahead (6 h), the cost-spike scan (6 h), refreshing
+the canonical eval set (daily) and the new-terms scan (daily).
+
+Domain events (`recording.ingested`, `draft.ready`, `report.signed`,
+`autonomy.revoked`, `cost.anomaly`) are written to `outbox_event` in the same
+transaction as the change; the relay sends them on, and each consumer records
+what it has seen, so a crash between commit and publish delivers each event
+exactly once per consumer. `RADREPORT_EVENTS__BUS=kafka` sends them to Kafka or
+Redpanda (`docker compose --profile kafka up`), keyed by lab.
+
+### Scaling the database
+
+| Piece | Turn it on | Notes |
+|---|---|---|
+| PgBouncer | `make pgbouncer`, then `RADREPORT_DB__PGBOUNCER=true` and the app's URL on port 6432 | Transaction mode. Needed beyond two workers: without it the pools exceed `max_connections`, and the app warns at start-up when they could. |
+| Read replica | `RADREPORT_DB__REPLICA_URL` | Dashboards, lists and exports read from it; it falls back to the primary when it lags more than `RADREPORT_DB__REPLICA_MAX_LAG_SECONDS` or is down, and a browser that just wrote reads the primary for a few seconds. |
+| Shards | `RADREPORT_DB__SHARDS='{"shard2": "postgresql+psycopg://…"}'` | Labs are placed on a consistent-hash ring; `python -m radreport.db.shards` shows placement and pins a lab. Migrate every shard. |
+| Shared cache | `RADREPORT_REDIS_URL` | Lab config, roles, model assignments and admin sessions; an in-process cache is used when unset. |
+| Slow-query log | `make pg-observe` (superuser, restarts Postgres) | Then `python -m radreport.devtools.query_report` for the top statements and missing indexes. |
+
+Measured numbers are in PERFORMANCE_BASELINE.md. Query counts, statement
+percentiles, table sizes and bloat are at `/admin/api/ops/queries` and
+`/admin/api/ops/tables`; spend per lab and stage at **Cost & usage** in the
+admin panel. Platform and per-lab thresholds (adapter gates, lexicon matching,
+template import, languages, partition retention) are edited at **System
+settings**; each has an environment-variable fallback named on that page.
+
+### Lexicon growth, template model and languages
+
+- **New terms**: the daily scan collects terms radiologists type that the lab's
+  lexicon lacks; a radiologist approves them at `/ui/lexicon`, which makes a new
+  lexicon version.
+- **Sound-alike matches**: matches above `lexicon.auto_approve_above` are used
+  at once and logged, those between it and `lexicon.review_above` wait on
+  `/ui/lexicon` for a radiologist's answer, the rest are hidden.
+- **Shorthand sheets and RadLex**: from the lab's onboarding page.
+  RadLex lookups need `BIOPORTAL_API_KEY`. See docs/SYNONYMS.md.
+- **Template model**: uploads the parser is unsure of are also read by the lab's
+  `template_parse` model when one is assigned. See docs/TEMPLATE_MODEL.md and
+  docs/FINE_TUNING.md.
+- **Hindi, French, Spanish**: per lab under System settings → Languages. See
+  docs/LANGUAGES.md.
 
 ### Housekeeping
 
@@ -488,6 +550,16 @@ Each has a test that fails loudly.
 - **No model assignments seeded.** An assignment cannot go active without a
   gold-set `eval_run`, and seeding one would bypass the gate the registry
   exists to enforce.
+- **Production measurements.** Query counts, statement times and a 500-user
+  load test were measured locally (PERFORMANCE_BASELINE.md); DB CPU at peak,
+  monthly query volume, real cost and the replica's share of reads need
+  production traffic and a real replica.
+- **No template model running.** The fallback, its grounding rule and the
+  evaluation harness are built and tested with a stand-in; no Qwen server has
+  been stood up, so the parser-plus-model accuracy is unmeasured, and the
+  fine-tune waits for live approvals and a GPU (TODO.md has the detail).
+- **Language dictionaries unreviewed.** The Hindi, French and Spanish lists are
+  general medical vocabulary, not yet checked by a pilot lab's radiologists.
 
 - **No tenant offboarding cascade.** §6.11 defines erasure per *patient*, not
   per tenant. The lifecycle transition exists; the cascade behind it does not,

@@ -27,12 +27,13 @@ Speech-to-text tools help with typing, but they create new risks. They mishear m
 | | |
 |---|---|
 | **17** | automated steps between "doctor speaks" and "report ready" |
-| **10** | of those steps can each run on a different AI model, chosen per lab |
+| **11** | AI-powered steps that can each run on a different model, chosen per lab |
 | **8** | guided steps to bring a new lab on board |
-| **57** | database tables, each one walled off per lab |
-| **500+** | automated tests, including tests that try to read one lab's data from another |
+| **68** | database tables, each lab's rows walled off |
+| **1,050** | automated tests, including tests that try to read one lab's data from another |
 | **2** | hospital data standards supported for sending reports (HL7 v2 and FHIR R4) |
-| **~20,000** | lines of code |
+| **3** | languages besides English for medical terms (Hindi, French, Spanish) |
+| **~29,000** | lines of code |
 
 ---
 
@@ -90,16 +91,19 @@ Every lab has its own terms, abbreviations and habits. RadReport learns them fro
 Labs can upload their abbreviation sheets ("LLL = left lower lobe"), and RadReport learns to recognise the shorthand in speech as well as the full terms.
 
 **Matches medical synonyms**
-Different doctors say the same thing different ways. RadReport links them through standard medical vocabularies (RadLex and SNOMED CT), so "pleural effusion" and "fluid around the lung" land in the same field.
+Different doctors say the same thing different ways. RadReport links them through a curated set of radiology synonyms, so "hepatic steatosis" and "fatty liver" count as the same term, and it can look terms up in RadLex, the radiology vocabulary standard.
 
 **Spots new words during daily use**
-When doctors keep correcting the same unfamiliar word, RadReport notices, suggests it as a new vocabulary term, and adds it once a radiologist approves.
+Every night RadReport reads what doctors typed into their reports, finds the medical terms the lab's vocabulary doesn't have yet ("ground glass opacity", used 5 times), and lists them for a radiologist. One click adds them as a new version of the vocabulary.
+
+**Only asks when it isn't sure**
+When a heard phrase sounds like a known term, RadReport scores how sure it is. Confident matches are used straight away and logged; unsure ones are put to a radiologist as a simple question ("Is 'plural effusion' the same as 'pleural effusion'?"), and weak ones are ignored. Abbreviations need a higher score, because one letter can change the finding. When a radiologist overrules an automatic match, that is counted, so the thresholds can be tuned.
 
 **Works with messy templates too**
-Neatly structured templates are read instantly. Free-form or poorly formatted ones are handed to a lightweight AI model that pulls out the fields, and a person confirms the result.
+Neatly structured templates are read instantly. When the reader is unsure (prose, bullet lists, tables), a small AI model the lab chooses, which can run on the lab's own server, reads it as well. It may only add fields the document actually names, and a radiologist checks every field before the template goes live.
 
-**Hindi and more**
-Doctors can dictate terms in Hindi, in either Latin or native script, and RadReport maps them to the right English medical term. The design supports adding more languages as labs need them.
+**Hindi, French and Spanish**
+Doctors can say or type medical terms in Hindi (in Devanagari, or in Latin letters if the lab turns that on), French or Spanish, and RadReport maps them to the right English term ("गुर्दे की पथरी" becomes renal calculus). Each lab picks its languages, and adding another one is a word list.
 
 **Template history with one-click rollback**
 Every change to a report template is kept as a new version. If a change causes problems, the lab can roll back.
@@ -112,11 +116,11 @@ Audio that is too quiet, too short, too noisy or in a lossy format is turned awa
 
 ### For the people running the platform
 
-**One admin console**
-Product admins create and manage labs, staff accounts and permissions from one web console. Every sensitive action is written to a tamper-proof audit log.
+**One admin panel**
+Product admins create and manage labs, staff accounts and permissions from one web panel that works on a phone as well as a desktop, in light or dark mode. Every sensitive action is written to a tamper-proof audit log.
 
 **Pick the AI model for every step, per lab**
-Each of the 10 AI-powered steps can be given its own model, separately for each lab: a top-tier cloud model for the high-stakes steps, a cheaper or locally hosted one for simple ones. No model can go live until it has passed a test against a set of known-correct reports.
+Each of the 11 AI-powered steps can be given its own model, separately for each lab: a top-tier cloud model for the high-stakes steps, a cheaper or locally hosted one for simple ones. No model can go live until it has passed a test against a set of known-correct reports.
 
 **Cost under control**
 Every report has a spending cap. Repeated parts of AI requests are cached so they cost a fraction of the price, and identical AI calls are answered from a cache instead of being paid for twice. A per-lab dashboard shows cost per report, per step, and over time, and flags sudden spikes.
@@ -128,7 +132,10 @@ Signed reports are graded on a five-level scale from "no change needed" to "clin
 A built-in "bake-off" compares speech-recognition engines on the lab's own recordings and ranks them, punishing any engine that adds words that weren't said, however good its overall score.
 
 **Tunable without code changes**
-The thresholds that decide when the system may adapt to a lab's voices (how many hours of audio, how many different speakers) are set from configuration, not hard-wired.
+Thresholds are changed from the admin panel's settings page, for all labs or for one: when the system may adapt to a lab's voices, how sure a match must be before it is used, when a template goes to the AI reader, which languages a lab uses, and how long old data stays attached. Every change is logged.
+
+**Learns from approvals, with consent**
+Labs that agree can share their approved templates and decisions to train a better template reader. Only blank templates and the decisions leave; report text and patient data never do.
 
 **Secure sign-in for everyone**
 Admins and lab staff each sign in with their own account. Passwords are stored with strong one-way hashing, sessions expire, and an admin can sign a user out everywhere at once.
@@ -156,27 +163,27 @@ RadReport is designed to grow from one lab to hundreds without a rewrite. These 
 | Technique | In plain words | Where RadReport uses it |
 |---|---|---|
 | **Multi-tenancy** | Many customers share one system, but each only ever sees their own data. | Every lab is isolated inside the database with row-level security. |
-| **Database sharding** <!-- not built yet --> | Splitting data across several databases so no single one gets overloaded. | Labs are spread across database shards, so a big lab never slows down a small one. |
-| **Consistent hashing** <!-- not built yet --> | A way to decide which shard a lab lives on so that adding a new shard only moves a few labs. | Picks each lab's shard; adding capacity doesn't reshuffle everyone. |
-| **Table partitioning** | Splitting one huge table into monthly pieces so searches only look at the months they need. | Speech segments, reviewer edits and the audit log are split by month. Old months can be archived cheaply. |
+| **Database sharding** | Splitting data across several databases so no single one gets overloaded. | Labs can be spread across database shards, and a big lab can be pinned to its own. |
+| **Consistent hashing** | A way to decide which shard a lab lives on so that adding a new shard only moves a few labs. | Picks each lab's shard; adding capacity doesn't reshuffle everyone. |
+| **Table partitioning** | Splitting one huge table into monthly pieces so searches only look at the months they need. | Speech segments, reviewer edits, the audit log and pipeline step records are split by month, and recordings by lab. New months are added ahead automatically; old months can be detached and archived. |
 | **Caching** | Keeping answers to common questions close at hand so they don't have to be worked out again. | AI prompt caching, AI response caching, and per-request caching of lab settings. |
-| **Distributed cache (Redis)** <!-- not built yet --> | A shared, very fast memory store that every server can read. | Shares lab settings, sessions and cached AI answers across all servers. |
-| **Bloom filter** <!-- not built yet --> | A tiny, very fast "have I seen this before?" check that is never wrong when it says "no". | Instantly rules out duplicate recordings and unknown vocabulary words before touching the database. |
-| **Message queues** <!-- not built yet --> | A waiting line for work, so a burst of uploads is handled steadily instead of all at once. | Each new recording becomes a job that workers pick up when they're free. |
-| **Event streaming (Kafka)** <!-- not built yet --> | A permanent, replayable log of everything that happened, which many services can read independently. | "Recording uploaded", "draft ready", "report signed" events feed alerts, billing, analytics and hospital export separately. |
-| **Transactional outbox** <!-- not built yet --> | Making sure a database change and the message announcing it either both happen or neither does. | No signed report can be missed by the hospital export, even if a server crashes mid-way. |
+| **Distributed cache (Redis)** | A shared, very fast memory store that every server can read. | Shares lab settings, roles, model choices and admin sessions across all servers, and can hold cached AI answers. |
+| **Bloom filter** | A tiny, very fast "have I seen this before?" check that is never wrong when it says "no". | Instantly rules out duplicate recordings and unknown vocabulary words before touching the database. |
+| **Message queues** | A waiting line for work, so a burst of uploads is handled steadily instead of all at once. | Each new recording becomes a job that workers pick up when they're free. |
+| **Event streaming (Kafka)** | A permanent, replayable log of everything that happened, which many services can read independently. | "Recording uploaded", "draft ready", "report signed" events feed alerts, billing, analytics and hospital export separately. |
+| **Transactional outbox** | Making sure a database change and the message announcing it either both happen or neither does. | No signed report can be missed by the hospital export, even if a server crashes mid-way. |
 | **Idempotency** | Doing the same thing twice has the same effect as doing it once. | Re-uploading a recording or retrying a failed step never creates duplicates. |
 | **Rate limiting** | Capping how often someone can make requests. | Per-user and per-address limits on every route, set in the access policy. |
 | **Circuit breaker** | If a service keeps failing, stop calling it for a while instead of piling on. | Stops calling an AI provider that is failing, then tests it again after a cool-down. |
 | **Retries with backoff** | Try again after a failure, waiting a little longer each time. | Temporary AI provider errors are retried with growing, randomised waits. |
 | **Backpressure** | Slowing down intake when the system downstream is busy. | Caps how many AI and speech calls run at once, per provider. |
-| **Connection pooling** | Reusing a small set of database connections instead of opening a new one for every request. | A connection pool in the app plus PgBouncer in front of the database. |
-| **Read replicas** | Copies of the database that handle read-only traffic. | Dashboards and report viewing read from replicas; writes go to the main database. |
-| **Materialized views** | Saving the result of an expensive report query and refreshing it on a schedule. | Evaluation sets and cost roll-ups are pre-computed daily. |
+| **Connection pooling** | Reusing a small set of database connections instead of opening a new one for every request. | A connection pool in the app plus PgBouncer in front of the database; tested with 500 users at once. |
+| **Read replicas** | Copies of the database that handle read-only traffic. | Dashboards, lists and exports read from a replica when one is set up; writes, and anything read right after a write, go to the main database. |
+| **Materialized views** | Saving the result of an expensive report query and refreshing it on a schedule. | The evaluation set is pre-computed and refreshed daily. |
 | **Vector search** | Finding things by meaning, not exact words. | Matches similar vocabulary terms and routes reports to the right template. |
 | **Append-only audit log** | A record that can be added to but never edited. | Every sensitive action is logged; the logging account can't change or delete entries. |
-| **Health and readiness checks** | Letting the load balancer know which servers are fit to take traffic. | `/health` says the server is alive; `/ready` checks the database and schema version too. |
-| **Asynchronous processing** | Doing slow work without making anyone wait for it. | AI calls run in parallel; the database layer is non-blocking. |
+| **Health and readiness checks** | Letting the load balancer know which servers are fit to take traffic. | `/health` says the server is alive and reports each dependency and the server's id; `/ready` checks the database, every shard and the schema version. |
+| **Asynchronous processing** | Doing slow work without making anyone wait for it. | AI calls run in parallel, uploads hand the slow work to background workers, and part of the database layer is non-blocking. |
 
 ---
 
@@ -187,7 +194,7 @@ RadReport is designed to grow from one lab to hundreds without a rewrite. These 
 **Storage:** S3-compatible object storage for audio
 **AI:** Claude models (per-step choice), local open models, Whisper and Deepgram speech recognition
 **Standards:** HL7 v2, FHIR R4
-**Ops:** Docker, Alembic database migrations, automated test suite with 500+ tests
+**Ops:** Docker, Alembic database migrations, PgBouncer, Redis, Redpanda/Kafka, background workers, automated test suite with 1,050 tests
 
 ---
 
@@ -195,4 +202,5 @@ RadReport is designed to grow from one lab to hundreds without a rewrite. These 
 
 - Live connection to hospital radiology systems once each hospital's field mapping is agreed
 - DICOM image-system integration, if labs need it
-- A small in-house model trained on approved reports to cut AI costs further
+- A template reader fine-tuned on labs' approved templates (the export is ready; training waits for enough approvals)
+- A real read replica and production measurements of cost and load

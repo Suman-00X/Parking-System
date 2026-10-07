@@ -13,13 +13,13 @@ realm, roles, rate limit and body cap of every route.
 |---|---|---:|---|
 | [I](#part-i--ground-rules) | Access policy, auth, scoping, roles, errors — plus admin sign-in and platform users | 14 | `/admin`, `/admin/api` |
 | [0](#phase-0--is-the-service-up) | Is the service up? | 6 | — |
-| [1](#phase-1--create-a-lab-and-its-people) | A lab exists, with people in it | 11 | `/admin`, `/admin/api`, `/onboarding` |
-| [2](#phase-2--teach-the-lab-its-knowledge) | The lab's templates, vocabulary and rules are learned | 34 | `/onboarding`, `/admin`, `/admin/api` |
-| [3](#phase-3--runtime-one-report-end-to-end) | A dictation becomes a signed report | 12 | `/ingest`, `/review`, `/ui` |
-| [4](#phase-4--operate-it) | Measure it, export it, automate it | 16 | `/review`, `/ga`, `/admin/api` |
+| [1](#phase-1--create-a-lab-and-its-people) | A lab exists, with people in it | 12 | `/admin`, `/admin/api`, `/onboarding` |
+| [2](#phase-2--teach-the-lab-its-knowledge) | The lab's templates, vocabulary and rules are learned | 36 | `/onboarding`, `/admin`, `/admin/api` |
+| [3](#phase-3--runtime-one-report-end-to-end) | A dictation becomes a signed report, and the lexicon learns from it | 20 | `/ingest`, `/review`, `/ui`, `/lexicon` |
+| [4](#phase-4--operate-it) | Measure it, export it, automate it, watch its cost | 26 | `/review`, `/ga`, `/admin/api` |
 
-**93 routes** — every one listed in
-[`api/access_policy.xml`](radreport/api/access_policy.xml): 87 on routers,
+**114 routes** — every one listed in
+[`api/access_policy.xml`](radreport/api/access_policy.xml): 108 on routers,
 `/health` and `/ready` on the app, and FastAPI's four documentation routes.
 Most return JSON; the admin panel's pages under `/admin` (but not `/admin/api`)
 and `/ui` serve HTML and `303` redirects, and three return neither (audio,
@@ -406,11 +406,15 @@ No authentication. Two routes, and the distinction between them matters.
 
 | Method | Path | Returns | Source |
 |---|---|---|---|
-| GET | `/health` | `{"status": "ok", "environment": "..."}` — liveness only | [`app.py:48`](radreport/api/app.py#L48) |
-| GET | `/ready` | `200` with `{"status": "ready", "checks": {...}}`, or `503` | [`app.py:53`](radreport/api/app.py#L53) |
+| GET | `/health` | always `200`: `status` (`healthy` or `degraded`), `instance_id`, `uptime_seconds` and per-dependency `checks` | [`health.py:84`](radreport/api/routes/health.py#L84) |
+| GET | `/ready` | `200` with `{"status": "ready", "checks": {...}}`, or `503` | [`app.py:84`](radreport/api/app.py#L84) |
 
-`/ready` checks the database connection **and** that the Alembic revision
-matches the code's head:
+`/health` reports the database (with latency), the connection pool, memory, the
+shared cache and, when configured, the replica, without writing anything; a
+failing check makes it `degraded`, not an error, so a load balancer's liveness
+probe does not kill the process over a database blip. Every response carries
+`x-instance-id`. `/ready` checks the database connection, every shard, **and**
+that the Alembic revision matches the code's head:
 
 ```json
 {"status": "ready", "checks": {"database": "ok", "migrations": "at 0005"}}
@@ -914,6 +918,23 @@ readiness itself and refuses on any fail-severity check:
 pass first`. Checking first only tells you whether the write will succeed; it
 does not make it succeed.
 
+## 2.9 Shorthand reference sheets
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/admin/labs/{tenant_id}/onboarding/shorthand` | `product_admin` — upload form on the onboarding page | [`admin_panel.py:607`](radreport/api/routes/admin_panel.py#L607) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/shorthand` | `product_admin` | [`admin_api.py:219`](radreport/api/routes/admin_api.py#L219) |
+
+`multipart/form-data`: one or more `files` (PDF, Word, text, CSV or Markdown, up
+to 25 MiB). Each line like `LLL = Left lower lobe`, `RLL → Right lower lobe`,
+`PNA | Pneumonia`, `CBD: common bile duct`, aligned columns, or a slash group
+(`RUL/LUL/RLL/LLL` with its meanings) becomes a lexicon term with a short form,
+so speech recognition is biased toward the abbreviation. A short form that
+already means something else is flagged, not overwritten. Returns the batch id,
+`mappings`, `terms_created`, `terms_updated`, `conflicts` and per-file
+`failures`. Audit entries `shorthand_mapped` / `shorthand_conflict` name the
+file and line.
+
 ---
 
 # Phase 3 — Runtime: one report, end to end
@@ -954,19 +975,14 @@ route constructs a `Study` or a `Patient`; outside tests, neither type is
 instantiated anywhere in `radreport/`. A real deployment needs an
 ADT/ORM feed that does not exist yet.
 
-## 3.2 The missing link
+## 3.2 From upload to draft
 
-**Capture does not start the pipeline.** `/ingest/recordings` validates the
-audio, stores the object, writes the row, records the audit entry, and returns.
-No run is enqueued.
-
-Nothing under `api/` imports `pipeline/`. The only callers of
-`build_v1_graph()` and `new_run()` are in `tests/db/test_pipeline_v1.py`, and
-`workers/` is empty. The largest module in the repository — the product
-itself — is unreachable over HTTP.
-
-Everything below assumes a `report_draft` already exists. To see how one is
-made, read that test file, not a request trace.
+`/ingest/recordings` validates the audio, stores the object, writes the row and
+the audit entry, and queues a `run_pipeline` job in the same transaction; the
+response carries the job's id. A worker (`make worker`) claims it and runs the
+pipeline, which writes the `report_draft` and emits `draft.ready`. A re-upload of
+the same recording does not queue a second run (the job is deduplicated by
+recording). `GET /ingest/recordings` lists the lab's recordings, paged.
 
 ## 3.3 Take work from the queue
 
@@ -1078,6 +1094,38 @@ alerts are one of the four things that block signing.
 Server-rendered against the same functions as `/review`, no bundler and no
 build step. `static` serves exactly `review.js` and `review.css` (the admin
 panel uses the stylesheet too); anything else is `404`.
+
+## 3.9 Grow the lexicon from live use
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| GET | `/lexicon/candidates` | `radiologist`, `lab_admin` | [`lexicon.py:32`](radreport/api/routes/lexicon.py#L32) |
+| POST | `/lexicon/scan` | `radiologist`, `lab_admin` | [`lexicon.py:42`](radreport/api/routes/lexicon.py#L42) |
+| POST | `/lexicon/candidates/approve` | **`radiologist`** | [`lexicon.py:54`](radreport/api/routes/lexicon.py#L54) |
+| POST | `/lexicon/candidates/reject` | **`radiologist`** | [`lexicon.py:66`](radreport/api/routes/lexicon.py#L66) |
+| GET | `/lexicon/variants` | `radiologist`, `lab_admin` | [`lexicon.py:81`](radreport/api/routes/lexicon.py#L81) |
+| POST | `/lexicon/variants/{variant_id}/decide` | **`radiologist`** | [`lexicon.py:95`](radreport/api/routes/lexicon.py#L95) |
+| GET | `/lexicon/variants/stats` | `radiologist`, `lab_admin` | [`lexicon.py:107`](radreport/api/routes/lexicon.py#L107) |
+| GET | `/ui/lexicon` | `radiologist`, `lab_admin` — the "New terms" page | [`review_ui.py:344`](radreport/api/routes/review_ui.py#L344) |
+
+**New terms.** A daily job (and `POST /lexicon/scan`, on demand) reads the
+words report edits added, keeps the phrases the lab's lexicon and its synonyms
+do not cover, and counts them. `GET /lexicon/candidates` lists them most used
+first (`min_frequency`, paged), each with up to three sentences it appeared in.
+`approve` with `{"ids": [...]}` makes the lab's next lexicon version with
+those terms in it and returns `{"lexicon_set_id", "version", "approved"}`;
+`reject` sets them aside. Both answer `409` when none of the ids is waiting.
+
+**Sound-alike matches.** Mined matches between what was heard and a term are
+scored 0–1. Above `lexicon.auto_approve_above` (0.85; 0.92 for abbreviations
+and code words) they are used at once and logged; from `lexicon.review_above`
+(0.60) up they wait for a radiologist; below, they are hidden. `GET
+/lexicon/variants` lists those waiting (`review_status=pending`, the default) or
+the automatic approvals to spot-check (`review_status=auto_approved`). `decide`
+takes `{"answer": "same" | "different" | "unsure"}`; reversing an automatic
+approval is recorded as an override. `stats` returns the lab's threshold arm and,
+per arm, automatic approvals, overrides, override rate and the share that
+waited for review.
 
 ---
 
@@ -1199,6 +1247,40 @@ This is where [1.5](#15-voice-and-the-two-consents) and
 `includes_disfluencies` decide which recordings are even eligible to be named
 here.
 
+## 4.7 Costs, query health and settings
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| GET | `/admin/costs` | `product_admin`, `support` — Cost & usage page | [`admin_ops_panel.py:71`](radreport/api/routes/admin_ops_panel.py#L71) |
+| GET | `/admin/api/costs` | `product_admin`, `support` | [`ops.py:47`](radreport/api/routes/ops.py#L47) |
+| GET | `/admin/api/ops/queries` | `product_admin`, `support` | [`ops.py:28`](radreport/api/routes/ops.py#L28) |
+| GET | `/admin/api/ops/tables` | `product_admin`, `support` | [`ops.py:34`](radreport/api/routes/ops.py#L34) |
+| GET | `/admin/config` | `product_admin`, `support` — System settings page | [`admin_ops_panel.py:135`](radreport/api/routes/admin_ops_panel.py#L135) |
+| POST | `/admin/config/{key}` | `product_admin` | [`admin_ops_panel.py:186`](radreport/api/routes/admin_ops_panel.py#L186) |
+| POST | `/admin/config/{key}/reset` | `product_admin` | [`admin_ops_panel.py:196`](radreport/api/routes/admin_ops_panel.py#L196) |
+| GET | `/admin/api/ops/config` | `product_admin`, `support` | [`ops.py:80`](radreport/api/routes/ops.py#L80) |
+| POST | `/admin/api/ops/config/{key}` | `product_admin` | [`ops.py:92`](radreport/api/routes/ops.py#L92) |
+| POST | `/admin/api/ops/config/{key}/reset` | `product_admin` | [`ops.py:106`](radreport/api/routes/ops.py#L106) |
+
+**Costs.** `GET /admin/api/costs?days=7|30|90` returns, across labs, a daily
+spend series and each lab's spend, runs, average per run, change against the
+previous period, failed runs and budget hits; with `tenant_id`, one lab's spend
+per stage and task. Days well above the recent average are marked as spikes. The same
+scan runs every 6 hours and publishes a `cost.anomaly` event.
+
+**Query health** (for the worker that answers). `ops/queries` gives statements
+per request and statement time percentiles, per route, plus how many reads went
+to the replica; `ops/tables` gives size, dead rows, last vacuum and bloat per
+table.
+
+**Settings.** Thresholds ops may change without a release: adapter gates,
+lexicon matching, template import, languages, training consent and partition
+retention. Each resolves lab value → platform value → environment variable →
+default, and `GET` says which applied. `POST .../{key}` with `{"value": …,
+"tenant_id": …}` (omit `tenant_id` for platform-wide) stores a bounded value
+with an audit entry; `reset` removes it so the next level applies. An unknown
+key or an out-of-range value is `400`.
+
 ---
 
 # Appendix A — Index by prefix
@@ -1226,7 +1308,7 @@ Role shorthand: **PA** `product_admin`, **S** `support`, **R** `radiologist`,
 | POST | `/admin/login` | login · 4 KiB | [I](#product-admins--platform_user-by-session-cookie) | [`admin_panel.py:168`](radreport/api/routes/admin_panel.py#L168) |
 | POST | `/admin/logout` | public · 4 KiB | [I](#product-admins--platform_user-by-session-cookie) | [`admin_panel.py:192`](radreport/api/routes/admin_panel.py#L192) |
 
-### `/admin` — admin panel pages, HTML (21)
+### `/admin` — admin panel pages, HTML (27)
 
 | Method | Path | Who | Limit | Phase | Source |
 |---|---|---|---|---|---|
@@ -1251,8 +1333,14 @@ Role shorthand: **PA** `product_admin`, **S** `support`, **R** `radiologist`,
 | POST | `/admin/users/{user_id}/deactivate` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_panel.py:710`](radreport/api/routes/admin_panel.py#L710) |
 | POST | `/admin/users/{user_id}/reactivate` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_panel.py:715`](radreport/api/routes/admin_panel.py#L715) |
 | POST | `/admin/users/{user_id}/password` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_panel.py:720`](radreport/api/routes/admin_panel.py#L720) |
+| POST | `/admin/labs/{tenant_id}/users/{user_id}/password` | PA | admin-write · 4 KiB | [1.4](#14-add-the-people) | [`admin_panel.py:319`](radreport/api/routes/admin_panel.py#L319) |
+| POST | `/admin/labs/{tenant_id}/onboarding/shorthand` | PA | admin-upload · 25 MiB | [2.9](#29-shorthand-reference-sheets) | [`admin_panel.py:607`](radreport/api/routes/admin_panel.py#L607) |
+| GET | `/admin/costs` | PA, S | admin-read | [4.7](#47-costs-query-health-and-settings) | [`admin_ops_panel.py:71`](radreport/api/routes/admin_ops_panel.py#L71) |
+| GET | `/admin/config` | PA, S | admin-read | [4.7](#47-costs-query-health-and-settings) | [`admin_ops_panel.py:135`](radreport/api/routes/admin_ops_panel.py#L135) |
+| POST | `/admin/config/{key}` | PA | admin-write · 4 KiB | [4.7](#47-costs-query-health-and-settings) | [`admin_ops_panel.py:186`](radreport/api/routes/admin_ops_panel.py#L186) |
+| POST | `/admin/config/{key}/reset` | PA | admin-write · 4 KiB | [4.7](#47-costs-query-health-and-settings) | [`admin_ops_panel.py:196`](radreport/api/routes/admin_ops_panel.py#L196) |
 
-### `/admin/api` — admin panel, JSON (24)
+### `/admin/api` — admin panel, JSON (31)
 
 | Method | Path | Who | Limit | Phase | Source |
 |---|---|---|---|---|---|
@@ -1280,6 +1368,13 @@ Role shorthand: **PA** `product_admin`, **S** `support`, **R** `radiologist`,
 | POST | `/admin/api/users/{user_id}/deactivate` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_api.py:335`](radreport/api/routes/admin_api.py#L335) |
 | POST | `/admin/api/users/{user_id}/reactivate` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_api.py:341`](radreport/api/routes/admin_api.py#L341) |
 | POST | `/admin/api/users/{user_id}/password` | PA | admin-write · 4 KiB | [I](#platform-users) | [`admin_api.py:351`](radreport/api/routes/admin_api.py#L351) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/shorthand` | PA | admin-upload · 25 MiB | [2.9](#29-shorthand-reference-sheets) | [`admin_api.py:219`](radreport/api/routes/admin_api.py#L219) |
+| GET | `/admin/api/costs` | PA, S | admin-read | [4.7](#47-costs-query-health-and-settings) | [`ops.py:47`](radreport/api/routes/ops.py#L47) |
+| GET | `/admin/api/ops/queries` | PA, S | admin-read | [4.7](#47-costs-query-health-and-settings) | [`ops.py:28`](radreport/api/routes/ops.py#L28) |
+| GET | `/admin/api/ops/tables` | PA, S | admin-read | [4.7](#47-costs-query-health-and-settings) | [`ops.py:34`](radreport/api/routes/ops.py#L34) |
+| GET | `/admin/api/ops/config` | PA, S | admin-read | [4.7](#47-costs-query-health-and-settings) | [`ops.py:80`](radreport/api/routes/ops.py#L80) |
+| POST | `/admin/api/ops/config/{key}` | PA | admin-write · 4 KiB | [4.7](#47-costs-query-health-and-settings) | [`ops.py:92`](radreport/api/routes/ops.py#L92) |
+| POST | `/admin/api/ops/config/{key}/reset` | PA | admin-write · 4 KiB | [4.7](#47-costs-query-health-and-settings) | [`ops.py:106`](radreport/api/routes/ops.py#L106) |
 
 ### `/ingest` — capture (1)
 
@@ -1326,12 +1421,25 @@ Role shorthand: **PA** `product_admin`, **S** `support`, **R** `radiologist`,
 | POST | `/review/drafts/{draft_id}/usefulness` | R, T | lab-write · 4 KiB | [4.2](#42-ask-whether-the-draft-helped) | [`review.py:273`](radreport/api/routes/review.py#L273) |
 | GET | `/review/metrics/usefulness` | R, T, LA, A | lab-read | [4.2](#42-ask-whether-the-draft-helped) | [`review.py:284`](radreport/api/routes/review.py#L284) |
 
-### `/ui` — review screens, HTML (2, plus the public static route)
+### `/ui` — review screens, HTML (3, plus the public static route)
 
 | Method | Path | Who | Limit | Phase | Source |
 |---|---|---|---|---|---|
 | GET | `/ui/drafts/{draft_id}` | R, T, A | lab-read | [3.8](#38-the-screens) | [`review_ui.py:99`](radreport/api/routes/review_ui.py#L99) |
 | GET | `/ui/queue` | R, T, LA, A | lab-read | [3.8](#38-the-screens) | [`review_ui.py:187`](radreport/api/routes/review_ui.py#L187) |
+| GET | `/ui/lexicon` | R, LA | lab-read | [3.9](#39-grow-the-lexicon-from-live-use) | [`review_ui.py:344`](radreport/api/routes/review_ui.py#L344) |
+
+### `/lexicon` — lexicon growth (7)
+
+| Method | Path | Who | Limit | Phase | Source |
+|---|---|---|---|---|---|
+| GET | `/lexicon/candidates` | R, LA | lab-read | [3.9](#39-grow-the-lexicon-from-live-use) | [`lexicon.py:32`](radreport/api/routes/lexicon.py#L32) |
+| POST | `/lexicon/scan` | R, LA | lab-write · 1 KiB | [3.9](#39-grow-the-lexicon-from-live-use) | [`lexicon.py:42`](radreport/api/routes/lexicon.py#L42) |
+| POST | `/lexicon/candidates/approve` | R | lab-write · 16 KiB | [3.9](#39-grow-the-lexicon-from-live-use) | [`lexicon.py:54`](radreport/api/routes/lexicon.py#L54) |
+| POST | `/lexicon/candidates/reject` | R | lab-write · 16 KiB | [3.9](#39-grow-the-lexicon-from-live-use) | [`lexicon.py:66`](radreport/api/routes/lexicon.py#L66) |
+| GET | `/lexicon/variants` | R, LA | lab-read | [3.9](#39-grow-the-lexicon-from-live-use) | [`lexicon.py:81`](radreport/api/routes/lexicon.py#L81) |
+| POST | `/lexicon/variants/{variant_id}/decide` | R | lab-write · 1 KiB | [3.9](#39-grow-the-lexicon-from-live-use) | [`lexicon.py:95`](radreport/api/routes/lexicon.py#L95) |
+| GET | `/lexicon/variants/stats` | R, LA | lab-read | [3.9](#39-grow-the-lexicon-from-live-use) | [`lexicon.py:107`](radreport/api/routes/lexicon.py#L107) |
 
 ### `/ga` — lab-side autonomy, export and drift (6)
 
@@ -1370,6 +1478,6 @@ again.
 `study_id`. Outside tests, neither type is instantiated anywhere in
 `radreport/`.
 
-**Phase 3 — no HTTP trigger for the pipeline.** Nothing under `api/` imports
-`pipeline/`; `workers/` is empty. Capture stores audio and returns, and no
-draft ever appears. See [3.2](#32-the-missing-link).
+**Phase 3 — no status endpoint for a queued pipeline run.** The upload returns
+the job id, but no route reads a job back; a client polls the review queue for
+the draft instead. See [3.2](#32-from-upload-to-draft).
