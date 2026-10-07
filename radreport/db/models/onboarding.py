@@ -88,6 +88,8 @@ class TemplateImportCandidate(Base, TenantScoped, TimestampMixin):
     proposed_modality: Mapped[str | None] = mapped_column(Text, nullable=True)
     proposed_body_region: Mapped[str | None] = mapped_column(Text, nullable=True)
     proposed_spoken_study_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    """The document's text as read; a blank form, not patient data. Kept so approved templates can train a template model."""
 
     parse_confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
     """Low confidence ⇒ mandatory field-by-field review."""

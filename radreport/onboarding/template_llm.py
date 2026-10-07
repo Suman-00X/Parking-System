@@ -69,8 +69,13 @@ def needs_fallback(session: Session, tenant_id: uuid.UUID, parsed: ParsedTemplat
     return parsed.confidence < float(system_config.resolve(session, "templates.llm_fallback_below", tenant_id=tenant_id).value)
 
 
+def document_text(paragraphs: list[str]) -> str:
+    """The paragraphs as plain text, headings unmarked, capped at what the model is sent."""
+    return "\n".join(p.removeprefix("\x00HEADING\x00") for p in paragraphs)[:MAX_CHARS]
+
+
 def prompt_for(paragraphs: list[str], title: str) -> LLMRequest:
-    text = "\n".join(p.removeprefix("\x00HEADING\x00") for p in paragraphs)[:MAX_CHARS]
+    text = document_text(paragraphs)
     bundle = PromptBundle(stable=[system_block(SYSTEM), schema_block(json.dumps(SCHEMA))], volatile=[VolatileBlock(text=f"Template file: {title}\n\n{text}", label="document")])
     return LLMRequest(prompt=bundle, max_tokens=2048, temperature=0.0, seed=7, json_schema=SCHEMA, metadata={"task": TaskKey.TEMPLATE_PARSE})
 

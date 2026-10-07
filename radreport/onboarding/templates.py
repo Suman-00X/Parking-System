@@ -94,7 +94,7 @@ def submit_templates(session: Session, *, tenant_id: uuid.UUID, uploads: list[Ar
             warnings["template_model"] = {**outcome.audit(), "parser_confidence": regex_confidence}
         artifact.parse_warnings = warnings or None
 
-        candidate = TemplateImportCandidate(tenant_id=tenant_id, import_batch_id=batch.id, import_artifact_id=artifact.id, proposed_code=_propose_code(parsed), proposed_json_schema=build_json_schema(parsed), proposed_sections={"sections": parsed.sections}, proposed_modality=parsed.modality, proposed_body_region=parsed.body_region, proposed_spoken_study_code=_propose_spoken_code(parsed), parse_confidence=parsed.confidence, review_status=CandidateReviewStatus.PENDING)
+        candidate = TemplateImportCandidate(tenant_id=tenant_id, import_batch_id=batch.id, import_artifact_id=artifact.id, proposed_code=_propose_code(parsed), proposed_json_schema=build_json_schema(parsed), proposed_sections={"sections": parsed.sections}, proposed_modality=parsed.modality, proposed_body_region=parsed.body_region, proposed_spoken_study_code=_propose_spoken_code(parsed), parse_confidence=parsed.confidence, review_status=CandidateReviewStatus.PENDING, source_text=template_llm.document_text(paragraphs))
         session.add(candidate)
         session.flush()
         submission.candidates.append(candidate)
