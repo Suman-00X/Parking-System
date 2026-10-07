@@ -230,7 +230,11 @@ The login page has a **Test credentials** tab with a ready-to-use read-only demo
 
 ## For Recruiters
 
+### Lab screens — signed in as the Auditor (auditor@sunrise.local)
+
 <!-- media: demo-sign-in | Signing in to the demo lab with the Test credentials tab, straight into the review queue -->
+
+### Admin panel — signed in as Support (support@radreport.local)
 
 <!-- media: admin-panel | The read-only admin account: every lab on the platform, then cost and usage -->
 
