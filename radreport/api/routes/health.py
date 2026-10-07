@@ -8,6 +8,7 @@ readiness (ready), the 503 gate a load balancer routes on. Other modules add che
 
 from __future__ import annotations
 
+import inspect
 import os
 import platform
 import resource
@@ -41,13 +42,13 @@ def register_check(name: str, check: Callable[[], dict[str, Any]]) -> None:
     _CHECKS[name] = check
 
 
-def _database() -> dict[str, Any]:
-    from radreport.db.session import get_engine
+async def _database() -> dict[str, Any]:
+    from radreport.db.async_session import get_async_engine
 
     started = time.perf_counter()
-    # A plain connection and SELECT 1: no session, no tenant binding, nothing written.
-    with get_engine().connect() as conn:
-        conn.execute(text("SELECT 1"))
+    # A plain connection and SELECT 1 on the async driver: no session, no tenant binding, nothing written, no thread held.
+    async with get_async_engine().connect() as conn:
+        await conn.execute(text("SELECT 1"))
     return {"ok": True, "latency_ms": round((time.perf_counter() - started) * 1000, 2)}
 
 
@@ -67,12 +68,12 @@ def _memory() -> dict[str, Any]:
     return {"ok": True, "max_rss_mb": round(mb, 1)}
 
 
-def _run_checks() -> tuple[bool, dict[str, Any]]:
+async def _run_checks() -> tuple[bool, dict[str, Any]]:
     results: dict[str, Any] = {}
     healthy = True
     for name, check in {"database": _database, "pool": _pool, "memory": _memory, **_CHECKS}.items():
         try:
-            outcome = check()
+            outcome = await check() if inspect.iscoroutinefunction(check) else check()
         except Exception as exc:  # noqa: BLE001 - a failing check is reported, never raised
             outcome = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:200]}
         results[name] = outcome
@@ -81,9 +82,9 @@ def _run_checks() -> tuple[bool, dict[str, Any]]:
 
 
 @router.get("/health")
-def health() -> dict[str, Any]:
+async def health() -> dict[str, Any]:
     """Liveness: always 200 while the process serves, with the state of each dependency for operators."""
-    healthy, checks = _run_checks()
+    healthy, checks = await _run_checks()
     settings = get_settings()
     return {"status": "healthy" if healthy else "degraded", "instance_id": instance_id(), "environment": settings.environment, "version": "0.1.0", "uptime_seconds": round(time.monotonic() - _STARTED, 1), "checks": checks}
 

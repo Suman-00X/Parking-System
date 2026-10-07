@@ -57,6 +57,14 @@ def paginate(session: Session, query: Select[Any], page: Page, *, scalars: bool 
     return Paged(rows=rows, total=int(total), page=page)
 
 
+async def paginate_async(session: Any, query: Select[Any], page: Page, *, scalars: bool = True) -> Paged:
+    """`paginate` for an AsyncSession."""
+    total = (await session.execute(select(func.count()).select_from(query.order_by(None).subquery()))).scalar_one()
+    result = await session.execute(query.limit(page.size).offset(page.offset))
+    rows = list(result.scalars().all()) if scalars else list(result.all())
+    return Paged(rows=rows, total=int(total), page=page)
+
+
 def paginate_list(items: list[Any], page: Page) -> Paged:
     """The same for a list already built in memory, when the ordering is computed in Python."""
     return Paged(rows=items[page.offset : page.offset + page.size], total=len(items), page=page)

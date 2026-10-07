@@ -14,11 +14,12 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from radreport.adapters.storage.object_store import S3ObjectStore
-from radreport.api.deps import CurrentPrincipal, DbSession, ReadDbSession
-from radreport.api.pagination import Page, paginate, set_page_headers
+from radreport.api.deps import CurrentPrincipal, DbSession
+from radreport.api.pagination import Page, paginate_async, set_page_headers
 from radreport.core.config import get_settings
 from radreport.core.errors import DuplicateRecording, IngestRejected
 from radreport.core.types import CaptureDeviceClass
+from radreport.db.async_session import async_read_session
 from radreport.db.models.ingestion import Recording
 from radreport.events.outbox import Topic, emit
 from radreport.ingest.service import IngestRequest, ingest_recording
@@ -83,11 +84,12 @@ class RecordingSummary(BaseModel):
 
 
 @router.get("/recordings", response_model=list[RecordingSummary])
-def list_recordings(session: ReadDbSession, principal: CurrentPrincipal, response: Response, radiologist_id: uuid.UUID | None = None, page: int | None = None, page_size: int | None = None) -> list[RecordingSummary]:
-    """The lab's recordings, newest first, a page at a time."""
+async def list_recordings(principal: CurrentPrincipal, response: Response, radiologist_id: uuid.UUID | None = None, page: int | None = None, page_size: int | None = None) -> list[RecordingSummary]:
+    """The lab's recordings, newest first, a page at a time. On the async driver: it runs on the event loop, not a worker thread."""
     query = select(Recording).where(Recording.tenant_id == principal.tenant_id)
     if radiologist_id is not None:
         query = query.where(Recording.radiologist_id == radiologist_id)
-    paged = paginate(session, query.order_by(Recording.uploaded_at.desc(), Recording.id), Page.of(page, page_size))
+    async with async_read_session(principal.tenant_id, principal=principal) as session:
+        paged = await paginate_async(session, query.order_by(Recording.uploaded_at.desc(), Recording.id), Page.of(page, page_size))
     set_page_headers(response, paged, "/ingest/recordings", {"radiologist_id": str(radiologist_id)} if radiologist_id else None)
     return [RecordingSummary(recording_id=r.id, study_id=r.study_id, radiologist_id=r.radiologist_id, uploaded_at=r.uploaded_at.isoformat(), duration_seconds=float(r.duration_seconds) if r.duration_seconds is not None else None, audio_format=r.audio_format, capture_device_class=r.capture_device_class, measured_snr_db=float(r.measured_snr_db) if r.measured_snr_db is not None else None) for r in paged.rows]
