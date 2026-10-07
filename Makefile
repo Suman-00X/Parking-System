@@ -36,7 +36,7 @@ down:  ## Stop the docker compose services
 migrate:  ## Apply migrations as the app role (use migrate-owner if this fails)
 	.venv/bin/alembic upgrade head
 
-migrate-owner:  ## Apply migrations as the database owner (needed for 0002 and 0005)
+migrate-owner:  ## Apply migrations as the database owner (needed: several revisions create roles, grant, or hand functions to the view owner)
 	RADREPORT_DATABASE_URL="$(OWNER_URL)" .venv/bin/alembic upgrade head
 
 revision:  ## Autogenerate a migration: make revision M="what changed"
