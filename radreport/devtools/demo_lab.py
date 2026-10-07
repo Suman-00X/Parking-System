@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 import random
@@ -118,6 +119,12 @@ class Session:
                 raise Failed(f"admin sign-in: {response.status_code}")
         else:
             response = client.post("/auth/login", json={"lab": self.lab_slug, "email": email, "password": password})
+            for _attempt in range(3):
+                if response.status_code != 429:
+                    break
+                print("  (sign-in limit from an earlier run; waiting 30s)")
+                time.sleep(30)
+                response = client.post("/auth/login", json={"lab": self.lab_slug, "email": email, "password": password})
             if response.status_code != 200:
                 raise Failed(f"{who} sign-in: {response.status_code} {response.text[:200]}")
             client.headers["Authorization"] = f"Bearer {response.json()['access_token']}"
@@ -169,12 +176,18 @@ def corpus(s: Session, lab: str) -> dict[str, Any]:
     """Past reports, the mining steps over them, and the radiologist's checks of what they found."""
     print("2/6 report corpus and mining")
     rng = random.Random(7)
-    titles = {"usg": "USG Abdomen", "ct": "CT Chest Plain", "xr": "X-ray Chest PA", "kub": "CT KUB"}
     records = []
+    kinds = list(TEMPLATES)
     for i in range(240):
-        kind = rng.choice(list(FINDINGS))
-        lines = [f.format(n=rng.randint(3, 14), k=round(rng.uniform(8.5, 12.0), 1)) for f in rng.sample(FINDINGS[kind], k=min(4, len(FINDINGS[kind])))]
-        records.append({"report_text": f"{titles[kind]}\nFINDINGS:\n" + "\n".join(lines) + "\nIMPRESSION:\n" + lines[0], "external_report_id": f"SUN-HIST-{i:04d}", "radiologist_employee_code": ("SUN-R01", "SUN-R02")[i % 2], "patient_sex": rng.choice("MF"), "patient_age_years": rng.randint(18, 85), "is_deidentified": True})
+        name = rng.choice(kinds)
+        # Past reports follow the lab's template: the same `Label: value` lines, filled in, with the prose findings after.
+        title = TEMPLATES[name][0][0]
+        fields = [text.split(":", 1)[0] for text, heading in TEMPLATES[name] if not heading and ":" in text]
+        kind = {"usg_abdomen.docx": "usg", "ct_chest_plain.docx": "ct", "xray_chest_pa.docx": "xr", "ct_kub.docx": "kub"}[name]
+        prose = [f.format(n=rng.randint(3, 14), k=round(rng.uniform(8.5, 12.0), 1)) for f in rng.sample(FINDINGS[kind], k=min(3, len(FINDINGS[kind])))]
+        filled = [f"{label}: {rng.choice(prose) if index == 0 else rng.choice(('Normal.', 'Unremarkable.', 'Within normal limits.', prose[-1]))}" for index, label in enumerate(fields)]
+        report_text = f"{title}\nFINDINGS:\n" + "\n".join(filled[:-1]) + "\nIMPRESSION:\n" + filled[-1]
+        records.append({"report_text": report_text, "external_report_id": "SUN-HIST-" + hashlib.sha1(report_text.encode()).hexdigest()[:10], "radiologist_employee_code": ("SUN-R01", "SUN-R02")[i % 2], "patient_sex": rng.choice("MF"), "patient_age_years": rng.randint(18, 85), "is_deidentified": True})
     loaded = s.call("admin", "POST", f"/admin/api/labs/{lab}/onboarding/corpus", json={"records": records})
     steps = {step: s.call("admin", "POST", f"/admin/api/labs/{lab}/onboarding/steps/{step}", json={}) for step in ("derive-map", "lexicon-mine", "collision-audit", "boilerplate-mine")}
     verified = 0
@@ -322,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dictations", type=int, default=16, help="studies and recordings to create")
     parser.add_argument("--no-worker", action="store_true", help="queue the pipeline jobs but do not run a worker")
     parser.add_argument("--force", action="store_true", help="run even if the lab already has templates")
+    parser.add_argument("--only", choices=("corpus", "autonomy", "capture", "review", "lexicon", "settings"), help="run one phase again on a lab that already has its templates")
     args = parser.parse_args(argv)
     s = Session(base_url=args.base_url.rstrip("/"), lab_slug=args.lab, creds=_credentials(args.credentials))
     labs = s.call("admin", "GET", "/admin/api/labs", params={"page_size": 100})
@@ -330,6 +344,11 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"no lab {args.lab!r} on {args.base_url}")
     readiness = s.call("admin", "GET", f"/admin/api/labs/{lab}/readiness") or {}
     already = any(c.get("check_id") == "template_library_ready" and (c.get("measured_value") or 0) > 0 for c in readiness.get("checks", []))
+    if args.only:
+        run = {"corpus": lambda: corpus(s, lab), "autonomy": lambda: autonomy(s, lab), "capture": lambda: capture(s, lab, count=args.dictations, run_worker=not args.no_worker), "review": lambda: review(s), "lexicon": lambda: lexicon(s, lab), "settings": lambda: settings(s, lab)}[args.only]
+        print(json.dumps({args.only: run()}, indent=1, default=str))
+        print(f"\n{sum(s.calls.values())} calls over {len(s.calls)} routes; {len(s.failures)} failed")
+        return 1 if s.failures else 0
     if already and not args.force:
         raise SystemExit(f"{args.lab} already has live templates; pass --force to add another round of demo data")
     summary = {"onboarding": onboard(s, lab), "corpus": corpus(s, lab)}
