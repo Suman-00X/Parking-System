@@ -22,3 +22,5 @@ local-credentials.md
 .pgbouncer/
 exports/
 .storage/
+# Values to paste into Render and GitHub secrets; holds demo passwords.
+.env.render

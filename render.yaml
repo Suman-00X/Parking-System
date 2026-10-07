@@ -1,0 +1,104 @@
+# Render Blueprint: Dashboard -> New -> Blueprint -> pick this repo.
+# Postgres is not defined here: the migrations create a BYPASSRLS role, which Render Postgres's
+# non-superuser owner cannot do. Use Neon (its owner role may), and paste the owner's connection
+# string into RADREPORT_OWNER_DATABASE_URL when Render prompts for it.
+
+envVarGroups:
+  - name: radreport-config
+    envVars:
+      - key: RADREPORT_ENVIRONMENT
+        value: production
+      # Two uvicorn workers + the job worker + the relay, each with a pool, must fit the database's
+      # max_connections (about 100 on Neon's smallest compute).
+      - key: RADREPORT_DB__POOL_SIZE
+        value: "5"
+      - key: RADREPORT_DB__MAX_OVERFLOW
+        value: "5"
+      - key: WEB_CONCURRENCY
+        value: "2"
+      - key: WORKER_CONCURRENCY
+        value: "2"
+      # Generated once on the first sync; shared by every service.
+      - key: RADREPORT_APP_DB_PASSWORD
+        generateValue: true
+      - key: RADREPORT_LAB_AUTH__TOKEN_SECRET
+        generateValue: true
+      - key: RADREPORT_OBSERVABILITY__METRICS_TOKEN
+        generateValue: true
+
+services:
+  - type: web
+    name: radreport-web
+    runtime: docker
+    region: singapore
+    plan: 0.5c-512mb
+    healthCheckPath: /ready
+    preDeployCommand: radreport-start migrate
+    dockerCommand: radreport-start web
+    envVars:
+      - fromGroup: radreport-config
+      - key: RADREPORT_REDIS_URL
+        fromService:
+          type: keyvalue
+          name: radreport-cache
+          property: connectionString
+      # Prompted for on the first Blueprint sync.
+      - key: RADREPORT_OWNER_DATABASE_URL
+        sync: false
+      - key: RADREPORT_STORAGE__BUCKET
+        sync: false
+      - key: RADREPORT_STORAGE__REGION
+        sync: false
+      - key: RADREPORT_STORAGE__ACCESS_KEY_ID
+        sync: false
+      - key: RADREPORT_STORAGE__SECRET_ACCESS_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      # Password of the first product admin (admin@radreport.local), set when the API seeds an empty database on its first start.
+      - key: RADREPORT_SEED_ADMIN_PASSWORD
+        sync: false
+      # The read-only logins on the login pages' Test credentials tab, as JSON; `radreport-start seed`
+      # creates them (radreport-start python -m radreport.devtools.seed). Paste the value from
+      # .env.render (gitignored); never commit it here.
+      - key: RADREPORT_DEMO_ACCOUNTS
+        sync: false
+
+  # The job worker and the outbox relay in one container; split them into two workers
+  # (radreport-start worker / radreport-start relay) once one needs scaling on its own.
+  - type: worker
+    name: radreport-jobs
+    runtime: docker
+    region: singapore
+    plan: 0.5c-512mb
+    dockerCommand: radreport-start jobs
+    envVars:
+      - fromGroup: radreport-config
+      - key: RADREPORT_REDIS_URL
+        fromService:
+          type: keyvalue
+          name: radreport-cache
+          property: connectionString
+      - key: RADREPORT_OWNER_DATABASE_URL
+        fromService: {type: web, name: radreport-web, envVarKey: RADREPORT_OWNER_DATABASE_URL}
+      - key: RADREPORT_STORAGE__BUCKET
+        fromService: {type: web, name: radreport-web, envVarKey: RADREPORT_STORAGE__BUCKET}
+      - key: RADREPORT_STORAGE__REGION
+        fromService: {type: web, name: radreport-web, envVarKey: RADREPORT_STORAGE__REGION}
+      - key: RADREPORT_STORAGE__ACCESS_KEY_ID
+        fromService: {type: web, name: radreport-web, envVarKey: RADREPORT_STORAGE__ACCESS_KEY_ID}
+      - key: RADREPORT_STORAGE__SECRET_ACCESS_KEY
+        fromService: {type: web, name: radreport-web, envVarKey: RADREPORT_STORAGE__SECRET_ACCESS_KEY}
+      - key: ANTHROPIC_API_KEY
+        fromService: {type: web, name: radreport-web, envVarKey: ANTHROPIC_API_KEY}
+      - key: DEEPGRAM_API_KEY
+        fromService: {type: web, name: radreport-web, envVarKey: DEEPGRAM_API_KEY}
+
+  # Shared cache for lab config, roles, model assignments and admin sessions; reachable only from these services.
+  - type: keyvalue
+    name: radreport-cache
+    region: singapore
+    plan: free
+    ipAllowList: []

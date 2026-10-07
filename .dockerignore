@@ -1,0 +1,31 @@
+# Secrets and machine-local state never go into the image.
+.env
+.env.*
+local-credentials.md
+.storage/
+.metrics/
+.pgbouncer/
+exports/
+local_data/
+.uvicorn.log
+.uvicorn.pid
+
+# Tooling and caches.
+.git/
+.github/
+.venv/
+venv/
+.claude/
+.vscode/
+.DS_Store
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# Large files the app does not read.
+radiology-reporting-system-design.pdf
