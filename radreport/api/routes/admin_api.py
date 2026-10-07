@@ -216,6 +216,16 @@ class CorpusLoadRequest(BaseModel):
     trigger: str = ImportTrigger.INITIAL_ONBOARDING
 
 
+@router.post("/labs/{tenant_id}/onboarding/shorthand", status_code=status.HTTP_201_CREATED)
+async def upload_shorthand(tenant_id: uuid.UUID, session: AdminLabDb, files: Annotated[list[UploadFile], File()]) -> dict[str, Any]:
+    """Shorthand reference sheets (PDF, Word or text) into the lab's lexicon."""
+    uploads = [ArtifactUpload(filename=f.filename or "unnamed", data=await f.read(), mime_type=f.content_type) for f in files]
+    try:
+        return onboarding_steps.submit_shorthand_files(session, tenant_id, uploads)
+    except StepRefused as exc:
+        raise _refused(exc) from exc
+
+
 @router.post("/labs/{tenant_id}/onboarding/corpus")
 def upload_corpus(tenant_id: uuid.UUID, body: CorpusLoadRequest, session: AdminLabDb) -> dict[str, Any]:
     """Bulk-load historical signed reports."""

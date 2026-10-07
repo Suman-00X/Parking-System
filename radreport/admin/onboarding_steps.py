@@ -19,7 +19,7 @@ from radreport.core.types import ImportTrigger
 from radreport.db.models.evaluation import EvalItem, EvalSet
 from radreport.db.models.onboarding import ImportBatch
 from radreport.eval import goldset
-from radreport.onboarding import boilerplate, corpus, critical_rules, lexicon, paired_audio, roster, templates
+from radreport.onboarding import boilerplate, corpus, critical_rules, lexicon, paired_audio, roster, shorthand, templates
 from radreport.onboarding.batches import ArtifactUpload
 from radreport.onboarding.readiness import evaluate_readiness
 
@@ -79,6 +79,16 @@ def import_roster_file(session: Session, tenant_id: uuid.UUID, data: bytes, *, t
         raise StepRefused(422, "; ".join(problems))
     result = roster.import_roster(session, tenant_id=tenant_id, rows=rows, submitted_by=None, trigger=trigger)
     return {"batch_id": str(result.batch.id), "created": len(result.created), "updated": len(result.updated), "profiles_created": len(result.profiles_created), "problems": problems}
+
+
+def submit_shorthand_files(session: Session, tenant_id: uuid.UUID, uploads: list[ArtifactUpload], *, trigger: str = ImportTrigger.INITIAL_ONBOARDING) -> dict[str, Any]:
+    """Read shorthand reference sheets into the lab's lexicon, so speech recognition is biased toward the abbreviations."""
+    if not uploads:
+        raise StepRefused(422, "choose at least one shorthand reference file")
+    result = shorthand.import_shorthand_reference(session, tenant_id=tenant_id, uploads=uploads, trigger=trigger)
+    if not result.mappings and result.failures:
+        raise StepRefused(422, "; ".join(f"{name}: {reason}" for name, reason in result.failures))
+    return {"batch_id": str(result.batch.id), "mappings": len(result.mappings), "terms_created": result.terms_created, "terms_updated": result.terms_updated, "conflicts": result.conflicts, "failures": [{"filename": n, "reason": r} for n, r in result.failures]}
 
 
 def submit_template_files(session: Session, tenant_id: uuid.UUID, uploads: list[ArtifactUpload], *, trigger: str = ImportTrigger.INITIAL_ONBOARDING) -> dict[str, Any]:

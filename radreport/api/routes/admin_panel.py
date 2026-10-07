@@ -3,7 +3,7 @@
 Order: sign in (login_page, login_submit, logout_submit) -> manage labs (home, labs_page,
 create_lab, lab_page, set_lab_user_password, change_status, lab_readiness_page) -> configure models per step
 (assign_step, activate_step, providers_page, add_provider, add_model) -> onboard a lab
-(onboarding_page, upload_roster, upload_templates, upload_corpus, merge_proposals, run_onboarding_step) ->
+(onboarding_page, upload_roster, upload_templates, upload_shorthand, upload_corpus, merge_proposals, run_onboarding_step) ->
 manage platform users (users_page, create_user, deactivate_user, reactivate_user, reset_password)
 -> your own account (account_page, change_own_password).
 """
@@ -535,7 +535,7 @@ def onboarding_page(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin,
 
     uploads = (
         card(
-            f"""<div class="grid cols-3">
+            f"""<div class="grid cols-2">
  <form method="post" action="{base}/roster" enctype="multipart/form-data">
  <h3>{icon("users")} Roster</h3><p class="meta">The HR CSV export of every person at the lab.</p>
  <label for="roster" class="sr-only">Roster (HR CSV export)</label>
@@ -547,6 +547,12 @@ def onboarding_page(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin,
  <label for="templates" class="sr-only">Report templates (documents)</label>
  <input id="templates" name="files" type="file" multiple required>
  <div class="actions"><button type="submit" class="sm">{icon("upload")}Submit templates</button></div>
+ </form>
+ <form method="post" action="{base}/shorthand" enctype="multipart/form-data">
+ <h3>{icon("lexicon")} Shorthand reference</h3><p class="meta">Optional. The sheet transcriptionists use: <code>LLL = left lower lobe</code>.</p>
+ <label for="shorthand" class="sr-only">Shorthand reference (PDF, Word or text)</label>
+ <input id="shorthand" name="files" type="file" accept=".pdf,.docx,.txt,.md,.csv" multiple required>
+ <div class="actions"><button type="submit" class="sm">{icon("upload")}Add shorthand</button></div>
  </form>
  <form method="post" action="{base}/corpus" enctype="multipart/form-data">
  <h3>{icon("database")} Signed reports</h3><p class="meta">CSV with a report_text column, or a JSON array.</p>
@@ -596,6 +602,18 @@ async def upload_templates(tenant_id: uuid.UUID, request: Request, admin: Curren
     except StepRefused as exc:
         return _redirect(f"/admin/labs/{tenant_id}/onboarding", error=exc.reason)
     return _redirect(f"/admin/labs/{tenant_id}/onboarding", notice=f"Templates submitted — {_summarise(result)}")
+
+
+@router.post("/labs/{tenant_id}/onboarding/shorthand")
+async def upload_shorthand(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, files: Annotated[list[UploadFile], File()]) -> Response:
+    uploads = [ArtifactUpload(filename=f.filename or "unnamed", data=await f.read(), mime_type=f.content_type) for f in files]
+    try:
+        with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
+            result = onboarding_steps.submit_shorthand_files(session, tenant_id, uploads)
+    except StepRefused as exc:
+        return _redirect(f"/admin/labs/{tenant_id}/onboarding", error=exc.reason)
+    conflicts = f"; {len(result['conflicts'])} conflict(s) for the lab's radiologists to settle" if result["conflicts"] else ""
+    return _redirect(f"/admin/labs/{tenant_id}/onboarding", notice=f"Shorthand added — {result['mappings']} pair(s), {result['terms_created']} new term(s), {result['terms_updated']} updated{conflicts}")
 
 
 @router.post("/labs/{tenant_id}/onboarding/corpus")

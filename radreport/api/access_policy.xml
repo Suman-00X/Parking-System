@@ -154,6 +154,10 @@
       <param name="tenant_id" in="path" type="uuid" required="true"/>
       <param name="files" in="file" type="file" required="true" multiple="true" max-length="200"/>
     </route>
+    <route id="admin.lab.onboarding.shorthand" method="POST" path="/admin/labs/{tenant_id}/onboarding/shorthand" roles="product_admin" rate-limit="admin-upload" max-body-bytes="26214400" description="Shorthand reference sheets into the lab's lexicon.">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="files" in="file" type="file" required="true" multiple="true" max-length="20"/>
+    </route>
     <route id="admin.lab.onboarding.corpus" method="POST" path="/admin/labs/{tenant_id}/onboarding/corpus" roles="product_admin" rate-limit="admin-upload" max-body-bytes="104857600">
       <param name="tenant_id" in="path" type="uuid" required="true"/>
       <param name="file" in="file" type="file" required="true"/>
@@ -289,6 +293,10 @@
       <param name="tenant_id" in="path" type="uuid" required="true"/>
       <param name="trigger" in="form" type="string" pattern="initial_onboarding|template_change|new_radiologist|periodic_remine|site_expansion"/>
       <param name="files" in="file" type="file" required="true" multiple="true" max-length="200"/>
+    </route>
+    <route id="admin.api.lab.onboarding.shorthand" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/shorthand" roles="product_admin" rate-limit="admin-upload" max-body-bytes="26214400" description="Shorthand reference sheets into the lab's lexicon.">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="files" in="file" type="file" required="true" multiple="true" max-length="20"/>
     </route>
     <route id="admin.api.lab.onboarding.corpus" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/corpus" roles="product_admin" rate-limit="admin-upload" max-body-bytes="104857600">
       <param name="tenant_id" in="path" type="uuid" required="true"/>
