@@ -43,3 +43,16 @@ def test_two_hundred_clients_share_a_small_server_pool() -> None:
         t.join()
     assert not leaks, leaks[:3]
     assert len(backends) <= 25, f"{CLIENTS} clients used {len(backends)} server connections"
+
+
+def test_the_pool_dashboard_reads_pgbouncer_s_pools(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sqlalchemy.engine import make_url
+
+    from radreport.db.pgbouncer_stats import pool_report
+
+    console = make_url(os.environ["RADREPORT_TEST_PGBOUNCER_URL"]).set(drivername="postgresql", database="pgbouncer").render_as_string(hide_password=False)
+    report = pool_report(console)
+    assert report["reachable"], report
+    assert report["limits"]["default_pool_size"] > 0
+    assert {p["pool_mode"] for p in report["pools"]} == {"transaction"}
+    assert "pgbouncer" not in {p["database"] for p in report["pools"]}

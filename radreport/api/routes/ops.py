@@ -1,6 +1,7 @@
 """The admin panel's operations API: how the database is being used, and the thresholds ops may change.
 
 Order: query metrics (query_metrics) -> table health, vacuum and bloat (table_health) ->
+PgBouncer's pools (pgbouncer_pools) ->
 spend per lab and per stage (cost_summary) -> operational settings (list_settings, set_setting,
 reset_setting).
 """
@@ -18,11 +19,12 @@ from sqlalchemy.orm import Session
 
 from radreport.admin.auth import AuthenticatedAdmin
 from radreport.api.deps import CurrentAdmin, admin_lab_session, client_ip
+from radreport.api.routing import BridgedRoute
 from radreport.core import system_config
 from radreport.db.instrumentation import METRICS
 from radreport.db.session import read_session, system_session
 
-router = APIRouter(prefix="/admin/api/ops", tags=["admin-ops"])
+router = APIRouter(prefix="/admin/api/ops", tags=["admin-ops"], route_class=BridgedRoute)
 
 
 @router.get("/queries")
@@ -41,7 +43,15 @@ def table_health(admin: CurrentAdmin) -> dict[str, Any]:
     return {"bloat_ratio_threshold": BLOAT_RATIO, "bloated": [t.table for t in stats if t.bloated], "tables": [t.as_dict() for t in stats]}
 
 
-cost_router = APIRouter(prefix="/admin/api", tags=["admin-ops"])
+@router.get("/pgbouncer")
+def pgbouncer_pools(admin: CurrentAdmin) -> dict[str, Any]:
+    """PgBouncer's pools: clients active and waiting, server connections in use, and the limits."""
+    from radreport.db.pgbouncer_stats import pool_report
+
+    return pool_report()
+
+
+cost_router = APIRouter(prefix="/admin/api", tags=["admin-ops"], route_class=BridgedRoute)
 
 
 @cost_router.get("/costs")

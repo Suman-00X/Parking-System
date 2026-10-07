@@ -1,7 +1,7 @@
 """The admin panel's operations pages: what the pipeline costs, and settings ops may change without a release.
 
-Order: spend across labs, or one lab's by stage, with the spikes marked (costs_page) -> the
-settings page, platform-wide or for one lab (config_page) -> change or clear one value
+Order: spend across labs, or one lab's by stage, with the spikes marked (costs_page) -> PgBouncer's
+connection pools, with waiting clients and busy pools flagged (pools_page) -> the settings page, platform-wide or for one lab (config_page) -> change or clear one value
 (set_config_value, reset_config_value).
 """
 
@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, Response
 from radreport.api.deps import CurrentAdmin
 from radreport.api.routes.admin_panel import _can, _messages, _page, _redirect
 from radreport.api.routes.ops import config_session
+from radreport.api.routing import BridgedRoute
 from radreport.api.ui import badge, bar_list, card, empty, esc, icon, line_chart, stat, table
 from radreport.core import system_config
 from radreport.core.types import TenantStatus
@@ -24,7 +25,7 @@ from radreport.db.models.tenancy import Tenant
 from radreport.db.session import read_session, system_session
 from radreport.monitoring import costs
 
-router = APIRouter(prefix="/admin", tags=["admin-ops-panel"])
+router = APIRouter(prefix="/admin", tags=["admin-ops-panel"], route_class=BridgedRoute)
 
 _SOURCE_TONES = {"lab": "brand", "platform": "info", "environment": "warn", "default": "muted"}
 _SOURCE_LABELS = {"lab": "this lab", "platform": "platform-wide", "environment": "environment", "default": "code default"}
@@ -126,6 +127,38 @@ def costs_page(admin: CurrentAdmin, lab: uuid.UUID | None = None, days: int | No
         else f"{controls}<div class='section'>{kpis}</div><div class='section'>{card(empty('Pipeline runs appear here as soon as labs start dictating.', title='No spend yet', icon_name='cost'))}</div>"
     )
     return _page("Cost & usage", body, admin=admin, active="costs", eyebrow="Operations", subtitle="What every lab's reports cost to produce, where in the pipeline the money goes, and the days that cost far more than usual.", actions=f'<a class="btn ghost" href="/admin/api/costs?days={period}">{icon("doc")}JSON</a>')
+
+
+@router.get("/pools", response_class=HTMLResponse)
+def pools_page(admin: CurrentAdmin) -> HTMLResponse:
+    """PgBouncer's pools as it sees them now: clients active and waiting, server connections in use."""
+    from radreport.db.pgbouncer_stats import pool_report
+
+    report = pool_report()
+    actions = f'<a class="btn ghost" href="/admin/api/ops/pgbouncer">{icon("doc")}JSON</a>'
+    subtitle = "Read from PgBouncer's admin console on every load. Clients waiting means every server connection in the pool is busy."
+    if not report["enabled"] or not report.get("reachable"):
+        body = card(empty(report["reason"], title="No pool data", icon_name="database"))
+        return _page("Connection pools", body, admin=admin, active="pools", eyebrow="Operations", subtitle=subtitle, actions=actions)
+
+    limits, pools = report["limits"], report["pools"]
+    size = limits["default_pool_size"]
+    rows = [
+        f"""<tr><td><strong class="mono">{esc(p["database"])}</strong><div class="meta">{esc(p["user"])} · {esc(p["pool_mode"])}</div></td>
+        <td class="num">{p["clients_active"]}</td><td class="num">{badge(str(p["clients_waiting"]), "danger") if p["clients_waiting"] else "0"}</td>
+        <td class="num">{badge(f"{p['servers_active']}/{size}", "warn") if p["busy"] else f"{p['servers_active']}/{size}"}</td><td class="num">{p["servers_idle"]}</td><td class="num">{p["servers_used"]}</td>
+        <td class="num">{_fmt(p["max_wait_ms"], float)}</td></tr>"""
+        for p in pools
+    ]
+    waiting = sum(p["clients_waiting"] for p in pools)
+    kpis = f"""<div class="grid cols-4">
+      {stat("Clients", f"{sum(p['clients_active'] for p in pools):,}", hint=f"up to {limits['max_client_conn']:,} allowed", icon_name="users")}
+      {stat("Waiting", str(waiting), hint=", ".join(esc(d) for d in report["waiting"]) or "no client is queued", tone="danger" if waiting else "ok", icon_name="alert")}
+      {stat("Server connections", str(sum(p["servers_active"] + p["servers_idle"] + p["servers_used"] for p in pools)), hint=f"{size} per pool, {limits['reserve_pool_size']} in reserve", icon_name="database")}
+      {stat("Busy pools", str(len(report["busy"])), hint=f"at or above {report['busy_share']:.0%} of the pool in use", tone="warn" if report["busy"] else "ok", icon_name="flag")}
+    </div>"""
+    body = f"""{kpis}<div class="section">{card(table(("Pool", "Clients active", "Waiting", "Servers active", "Idle", "Used", "Longest wait (ms)"), rows, numeric=(1, 2, 3, 4, 5, 6), empty_text="PgBouncer has no pools for the app yet.", empty_icon="database"), title="Pools", icon_name="database", cls="flush")}</div>"""
+    return _page("Connection pools", body, admin=admin, active="pools", eyebrow="Operations", subtitle=subtitle, actions=actions)
 
 
 def _back(lab: uuid.UUID | None) -> str:
