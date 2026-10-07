@@ -101,6 +101,11 @@ class LLMSettings(BaseModel):
     pin_exemplars: bool = False
     """Plan Tier 2. Off until the week-6 pinned-vs-retrieved gate run."""
 
+    response_cache: str = Field(default="postgres", pattern="^(off|postgres|shared)$")
+    """Answer a repeat of an identical request from a stored reply: `postgres` (per lab, under row-level security), `shared` (the Redis or memory cache), or `off`."""
+
+    response_cache_ttl_hours: float = Field(default=168.0, gt=0)
+
     per_run_budget_usd: float = 0.50
     """Hard abort on `pipeline_run.total_cost_usd`."""
 

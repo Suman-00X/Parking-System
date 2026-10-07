@@ -16,7 +16,9 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from radreport.adapters.llm.base import LLMClient
 from radreport.adapters.llm.registry import TaskModelResolver
+from radreport.adapters.llm.response_cache import with_response_cache
 from radreport.adapters.storage.object_store import ObjectStore, S3ObjectStore
 from radreport.core.config import get_settings
 from radreport.core.errors import BudgetExceeded, StageFailed
@@ -53,11 +55,20 @@ def _asr_engine() -> Any:
     return StubASREngine() if settings.engine_version.endswith("stub") else WhisperLocalEngine()
 
 
+def _llm_client(tenant_id: uuid.UUID) -> LLMClient | None:
+    """The model client for the graph's model-backed stages; none is configured yet, so the graph runs its deterministic path."""
+    return None
+
+
 def default_graph_factory(session: Session, tenant_id: uuid.UUID) -> tuple[PipelineGraph, ObjectStore]:
-    """The deterministic V1 graph from this lab's own knowledge, templates and the configured engines."""
+    """The V1 graph from this lab's own knowledge, templates and the configured engines."""
     store = S3ObjectStore(get_settings().storage)
     knowledge = StaticKnowledgeProvider(load_tenant_knowledge(session, tenant_id))
-    graph = build_v1_graph(store=store, asr_engine=_asr_engine(), knowledge=knowledge, templates=load_template_candidates(session, tenant_id), sections=[])
+    client = _llm_client(tenant_id)
+    if client is not None:
+        # Per lab, so one lab's stored replies are never served to another.
+        client = with_response_cache(client, tenant_id=tenant_id)
+    graph = build_v1_graph(store=store, asr_engine=_asr_engine(), knowledge=knowledge, templates=load_template_candidates(session, tenant_id), sections=[], llm_client=client)
     return graph, store
 
 
