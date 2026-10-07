@@ -56,7 +56,7 @@ def get_engine(url: str | None = None) -> Engine:
 def connection_budget(max_connections: int) -> tuple[int, int]:
     """(connections every worker's pools could open together, what the server allows)."""
     db = get_settings().db
-    per_worker = db.pool_size + db.max_overflow + db.async_pool_size + db.async_max_overflow
+    per_worker = db.pool_size + db.max_overflow + db.async_pool_size + db.async_max_overflow + db.side_pool_size + 2
     return per_worker * db.workers_hint, max_connections
 
 
@@ -73,6 +73,26 @@ def _check_connection_budget(dbapi_connection: Any, _record: Any) -> None:
     wanted, allowed = connection_budget(allowed)
     if wanted > allowed * 0.9:
         _log.warning("connection_budget_exceeded", pools_could_open=wanted, max_connections=allowed, detail="lower RADREPORT_DB__POOL_SIZE, raise max_connections, or put PgBouncer in front (RADREPORT_DB__PGBOUNCER=true)")
+
+
+@lru_cache(maxsize=4)
+def get_side_engine(url: str | None = None) -> Engine:
+    """A small pool for the access middleware's own queries (rate limits, admin sign-in), so they never wait behind request sessions for a connection."""
+    db = get_settings().db
+    return create_engine(url or get_settings().database_url, **{**engine_options(), "pool_size": db.side_pool_size, "max_overflow": 2})
+
+
+@contextmanager
+def side_session() -> Iterator[Session]:
+    """A lab-less unit of work on the side pool."""
+    with sessionmaker(bind=get_side_engine(), expire_on_commit=False, future=True)() as session:
+        _bind_scope(session, None, None)
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
 
 
 def get_sessionmaker(url: str | None = None) -> sessionmaker[Session]:

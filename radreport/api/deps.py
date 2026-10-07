@@ -7,18 +7,21 @@ reads and may use the replica, admin_lab_session and get_admin_lab_db for an adm
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from typing import Annotated
 
+import anyio
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from radreport.admin.auth import AuthenticatedAdmin
 from radreport.api.access import Identity
 from radreport.cache.lookups import tenant_config
+from radreport.core.config import get_settings
 from radreport.core.tenancy import Principal, tenant_scope
 from radreport.db import sharding
 from radreport.db.session import ACTING_PLATFORM_USER, get_sessionmaker, read_session, select_org, tenant_session
@@ -59,24 +62,77 @@ def current_principal(request: Request) -> Principal:
 CurrentPrincipal = Annotated[Principal, Depends(current_principal)]
 
 
-def get_db(principal: CurrentPrincipal) -> Iterator[Session]:
+#: Teardown threads apart from the request threadpool, so closing a session never waits behind requests that want one.
+_TEARDOWN = anyio.CapacityLimiter(1000)
+_admission: dict[int, anyio.Semaphore] = {}
+
+
+def _admission_gate() -> anyio.Semaphore:
+    """As many request sessions at once as the pool has connections, per worker.
+
+    A request waits here, on the event loop and holding no thread, until a connection is certain.
+    Without it, under overload every thread can end up waiting for a connection while the requests
+    that hold the connections wait for a thread to finish on: a deadlock.
+    """
+    loop = id(asyncio.get_running_loop())
+    gate = _admission.get(loop)
+    if gate is None:
+        db = get_settings().db
+        gate = _admission[loop] = anyio.Semaphore(db.pool_size + db.max_overflow)
+    return gate
+
+
+async def _held(cm: AbstractContextManager[Session], *, enter_in_thread: bool) -> AsyncIterator[Session]:
+    """Yield a session and always close it, even when the request is cancelled.
+
+    FastAPI's own wrapper for a sync generator dependency skips the teardown on cancellation (a
+    client that gives up mid-request), which leaks the session's connection; under overload those
+    leaks stall every worker. Here the commit or rollback runs shielded from cancellation.
+    """
+    gate = _admission_gate()
+    await gate.acquire()
+    try:
+        async for session in _opened(cm, enter_in_thread=enter_in_thread):
+            yield session
+    finally:
+        gate.release()
+
+
+async def _opened(cm: AbstractContextManager[Session], *, enter_in_thread: bool) -> AsyncIterator[Session]:
+    session = await anyio.to_thread.run_sync(cm.__enter__) if enter_in_thread else cm.__enter__()
+    try:
+        yield session
+    except BaseException as exc:
+        with anyio.CancelScope(shield=True):
+            suppressed = await anyio.to_thread.run_sync(cm.__exit__, type(exc), exc, exc.__traceback__, limiter=_TEARDOWN)
+        if not suppressed:
+            raise
+    else:
+        with anyio.CancelScope(shield=True):
+            await anyio.to_thread.run_sync(cm.__exit__, None, None, None, limiter=_TEARDOWN)
+
+
+async def get_db(principal: CurrentPrincipal) -> AsyncIterator[Session]:
     """A session bound to the lab user's own tenant."""
     assert principal.tenant_id is not None
-    with tenant_session(principal.tenant_id, principal=principal) as session:
+    # Entered on the event loop: opening it does no I/O (the lab is bound when the first query starts a transaction).
+    async for session in _held(tenant_session(principal.tenant_id, principal=principal), enter_in_thread=False):
         yield session
 
 
-DbSession = Annotated[Session, Depends(get_db)]
+#: scope="function": the session commits and closes when the handler returns, before the response is sent. A client never sees
+#: success for a write that has not committed, and a slow or vanished client cannot keep a connection checked out.
+DbSession = Annotated[Session, Depends(get_db, scope="function")]
 
 
-def get_read_db(principal: CurrentPrincipal) -> Iterator[Session]:
+async def get_read_db(principal: CurrentPrincipal) -> AsyncIterator[Session]:
     """A read-only session for the lab user's tenant, on the replica when one is usable."""
     assert principal.tenant_id is not None
-    with read_session(principal.tenant_id, principal=principal) as session:
+    async for session in _held(read_session(principal.tenant_id, principal=principal), enter_in_thread=True):
         yield session
 
 
-ReadDbSession = Annotated[Session, Depends(get_read_db)]
+ReadDbSession = Annotated[Session, Depends(get_read_db, scope="function")]
 
 
 @contextmanager
@@ -97,10 +153,10 @@ def admin_lab_session(admin: AuthenticatedAdmin, tenant_id: uuid.UUID, *, ip_add
             raise
 
 
-def get_admin_lab_db(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin) -> Iterator[Session]:
+async def get_admin_lab_db(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin) -> AsyncIterator[Session]:
     """`admin_lab_session` for the `{tenant_id}` in the route's path."""
-    with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
+    async for session in _held(admin_lab_session(admin, tenant_id, ip_address=client_ip(request)), enter_in_thread=True):
         yield session
 
 
-AdminLabDb = Annotated[Session, Depends(get_admin_lab_db)]
+AdminLabDb = Annotated[Session, Depends(get_admin_lab_db, scope="function")]

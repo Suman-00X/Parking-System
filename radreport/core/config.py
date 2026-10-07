@@ -26,6 +26,12 @@ class DatabaseSettings(BaseModel):
     """The async engine's own pool, per worker. Small, because it is counted against max_connections alongside the sync pool."""
 
     async_max_overflow: int = Field(default=5, ge=0, le=200)
+    side_pool_size: int = Field(default=4, ge=1, le=50)
+    """The access middleware's own pool, per worker: rate-limit counts and admin sign-in checks."""
+
+    threadpool_size: int = Field(default=100, ge=8, le=2000)
+    """Worker threads for sync handlers, per process. Above the pool size, so work that needs no connection is never starved by work waiting for one."""
+
     workers_hint: int = Field(default=2, ge=1, le=256)
     """How many app processes share the database; only used to warn when their pools together could exceed max_connections."""
 

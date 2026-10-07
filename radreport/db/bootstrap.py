@@ -40,6 +40,8 @@ def ensure_login_user(conn, username: str, password: str, member_of: str) -> Non
         cursor.execute(sql.SQL("GRANT {} TO {}").format(sql.Identifier(member_of), role))
         # Inherit the role's privileges without an explicit SET ROLE on every connection.
         cursor.execute(sql.SQL("ALTER ROLE {} INHERIT").format(role))
+        # A transaction left open by a crashed or abandoned request is ended by the server, so it cannot pin a connection forever.
+        cursor.execute(sql.SQL("ALTER ROLE {} SET idle_in_transaction_session_timeout = '60s'").format(role))
 
 
 def main(argv: list[str] | None = None) -> int:

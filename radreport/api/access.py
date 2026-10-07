@@ -329,10 +329,10 @@ def _count_in_postgres(limit_id: str, who: str, window_start: dt.datetime) -> in
     """Add one hit to a shared window and return the new count, atomically."""
     from sqlalchemy import text
 
-    from radreport.db.session import get_engine
+    from radreport.db.session import get_side_engine
 
-    # A bare connection: the counter table holds no lab rows, so there is no tenant scope to bind first.
-    with get_engine().begin() as conn:
+    # A bare connection on the side pool: the counter table holds no lab rows, and a count must never queue behind request sessions.
+    with get_side_engine().begin() as conn:
         hits = conn.execute(text("INSERT INTO rate_limit_counter (limit_id, who, window_start, hits) VALUES (:l, :w, :s, 1) ON CONFLICT (limit_id, who, window_start) DO UPDATE SET hits = rate_limit_counter.hits + 1 RETURNING hits"), {"l": limit_id, "w": who, "s": window_start}).scalar_one()
         if random.random() < 0.001:
             # Old windows are useless; sweep them now and then instead of on a schedule.
@@ -373,9 +373,9 @@ class Identity:
 
 def _admin_from_cookie(token: str | None) -> AuthenticatedAdmin | None:
     """Resolve an admin session cookie, through the shared cache."""
-    from radreport.db.session import system_session
+    from radreport.db.session import side_session
 
-    return auth.authenticate_cached(system_session, token)
+    return auth.authenticate_cached(side_session, token)
 
 
 def _deny(status_code: int, detail: str, *, headers: dict[str, str] | None = None) -> Response:

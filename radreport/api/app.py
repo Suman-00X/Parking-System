@@ -9,6 +9,9 @@ whether the database schema is up to date.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
+import anyio
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
@@ -53,7 +56,13 @@ def _replica_health() -> dict[str, object]:
 def create_app() -> FastAPI:
     configure_logging()
 
-    app = FastAPI(title="radreport", version="0.1.0", description=("Radiology voice-to-structured-report: the admin panel, the 15-stage V1 pipeline, and the review surface."))
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):  # type: ignore[no-untyped-def]
+        # More threads than connections, so handlers that need no connection are never starved by ones waiting for one.
+        anyio.to_thread.current_default_thread_limiter().total_tokens = get_settings().db.threadpool_size
+        yield
+
+    app = FastAPI(lifespan=lifespan, title="radreport", version="0.1.0", description=("Radiology voice-to-structured-report: the admin panel, the 15-stage V1 pipeline, and the review surface."))
     app.include_router(auth.router)
     app.include_router(ingest.router)
     app.include_router(admin_api.router)
