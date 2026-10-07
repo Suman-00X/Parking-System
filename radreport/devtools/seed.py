@@ -95,9 +95,13 @@ def seed_platform_admin(session: Session, email: str = "admin@radreport.local", 
 
 
 def seed_demo_accounts(session: Session) -> list[PlatformUser]:
-    """Create each configured demo login, keeping its role and password in step with the settings."""
+    """Create each configured admin-panel demo login, keeping its role and password in step with the settings."""
     accounts = []
     for account in get_settings().demo_accounts:
+        if account.lab:
+            # A lab login belongs to that lab's users, which this seed does not create.
+            log.warning("demo_login_skipped", email=account.email, lab=account.lab, detail="a lab account; add it as a user of that lab")
+            continue
         user = session.execute(select(PlatformUser).where(PlatformUser.email == account.email)).scalar_one_or_none()
         if user is None:
             user = PlatformUser(email=account.email, display_name=account.label, role=PlatformRole(account.role))
