@@ -1,7 +1,7 @@
 """The admin panel's operations API: how the database is being used, and the thresholds ops may change.
 
-Order: query metrics (query_metrics) -> operational settings (list_settings, set_setting,
-reset_setting).
+Order: query metrics (query_metrics) -> table health, vacuum and bloat (table_health) ->
+operational settings (list_settings, set_setting, reset_setting).
 """
 
 from __future__ import annotations
@@ -28,6 +28,16 @@ router = APIRouter(prefix="/admin/api/ops", tags=["admin-ops"])
 def query_metrics(admin: CurrentAdmin) -> dict[str, Any]:
     """Statement-time and statements-per-request percentiles for this worker, and its heaviest routes."""
     return METRICS.snapshot()
+
+
+@router.get("/tables")
+def table_health(admin: CurrentAdmin) -> dict[str, Any]:
+    """Dead rows, last autovacuum and size per table, with the bloated ones flagged."""
+    from radreport.db.table_health import BLOAT_RATIO, table_stats
+
+    with system_session() as session:
+        stats = table_stats(session)
+    return {"bloat_ratio_threshold": BLOAT_RATIO, "bloated": [t.table for t in stats if t.bloated], "tables": [t.as_dict() for t in stats]}
 
 
 @contextmanager
