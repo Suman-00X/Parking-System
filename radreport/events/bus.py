@@ -62,6 +62,19 @@ class PostgresEventBus:
             deliver(event, url=self.url)
 
 
+def kafka_client_config(bootstrap: str | None = None) -> dict[str, str]:
+    """Connection settings every Kafka client of the app shares: the broker, and for a hosted one TLS and SASL credentials."""
+    settings = get_settings().events
+    config = {"bootstrap.servers": bootstrap or settings.kafka_bootstrap, "security.protocol": settings.kafka_security_protocol}
+    if settings.kafka_security_protocol.startswith("SASL"):
+        if not (settings.kafka_sasl_mechanism and settings.kafka_username and settings.kafka_password):
+            raise RuntimeError("a SASL broker needs RADREPORT_EVENTS__KAFKA_SASL_MECHANISM, RADREPORT_EVENTS__KAFKA_USERNAME and RADREPORT_EVENTS__KAFKA_PASSWORD")
+        config |= {"sasl.mechanism": settings.kafka_sasl_mechanism, "sasl.username": settings.kafka_username, "sasl.password": settings.kafka_password}
+    if settings.kafka_ca_location:
+        config["ssl.ca.location"] = settings.kafka_ca_location
+    return config
+
+
 class KafkaEventBus:
     """Produces to `<prefix><topic>` keyed by lab id, so a lab's events keep their order within a partition."""
 
@@ -75,7 +88,7 @@ class KafkaEventBus:
                 from confluent_kafka import Producer  # type: ignore[import-not-found]
             except ImportError as exc:  # pragma: no cover - only without the optional dependency
                 raise RuntimeError("the kafka bus needs confluent-kafka: pip install 'radreport[kafka]'") from exc
-            producer = Producer({"bootstrap.servers": bootstrap or settings.kafka_bootstrap, "enable.idempotence": True, "acks": "all"})
+            producer = Producer({**kafka_client_config(bootstrap), "enable.idempotence": True, "acks": "all"})
         self.producer = producer
 
     def publish(self, events: list[Event]) -> None:

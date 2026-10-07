@@ -30,12 +30,13 @@ def main(argv: list[str] | None = None) -> None:
 
         from confluent_kafka import Consumer  # type: ignore[import-not-found]
 
+        from radreport.events.bus import kafka_client_config
         from radreport.events.consumers import registered, run_kafka_consumer
         from radreport.events.outbox import Topic
 
         settings = get_settings().events
         target = next(c for c in registered() if c.name == args.name)
-        kafka = Consumer({"bootstrap.servers": settings.kafka_bootstrap, "group.id": f"radreport-{args.name}", "enable.auto.commit": False, "auto.offset.reset": "earliest"})
+        kafka = Consumer({**kafka_client_config(), "group.id": f"radreport-{args.name}", "enable.auto.commit": False, "auto.offset.reset": "earliest"})
         kafka.subscribe([settings.topic_prefix + t.value for t in Topic if t.value in target.topics])
         run_kafka_consumer(args.name, kafka_consumer=kafka)
 
