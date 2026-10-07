@@ -183,7 +183,7 @@ def test_an_eval_set_report_is_graded_but_does_not_accrue(migrated_db: str, two_
         eval_set = EvalSet(tenant_id=tenant_id, name=f"acc-{uuid.uuid4().hex[:8]}")
         session.add(eval_set)
         session.flush()
-        session.add(EvalItem(tenant_id=tenant_id, eval_set_id=eval_set.id, recording_id=setup["recording_id"], gold_transcript_verbatim="x", capture_device_class=CaptureDeviceClass.DICTATION_MIC_PTT))
+        session.add(EvalItem(tenant_id=tenant_id, eval_set_id=eval_set.id, recording_id=setup["recording_id"], source_tenant_id=tenant_id, gold_transcript_verbatim="x", capture_device_class=CaptureDeviceClass.DICTATION_MIC_PTT))
         session.flush()
 
         from radreport.review import grading as review_grading

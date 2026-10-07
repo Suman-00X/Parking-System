@@ -64,6 +64,9 @@ SETTINGS: dict[str, SettingSpec] = {
         SettingSpec("adapter.min_speakers", "Minimum distinct speakers", int, 5, "MIN_SPEAKERS_FOR_ADAPTER", 1, 500, "G3_speaker_balance: dictating radiologists a global adapter must hear from."),
         SettingSpec("adapter.max_speaker_share", "Largest speaker's share", float, 0.40, "MAX_SPEAKER_SHARE", 0.05, 1.0, "G3_speaker_balance: the most of the corpus hours one speaker may hold."),
         SettingSpec("adapter.min_device_class_share", "Dominant microphone share", float, 0.90, "MIN_DEVICE_CLASS_SHARE", 0.5, 1.0, "G4_hardware_homogeneous: the share of hours that must come from one kind of capture device."),
+        SettingSpec("partitions.months_ahead", "Months of partitions kept ready", int, 3, "PARTITION_MONTHS_AHEAD", 1, 24, "Monthly tables get their partitions this far ahead, so no row ever lands in the default partition.", group="Database maintenance"),
+        SettingSpec("retention.stage_execution_months", "Stage trace retention (months)", int, 0, "STAGE_EXECUTION_RETENTION_MONTHS", 0, 120, "Months of per-stage trace kept attached; older months are detached into archive tables. 0 keeps everything.", group="Database maintenance"),
+        SettingSpec("retention.asr_segment_months", "ASR segment retention (months)", int, 0, "ASR_SEGMENT_RETENTION_MONTHS", 0, 120, "Months of raw ASR segments kept attached; older months are detached into archive tables. 0 keeps everything.", group="Database maintenance"),
     )
 }
 

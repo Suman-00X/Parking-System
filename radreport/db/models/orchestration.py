@@ -9,10 +9,10 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, Numeric, SmallInteger, String, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, Numeric, PrimaryKeyConstraint, SmallInteger, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from radreport.core.types import ActorType, PipelineTrigger, RunStatus
 from radreport.db.base import Base, TenantScoped, TimestampMixin, enum_check, tenant_fk, tenant_table_args, uuid_pk
@@ -47,19 +47,28 @@ class StageExecution(Base, TenantScoped):
     """One attempt of one stage."""
 
     __tablename__ = "stage_execution"
-    __table_args__ = tenant_table_args(
+    __table_args__ = (
+        # Not tenant_table_args: its UNIQUE (id, tenant_id) cannot exist on a table partitioned by month.
         tenant_fk("pipeline_run_id", "pipeline_run", ondelete="CASCADE"),
         # Denormalised for cost attribution per template and per
         # radiologist — cheap while these rows are written, awkward to backfill.
         tenant_fk("template_id", "template", ondelete="SET NULL"),
         tenant_fk("radiologist_id", "radiologist_profile", ondelete="SET NULL"),
-        UniqueConstraint("pipeline_run_id", "stage_name", "attempt"),
+        # Partitioned by month, so unique keys carry created_at; one row per (run, stage, attempt) is kept by the orchestrator.
+        PrimaryKeyConstraint("id", "created_at", name="pk_stage_execution"),
+        UniqueConstraint("id", "tenant_id", "created_at"),
+        Index("ix_stage_execution_attempt", "pipeline_run_id", "stage_name", "attempt"),
         Index("ix_stage_execution_run", "tenant_id", "pipeline_run_id"),
         Index("ix_stage_execution_cost", "tenant_id", "stage_name", "created_at"),
         Index("ix_stage_execution_task", "tenant_id", "task_key", "created_at"),
+        {"postgresql_partition_by": "RANGE (created_at)"},
     )
 
-    id: Mapped[uuid.UUID] = uuid_pk()
+    @declared_attr.directive
+    def __mapper_args__(cls) -> dict[str, Any]:
+        return {"primary_key": [cls.__table__.c.id]}
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()"))
     pipeline_run_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     stage_name: Mapped[str] = mapped_column(Text, nullable=False)
     attempt: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default=text("1"))

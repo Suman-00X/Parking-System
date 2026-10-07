@@ -42,7 +42,8 @@ class EvalItem(Base, TenantOptional, TimestampMixin):
     __table_args__ = (
         # `eval_set` is nullable-tenant (canonical sets have no tenant), so these are plain FKs.
         ForeignKeyConstraint(["eval_set_id"], ["eval_set.id"], ondelete="CASCADE"),
-        ForeignKeyConstraint(["recording_id"], ["recording.id"], ondelete="RESTRICT"),
+        # Through the source lab: recording is partitioned by lab, so it is reached by (id, tenant_id).
+        ForeignKeyConstraint(["recording_id", "source_tenant_id"], ["recording.id", "recording.tenant_id"], ondelete="RESTRICT", name="fk_eval_item_recording_source"),
         ForeignKeyConstraint(["source_tenant_id"], ["tenant.id"], ondelete="RESTRICT"),
         enum_check("audio_quality_bucket", AudioQualityBucket.values()),
         enum_check("capture_device_class", CaptureDeviceClass.values()),
@@ -56,7 +57,7 @@ class EvalItem(Base, TenantOptional, TimestampMixin):
     eval_set_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     recording_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
 
-    source_tenant_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    source_tenant_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     """Which lab this item came from, even when the set itself is canonical (`tenant_id IS NULL`)."""
 
     gold_transcript_verbatim: Mapped[str | None] = mapped_column(Text, nullable=True)

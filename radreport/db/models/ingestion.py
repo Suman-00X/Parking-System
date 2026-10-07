@@ -1,20 +1,21 @@
 """Table for a captured audio recording -- one recording, one report.
 
 Defines: Recording, whose content hash is unique so re-uploading the same file cannot create a
-second copy.
+second copy. The table is hash-partitioned by lab (eight partitions, created by migration 0015).
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import uuid
+from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Index, Integer, Numeric, SmallInteger, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, DateTime, Index, Integer, Numeric, PrimaryKeyConstraint, SmallInteger, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from radreport.core.types import AudioFormat, CaptureDeviceClass
-from radreport.db.base import Base, TenantScoped, TimestampMixin, enum_check, tenant_fk, tenant_table_args, uuid_pk
+from radreport.db.base import Base, TenantScoped, TimestampMixin, enum_check, tenant_fk, tenant_table_args
 
 
 class Recording(Base, TenantScoped, TimestampMixin):
@@ -25,7 +26,9 @@ class Recording(Base, TenantScoped, TimestampMixin):
         tenant_fk("study_id", "study", ondelete="RESTRICT"),
         tenant_fk("radiologist_id", "radiologist_profile", ondelete="RESTRICT"),
         tenant_fk("study_code_template_id", "template", ondelete="SET NULL"),
-        UniqueConstraint("study_id"),  # enforces 1 recording : 1 report
+        # Partitioned by lab, so every unique key carries tenant_id; a study belongs to one lab, so this still means 1 recording : 1 report.
+        PrimaryKeyConstraint("id", "tenant_id", name="pk_recording"),
+        UniqueConstraint("study_id", "tenant_id"),
         UniqueConstraint("tenant_id", "content_hash"),
         enum_check("capture_device_class", CaptureDeviceClass.values()),
         enum_check("audio_format", AudioFormat.values()),
@@ -33,9 +36,15 @@ class Recording(Base, TenantScoped, TimestampMixin):
         Index("ix_recording_tenant_uploaded", "tenant_id", "uploaded_at"),
         Index("ix_recording_radiologist", "tenant_id", "radiologist_id"),
         Index("ix_recording_training_eligible", "tenant_id", postgresql_where=text("is_training_corpus_eligible")),
+        {"postgresql_partition_by": "HASH (tenant_id)"},
     )
 
-    id: Mapped[uuid.UUID] = uuid_pk()
+    @declared_attr.directive
+    def __mapper_args__(cls) -> dict[str, Any]:
+        # The table's key is (id, tenant_id), as hash partitioning requires; id alone still identifies a row to the ORM.
+        return {"primary_key": [cls.__table__.c.id]}
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()"))
     study_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     radiologist_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
 

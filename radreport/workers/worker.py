@@ -3,7 +3,8 @@
 Order: lease ready work (Worker.run_once -> queue.claim) -> keep the lease alive while a job runs
 (_Heartbeat) -> run the handler and mark the job done in the same transaction as its writes
 (_process) -> on an error, roll the handler's writes back and record the failure in a fresh
-session (queue.fail) -> poll with backoff when the queue is empty (Worker.run_forever).
+session (queue.fail) -> poll with backoff when the queue is empty, queueing the periodic platform jobs each
+minute (Worker.run_forever, schedule.enqueue_due).
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import os
 import random
 import socket
 import threading
+import time
 import traceback
 import uuid
 from collections.abc import Iterator
@@ -23,7 +25,7 @@ from sqlalchemy.orm import Session
 from radreport.core.logging import get_logger
 from radreport.db.instrumentation import query_scope
 from radreport.db.session import system_session, tenant_session
-from radreport.workers import handlers, queue
+from radreport.workers import handlers, queue, schedule
 from radreport.workers.queue import ClaimedJob
 
 log = get_logger(__name__)
@@ -93,8 +95,16 @@ class Worker:
     async def run_forever(self) -> None:
         """Poll until stopped, backing off while the queue is empty."""
         delay = self.poll_min
+        next_schedule = 0.0
         log.info("worker_started", worker_id=self.worker_id, kinds=self.kinds, concurrency=self.concurrency)
         while not self._stopping.is_set():
+            if time.monotonic() >= next_schedule:
+                next_schedule = time.monotonic() + 60
+                try:
+                    with system_session(self.url) as session:
+                        schedule.enqueue_due(session)
+                except Exception as exc:  # noqa: BLE001 - the next minute tries again
+                    log.warning("schedule_enqueue_failed", error=type(exc).__name__)
             try:
                 worked = await self.run_once()
             except Exception as exc:  # noqa: BLE001 - a database blip must not kill the worker
