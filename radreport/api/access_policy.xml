@@ -323,6 +323,18 @@
       <param name="user_id" in="path" type="uuid" required="true"/>
       <param name="password" in="json" type="string" required="true" max-length="1024"/>
     </route>
+    <route id="admin.api.autonomy.classes" method="GET" path="/admin/api/labs/{tenant_id}/autonomy-classes" roles="product_admin,support" rate-limit="admin-read" description="The lab's autonomy classes and their templates.">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+    </route>
+    <route id="admin.api.autonomy.classes.define" method="POST" path="/admin/api/labs/{tenant_id}/autonomy-classes" roles="product_admin" rate-limit="admin-write" max-body-bytes="16384" description="Define an autonomy class with its measured baseline.">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="code" in="json" type="string" required="true" pattern="[A-Z][A-Z0-9_]{1,39}"/>
+      <param name="display_name" in="json" type="string" required="true" max-length="120"/>
+      <param name="baseline_cse_rate" in="json" type="number" required="true"/>
+      <param name="required_n" in="json" type="int" required="true" pattern="\d{2,6}"/>
+      <param name="ni_margin_pp" in="json" type="number"/>
+      <param name="template_codes" in="json" type="array" required="true" max-length="50"/>
+    </route>
     <route id="admin.api.lab.autonomy.read" method="GET" path="/admin/api/labs/{tenant_id}/autonomy/{class_code}" roles="product_admin,support" rate-limit="admin-read">
       <param name="class_code" in="path" type="string" required="true" pattern="[A-Za-z0-9_.\-]{1,64}"/>
       <param name="tenant_id" in="path" type="uuid" required="true"/>

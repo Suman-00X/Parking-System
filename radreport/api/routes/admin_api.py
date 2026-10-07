@@ -28,6 +28,7 @@ from radreport.api.deps import AdminLabDb, CurrentAdmin
 from radreport.api.pagination import Page, paginate, set_page_headers
 from radreport.auth import lab as lab_auth
 from radreport.autonomy import accrual, grant
+from radreport.autonomy import classes as autonomy_classes
 from radreport.autonomy.grant import GrantRefused
 from radreport.core.errors import ModelResolutionError, UngatedActivation
 from radreport.core.tenancy import TenantTransitionError
@@ -296,6 +297,31 @@ def set_lab_user_password(tenant_id: uuid.UUID, user_id: uuid.UUID, body: LabPas
 
 
 # =================================================== autonomy, adaptation ===
+class AutonomyClassRequest(BaseModel):
+    code: str = Field(pattern="^[A-Z][A-Z0-9_]{1,39}$")
+    display_name: str = Field(min_length=1, max_length=120)
+    baseline_cse_rate: float = Field(gt=0, lt=1)
+    required_n: int = Field(ge=30, le=100_000)
+    ni_margin_pp: float = Field(default=1.0, gt=0, le=10)
+    template_codes: list[str] = Field(min_length=1, max_length=50)
+
+
+@router.get("/labs/{tenant_id}/autonomy-classes")
+def list_autonomy_classes(tenant_id: uuid.UUID, session: AdminLabDb) -> list[dict[str, Any]]:
+    """The lab's autonomy classes, their status and evidence so far, and the templates in each."""
+    return autonomy_classes.list_classes(session, tenant_id)
+
+
+@router.post("/labs/{tenant_id}/autonomy-classes", status_code=status.HTTP_201_CREATED)
+def define_autonomy_class(tenant_id: uuid.UUID, body: AutonomyClassRequest, session: AdminLabDb, admin: CurrentAdmin) -> dict[str, Any]:
+    """Create a class with its measured baseline and attach templates, or change it before evidence collection starts."""
+    try:
+        klass = autonomy_classes.define_class(session, tenant_id, autonomy_classes.ClassSpec(code=body.code, display_name=body.display_name, baseline_cse_rate=body.baseline_cse_rate, required_n=body.required_n, ni_margin_pp=body.ni_margin_pp, template_codes=tuple(body.template_codes)), platform_user_id=admin.platform_user_id)
+    except autonomy_classes.ClassRefused as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT if "fixed once" in str(exc) else status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    return {"code": klass.code, "status": klass.status, "required_n": klass.required_n}
+
+
 @router.get("/labs/{tenant_id}/autonomy/{class_code}")
 def get_accrual(tenant_id: uuid.UUID, class_code: str, session: AdminLabDb) -> dict[str, Any]:
     """Current evidence for an autonomy class; grants nothing."""

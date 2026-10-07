@@ -3,7 +3,7 @@
 Order: sign in once per role (Session) -> onboard: templates, a shorthand sheet and a report corpus,
 then the mining steps (onboard) -> the radiologist approves the templates, merges, collisions,
 corpus mappings, critical rules and normals (approve) -> consents, studies and dictations; a
-worker turns them into drafts (capture) -> reviews, signatures, addenda, grades and alerts (review)
+worker turns them into drafts (capture) -> autonomy classes, one collecting evidence (autonomy) -> reviews, signatures, addenda, grades and alerts (review)
 -> transcripts, sound-alike mining and the new-terms scan (lexicon). Every step goes through the
 write routes, so a run also checks them; each response is checked and the summary printed at the
 end. Refused outside developer machines.
@@ -295,6 +295,16 @@ def lexicon(s: Session, lab: str) -> dict[str, Any]:
     return {"transcripts": transcripts, "variants": {k: v for k, v in mined.items() if not isinstance(v, (list, dict))}, "scan": scan, "new_terms_waiting": len(candidates) - (2 if approved else 0), "new_lexicon_version": (approved or {}).get("version"), "variants_answered": answered, "variants_still_waiting": len(pending) - answered}
 
 
+def autonomy(s: Session, lab: str) -> dict[str, Any]:
+    """Two autonomy classes with demo baselines (a real lab measures its own); one starts collecting evidence."""
+    defined = []
+    for body in ({"code": "ROUTINE_ABDOMEN", "display_name": "Routine abdominal imaging", "baseline_cse_rate": 0.025, "required_n": 200, "template_codes": ["US_ABDOMEN", "CT_KUB"]}, {"code": "CHEST_IMAGING", "display_name": "Chest imaging", "baseline_cse_rate": 0.03, "required_n": 300, "template_codes": ["XR_CHEST", "CT_CHEST"]}):
+        if s.call("admin", "POST", f"/admin/api/labs/{lab}/autonomy-classes", json=body, ok=(201, 409)):
+            defined.append(body["code"])
+    s.call("admin", "POST", f"/admin/api/labs/{lab}/autonomy/ROUTINE_ABDOMEN/open-accrual", ok=(200, 409))
+    return {"classes": defined, "accruing": "ROUTINE_ABDOMEN"}
+
+
 def settings(s: Session, lab: str) -> dict[str, Any]:
     """Lab settings a demo shows off: Hindi terms on, and the threshold experiment."""
     print("6/6 lab settings")
@@ -323,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
     if already and not args.force:
         raise SystemExit(f"{args.lab} already has live templates; pass --force to add another round of demo data")
     summary = {"onboarding": onboard(s, lab), "corpus": corpus(s, lab)}
+    summary["autonomy"] = autonomy(s, lab)
     summary["capture"] = capture(s, lab, count=args.dictations, run_worker=not args.no_worker)
     summary["review"] = review(s)
     summary["lexicon"] = lexicon(s, lab)
