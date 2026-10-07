@@ -52,6 +52,9 @@ def upgrade() -> None:
     _create_role(VIEW_OWNER_ROLE, attributes="BYPASSRLS")
 
     op.execute(f"GRANT USAGE ON SCHEMA public TO {APP_ROLE}, {AUDIT_ROLE}, {VIEW_OWNER_ROLE}")
+    # A view or function can only be handed to a role that may create in its schema; a superuser
+    # skips that check, a managed database's owner does not. The role cannot log in.
+    op.execute(f"GRANT CREATE ON SCHEMA public TO {VIEW_OWNER_ROLE}")
     op.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {APP_ROLE}")
     op.execute(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {APP_ROLE}")
     op.execute(f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {APP_ROLE}")
