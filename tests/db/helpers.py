@@ -32,3 +32,22 @@ def signed_in(email: str) -> TestClient:
     assert cookie, "sign-in failed"
     client.cookies.set(auth.SESSION_COOKIE, cookie)
     return client
+
+
+def lab_headers(db: str, tenant_id: uuid.UUID, *roles: str) -> dict[str, str]:
+    """A lab user with `roles` in that lab, signed in; returns the bearer header."""
+    from radreport.auth import lab
+    from radreport.db.models.identity import AppUser
+    from radreport.db.models.tenancy import Tenant
+    from radreport.db.session import tenant_session
+
+    email = f"user-{uuid.uuid4().hex[:8]}@lab.example"
+    with system_session(db) as session:
+        slug = session.get(Tenant, tenant_id).slug
+    with tenant_session(tenant_id, url=db) as session:
+        user = AppUser(tenant_id=tenant_id, employee_code=f"U-{uuid.uuid4().hex[:6]}", display_name="Lab User", email=email, roles=list(roles or ("radiologist",)))
+        session.add(user)
+        session.flush()
+        lab.set_password(session, user_id=user.id, password=PASSWORD, actor_id=None)
+    token = TestClient(create_app()).post("/auth/login", json={"lab": slug, "email": email, "password": PASSWORD}).json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}

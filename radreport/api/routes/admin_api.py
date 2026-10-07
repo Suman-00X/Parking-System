@@ -25,6 +25,7 @@ from radreport.admin.auth import MIN_PASSWORD_LENGTH
 from radreport.admin.modelconfig import ConfigRefused, propose_assignment, step_configuration
 from radreport.admin.onboarding_steps import StepRefused
 from radreport.api.deps import AdminLabDb, CurrentAdmin
+from radreport.api.pagination import Page, paginate, set_page_headers
 from radreport.auth import lab as lab_auth
 from radreport.autonomy import accrual, grant
 from radreport.autonomy.grant import GrantRefused
@@ -65,10 +66,12 @@ def _summary(tenant: Tenant) -> LabSummary:
 
 
 @router.get("/labs", response_model=list[LabSummary])
-def list_labs(admin: CurrentAdmin) -> list[LabSummary]:
-    """Every lab, in every status."""
+def list_labs(admin: CurrentAdmin, response: Response, page: int | None = None, page_size: int | None = None) -> list[LabSummary]:
+    """Every lab, in every status, a page at a time."""
     with system_session() as session:
-        return [_summary(t) for t in session.execute(select(Tenant).order_by(Tenant.name)).scalars().all()]
+        paged = paginate(session, select(Tenant).order_by(Tenant.name, Tenant.id), Page.of(page, page_size))
+        set_page_headers(response, paged, "/admin/api/labs")
+        return [_summary(t) for t in paged.rows]
 
 
 class RegisterLabRequest(BaseModel):
@@ -162,6 +165,23 @@ def onboarding_status(tenant_id: uuid.UUID, session: AdminLabDb) -> dict[str, An
     return onboarding_steps.onboarding_overview(session, tenant_id)
 
 
+@router.get("/labs/{tenant_id}/onboarding/batches")
+def list_batches(tenant_id: uuid.UUID, session: AdminLabDb, response: Response, page: int | None = None, page_size: int | None = None, batch_type: str | None = None) -> list[dict[str, Any]]:
+    """Every import batch for the lab, newest first, a page at a time."""
+    paged = paginate(session, onboarding_steps.batches_query(tenant_id, batch_type=batch_type), Page.of(page, page_size))
+    set_page_headers(response, paged, f"/admin/api/labs/{tenant_id}/onboarding/batches", {"batch_type": batch_type} if batch_type else None)
+    return [onboarding_steps.batch_summary(b) for b in paged.rows]
+
+
+@router.get("/labs/{tenant_id}/onboarding/batches/{batch_id}")
+def batch_status(tenant_id: uuid.UUID, batch_id: uuid.UUID, session: AdminLabDb) -> dict[str, Any]:
+    """One batch: where it is, what it holds, and what still blocks it."""
+    try:
+        return onboarding_steps.batch_status(session, tenant_id, batch_id)
+    except StepRefused as exc:
+        raise _refused(exc) from exc
+
+
 @router.post("/labs/{tenant_id}/onboarding/roster")
 async def upload_roster(tenant_id: uuid.UUID, session: AdminLabDb, file: Annotated[UploadFile, File()], trigger: Annotated[str, Form()] = ImportTrigger.INITIAL_ONBOARDING) -> dict[str, Any]:
     """Import the lab's roster from an HR CSV export."""
@@ -237,9 +257,11 @@ def lab_user_out(user: AppUser) -> LabUserOut:
 
 
 @router.get("/labs/{tenant_id}/users", response_model=list[LabUserOut])
-def list_lab_users(tenant_id: uuid.UUID, session: AdminLabDb) -> list[LabUserOut]:
-    """The lab's staff accounts and whether each can sign in."""
-    return [lab_user_out(u) for u in session.execute(select(AppUser).where(AppUser.tenant_id == tenant_id).order_by(AppUser.display_name)).scalars().all()]
+def list_lab_users(tenant_id: uuid.UUID, session: AdminLabDb, response: Response, page: int | None = None, page_size: int | None = None) -> list[LabUserOut]:
+    """The lab's staff accounts and whether each can sign in, a page at a time."""
+    paged = paginate(session, select(AppUser).where(AppUser.tenant_id == tenant_id).order_by(AppUser.display_name, AppUser.id), Page.of(page, page_size))
+    set_page_headers(response, paged, f"/admin/api/labs/{tenant_id}/users")
+    return [lab_user_out(u) for u in paged.rows]
 
 
 class LabPasswordRequest(BaseModel):
@@ -346,10 +368,12 @@ def _user_out(user: PlatformUser) -> PlatformUserOut:
 
 
 @router.get("/users", response_model=list[PlatformUserOut])
-def list_users(admin: CurrentAdmin) -> list[PlatformUserOut]:
-    """Every product admin and support account."""
+def list_users(admin: CurrentAdmin, response: Response, page: int | None = None, page_size: int | None = None) -> list[PlatformUserOut]:
+    """Every product admin and support account, a page at a time."""
     with system_session() as session:
-        return [_user_out(u) for u in users.list_platform_users(session)]
+        paged = paginate(session, users.platform_users_query(), Page.of(page, page_size))
+        set_page_headers(response, paged, "/admin/api/users")
+        return [_user_out(u) for u in paged.rows]
 
 
 class CreateUserRequest(BaseModel):

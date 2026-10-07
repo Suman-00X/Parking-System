@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from radreport.admin.auth import hash_password, revoke_all_sessions, set_password, verify_password
@@ -34,9 +34,14 @@ def _audit(session: Session, *, actor_id: uuid.UUID | None, action: str, user: P
     session.add(AuditLog(tenant_id=None, actor_id=actor_id, actor_type=ActorType.USER if actor_id else ActorType.SYSTEM, action=action, entity_type="platform_user", entity_id=user.id, after=after))
 
 
+def platform_users_query() -> Select[tuple[PlatformUser]]:
+    """Every platform account, active ones first, in a stable order for paging."""
+    return select(PlatformUser).order_by(PlatformUser.is_active.desc(), PlatformUser.role, PlatformUser.email, PlatformUser.id)
+
+
 def list_platform_users(session: Session) -> list[PlatformUser]:
     """Every platform account, active ones first."""
-    return list(session.execute(select(PlatformUser).order_by(PlatformUser.is_active.desc(), PlatformUser.role, PlatformUser.email)).scalars().all())
+    return list(session.execute(platform_users_query()).scalars().all())
 
 
 def create_platform_user(session: Session, *, email: str, display_name: str, role: str, password: str, actor_id: uuid.UUID | None = None) -> PlatformUser:

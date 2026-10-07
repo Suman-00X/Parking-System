@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from radreport.core.types import ImportTrigger
@@ -41,14 +41,35 @@ def onboarding_overview(session: Session, tenant_id: uuid.UUID) -> dict[str, Any
     verified = int((by_id["corpus_template_coverage"].detail or {}).get("verified_mappings", 0)) if "corpus_template_coverage" in by_id else corpus.verification_progress(session, tenant_id)[0]
     target = corpus.VERIFIED_MAPPING_TARGET
     approved_rules = int((by_id["critical_rules_approved"].detail or {}).get("approved_rules", 0)) if "critical_rules_approved" in by_id else len(critical_rules.active_rules(session, tenant_id=tenant_id))
-    batches = list(session.execute(select(ImportBatch).where(ImportBatch.tenant_id == tenant_id).order_by(ImportBatch.created_at.desc()).limit(20)).scalars().all())
-    return {
-        "corpus_verification": {"verified": verified, "target": target},
-        "gold_progress": {k: {"annotated": v[0], "target": v[1]} for k, v in paired_audio.gold_partition_progress(session, tenant_id=tenant_id).items()},
-        "active_critical_rules": approved_rules,
-        "recent_batches": [{"id": str(b.id), "batch_type": b.batch_type, "stage": b.stage, "status": b.status, "blocking_issue_count": b.blocking_issue_count, "accepted": b.accepted_count, "submitted_by": str(b.submitted_by) if b.submitted_by else None, "submitted_by_platform_user_id": str(b.submitted_by_platform_user_id) if b.submitted_by_platform_user_id else None} for b in batches],
-        "readiness": {"passed": report.passed, "failures": [o.check_id for o in report.failures], "warnings": [o.check_id for o in report.warnings], "checks": [{"check_id": o.check_id, "status": o.status, "measured_value": o.measured_value, "threshold": o.threshold} for o in report.outcomes]},
-    }
+    batches = list(session.execute(batches_query(tenant_id).limit(20)).scalars().all())
+    return {"corpus_verification": {"verified": verified, "target": target}, "gold_progress": {k: {"annotated": v[0], "target": v[1]} for k, v in paired_audio.gold_partition_progress(session, tenant_id=tenant_id).items()}, "active_critical_rules": approved_rules, "recent_batches": [batch_summary(b) for b in batches], "readiness": {"passed": report.passed, "failures": [o.check_id for o in report.failures], "warnings": [o.check_id for o in report.warnings], "checks": [{"check_id": o.check_id, "status": o.status, "measured_value": o.measured_value, "threshold": o.threshold} for o in report.outcomes]}}
+
+
+def batches_query(tenant_id: uuid.UUID, *, batch_type: str | None = None) -> Select[tuple[ImportBatch]]:
+    """A lab's import batches, newest first, in a stable order for paging."""
+    query = select(ImportBatch).where(ImportBatch.tenant_id == tenant_id)
+    if batch_type:
+        query = query.where(ImportBatch.batch_type == batch_type)
+    return query.order_by(ImportBatch.created_at.desc(), ImportBatch.id)
+
+
+def batch_summary(b: ImportBatch) -> dict[str, Any]:
+    """The fields a batch list shows."""
+    return {"id": str(b.id), "batch_type": b.batch_type, "stage": b.stage, "status": b.status, "blocking_issue_count": b.blocking_issue_count, "accepted": b.accepted_count, "rejected": b.rejected_count, "items": b.item_count, "created_at": b.created_at.isoformat() if b.created_at else None, "submitted_by": str(b.submitted_by) if b.submitted_by else None, "submitted_by_platform_user_id": str(b.submitted_by_platform_user_id) if b.submitted_by_platform_user_id else None}
+
+
+def batch_status(session: Session, tenant_id: uuid.UUID, batch_id: uuid.UUID) -> dict[str, Any]:
+    """One batch and what it holds, counted with one grouped query per child table rather than per row."""
+    from radreport.db.models.onboarding import CollisionAuditFinding, CorpusReport, ImportArtifact, TemplateImportCandidate
+
+    batch = session.get(ImportBatch, batch_id)
+    if batch is None or batch.tenant_id != tenant_id:
+        raise StepRefused(404, f"no import_batch {batch_id} in this lab")
+    candidates = dict(session.execute(select(TemplateImportCandidate.review_status, func.count()).where(TemplateImportCandidate.tenant_id == tenant_id, TemplateImportCandidate.import_batch_id == batch_id).group_by(TemplateImportCandidate.review_status)).all())
+    findings = dict(session.execute(select(CollisionAuditFinding.resolution, func.count()).where(CollisionAuditFinding.tenant_id == tenant_id, CollisionAuditFinding.import_batch_id == batch_id).group_by(CollisionAuditFinding.resolution)).all())
+    artifacts = session.execute(select(func.count()).select_from(ImportArtifact).where(ImportArtifact.tenant_id == tenant_id, ImportArtifact.import_batch_id == batch_id)).scalar_one()
+    reports = session.execute(select(func.count()).select_from(CorpusReport).where(CorpusReport.tenant_id == tenant_id, CorpusReport.import_batch_id == batch_id)).scalar_one()
+    return {**batch_summary(batch), "applied_at": batch.applied_at.isoformat() if batch.applied_at else None, "reverted_at": batch.reverted_at.isoformat() if batch.reverted_at else None, "artifacts": int(artifacts), "corpus_reports": int(reports), "template_candidates": {str(k): int(v) for k, v in candidates.items()}, "collision_findings": {str(k): int(v) for k, v in findings.items()}}
 
 
 def import_roster_file(session: Session, tenant_id: uuid.UUID, data: bytes, *, trigger: str = ImportTrigger.INITIAL_ONBOARDING) -> dict[str, Any]:

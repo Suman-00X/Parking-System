@@ -1,7 +1,7 @@
 """The one endpoint that accepts a recording: validate it, store the audio, write the row, record the audit entry.
 
 Order: upload_recording does all four and returns an IngestResponse. It only captures; nothing
-is transcribed here.
+is transcribed here. list_recordings pages through what a lab has captured.
 """
 
 from __future__ import annotations
@@ -9,14 +9,17 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from radreport.adapters.storage.object_store import S3ObjectStore
 from radreport.api.deps import CurrentPrincipal, DbSession
+from radreport.api.pagination import Page, paginate, set_page_headers
 from radreport.core.config import get_settings
 from radreport.core.errors import DuplicateRecording, IngestRejected
 from radreport.core.types import CaptureDeviceClass
+from radreport.db.models.ingestion import Recording
 from radreport.ingest.service import IngestRequest, ingest_recording
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -58,3 +61,25 @@ async def upload_recording(session: DbSession, principal: CurrentPrincipal, file
 
     recording = result.recording
     return IngestResponse(recording_id=recording.id, content_hash=recording.content_hash, duration_seconds=float(recording.duration_seconds or 0), sample_rate_hz=recording.sample_rate_hz or 0, audio_format=recording.audio_format, measured_snr_db=(float(recording.measured_snr_db) if recording.measured_snr_db is not None else None), silence_ratio=(float(recording.silence_ratio) if recording.silence_ratio is not None else None), capture_device_class=recording.capture_device_class, warnings=result.probe.warnings)
+
+
+class RecordingSummary(BaseModel):
+    recording_id: uuid.UUID
+    study_id: uuid.UUID
+    radiologist_id: uuid.UUID
+    uploaded_at: str
+    duration_seconds: float | None
+    audio_format: str
+    capture_device_class: str
+    measured_snr_db: float | None
+
+
+@router.get("/recordings", response_model=list[RecordingSummary])
+def list_recordings(session: DbSession, principal: CurrentPrincipal, response: Response, radiologist_id: uuid.UUID | None = None, page: int | None = None, page_size: int | None = None) -> list[RecordingSummary]:
+    """The lab's recordings, newest first, a page at a time."""
+    query = select(Recording).where(Recording.tenant_id == principal.tenant_id)
+    if radiologist_id is not None:
+        query = query.where(Recording.radiologist_id == radiologist_id)
+    paged = paginate(session, query.order_by(Recording.uploaded_at.desc(), Recording.id), Page.of(page, page_size))
+    set_page_headers(response, paged, "/ingest/recordings", {"radiologist_id": str(radiologist_id)} if radiologist_id else None)
+    return [RecordingSummary(recording_id=r.id, study_id=r.study_id, radiologist_id=r.radiologist_id, uploaded_at=r.uploaded_at.isoformat(), duration_seconds=float(r.duration_seconds) if r.duration_seconds is not None else None, audio_format=r.audio_format, capture_device_class=r.capture_device_class, measured_snr_db=float(r.measured_snr_db) if r.measured_snr_db is not None else None) for r in paged.rows]

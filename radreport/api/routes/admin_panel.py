@@ -27,8 +27,9 @@ from radreport.admin.modelconfig import ConfigRefused, available_models, create_
 from radreport.admin.onboarding_steps import StepRefused
 from radreport.api.access import load_policy
 from radreport.api.deps import CurrentAdmin, admin_lab_session, client_ip
+from radreport.api.pagination import Page, paginate
 from radreport.api.routes.admin_api import SLUG_PATTERN, lab_user_out
-from radreport.api.ui import admin_page, auth_page, badge, banner, card, esc, facts, flash, icon, progress, stat, status_badge, steps, table
+from radreport.api.ui import admin_page, auth_page, badge, banner, card, esc, facts, flash, icon, pager, progress, stat, status_badge, steps, table
 from radreport.auth import lab as lab_auth
 from radreport.core.config import get_settings
 from radreport.core.errors import ModelResolutionError, UngatedActivation
@@ -36,7 +37,7 @@ from radreport.core.tenancy import TenantTransitionError, allowed_transitions
 from radreport.core.types import CheckStatus, ImportBatchType, PlatformRole, ProviderKind, TenantStatus
 from radreport.db.models.identity import AppUser
 from radreport.db.models.modelconfig import ModelDefinition, ModelProvider
-from radreport.db.models.tenancy import Tenant
+from radreport.db.models.tenancy import PlatformUser, Tenant
 from radreport.db.session import system_session
 from radreport.onboarding.batches import ArtifactUpload
 from radreport.onboarding.readiness import evaluate_readiness
@@ -164,15 +165,16 @@ def home(admin: CurrentAdmin) -> Response:
 
 
 @router.get("/labs", response_class=HTMLResponse)
-def labs_page(admin: CurrentAdmin, error: str | None = None, notice: str | None = None, show: str | None = None) -> HTMLResponse:
-    """The lab list; offboarded labs are hidden unless asked for."""
+def labs_page(admin: CurrentAdmin, error: str | None = None, notice: str | None = None, show: str | None = None, page: int | None = None) -> HTMLResponse:
+    """The lab list, a page at a time; offboarded labs are hidden unless asked for."""
     show_all = show == "all"
     with system_session() as session:
         counts = dict(session.execute(sa.select(Tenant.status, sa.func.count()).group_by(Tenant.status)).all())
-        query = sa.select(Tenant).order_by(Tenant.name)
+        query = sa.select(Tenant).order_by(Tenant.name, Tenant.id)
         if not show_all:
             query = query.where(Tenant.status != TenantStatus.OFFBOARDED)
-        tenants = list(session.execute(query).scalars().all())
+        paged = paginate(session, query, Page.of(page, 25))
+        tenants = paged.rows
         rows = [
             f"""<tr>
               <td><div class="row" style="gap:12px;flex-wrap:nowrap"><span class="avatar" style="border-radius:10px">{_esc(t.name[:2].upper())}</span><div><strong><a href="/admin/labs/{t.id}">{_esc(t.name)}</a></strong><div class="cell-sub mono">{_esc(t.slug)}</div></div></div></td>
@@ -193,7 +195,7 @@ def labs_page(admin: CurrentAdmin, error: str | None = None, notice: str | None 
       {stat("Suspended", str(counts.get(TenantStatus.SUSPENDED, 0)), hint="routing to manual fallback", tone="warn" if counts.get(TenantStatus.SUSPENDED) else "", icon_name="alert")}
     </div>"""
     toggle = '<a class="btn sm ghost" href="/admin/labs">Hide offboarded</a>' if show_all else '<a class="btn sm ghost" href="/admin/labs?show=all">Show offboarded</a>'
-    lab_table = card(table(("Lab", "Status", "Training data", ""), rows, empty_text="No labs yet. Register the first one below.", empty_icon="labs", numeric=(3,)), title="All labs", subtitle=f"{len(tenants)} shown", icon_name="labs", actions=toggle, cls="flush")
+    lab_table = card(table(("Lab", "Status", "Training data", ""), rows, empty_text="No labs yet. Register the first one below.", empty_icon="labs", numeric=(3,)) + pager(page=paged.page.number, pages=paged.pages, total=paged.total, path="/admin/labs", extra={"show": "all"} if show_all else None), title="All labs", subtitle=f"{paged.total} in all", icon_name="labs", actions=toggle, cls="flush")
     register = (
         card(
             f"""<form method="post" action="/admin/labs">
@@ -637,14 +639,17 @@ def run_onboarding_step(tenant_id: uuid.UUID, step: str, request: Request, admin
 
 # ================================================================== users ===
 @router.get("/users", response_class=HTMLResponse)
-def users_page(admin: CurrentAdmin, error: str | None = None, notice: str | None = None) -> HTMLResponse:
+def users_page(admin: CurrentAdmin, error: str | None = None, notice: str | None = None, page: int | None = None) -> HTMLResponse:
     """Who can sign in to this panel, and in which role."""
     can_create = _can(admin, "POST", "/admin/users")
     sample = uuid.UUID(int=0)
     can_toggle = _can(admin, "POST", f"/admin/users/{sample}/deactivate")
     can_reset = _can(admin, "POST", f"/admin/users/{sample}/password")
     with system_session() as session:
-        accounts = users.list_platform_users(session)
+        role_counts = dict(session.execute(sa.select(PlatformUser.role, sa.func.count()).where(PlatformUser.is_active.is_(True)).group_by(PlatformUser.role)).all())
+        all_count = session.execute(sa.select(sa.func.count()).select_from(PlatformUser)).scalar_one()
+        paged = paginate(session, users.platform_users_query(), Page.of(page, 25))
+        accounts = paged.rows
         rows = []
         for u in accounts:
             actions = []
@@ -660,8 +665,8 @@ def users_page(admin: CurrentAdmin, error: str | None = None, notice: str | None
                 <td class="nowrap">{_esc(u.last_login_at.strftime("%Y-%m-%d %H:%M") if u.last_login_at else "never")}</td>
                 <td><div class="row">{"".join(actions)}</div></td></tr>"""
             )
-        active_count = sum(1 for u in accounts if u.is_active)
-        admins = sum(1 for u in accounts if u.role == PlatformRole.PRODUCT_ADMIN and u.is_active)
+        active_count = sum(role_counts.values())
+        admins = role_counts.get(PlatformRole.PRODUCT_ADMIN, 0)
 
     create_form = (
         card(
@@ -686,11 +691,11 @@ def users_page(admin: CurrentAdmin, error: str | None = None, notice: str | None
         else ""
     )
     kpis = f"""<div class="grid cols-3">
-      {stat("Accounts", str(len(accounts)), hint=f"{active_count} active", icon_name="users")}
-      {stat("Product admins", str(admins), hint="can change configuration", icon_name="shield")}
-      {stat("Support", str(sum(1 for u in accounts if u.role == PlatformRole.SUPPORT)), hint="read-only access", icon_name="account")}
+      {stat("Accounts", str(all_count), hint=f"{active_count} active", icon_name="users")}
+      {stat("Product admins", str(admins), hint="active, can change configuration", icon_name="shield")}
+      {stat("Support", str(role_counts.get(PlatformRole.SUPPORT, 0)), hint="active, read-only access", icon_name="account")}
     </div>"""
-    accounts_card = card(table(("Name", "Role", "Status", "Last sign-in", ""), rows, empty_icon="users"), title="Accounts", subtitle="Deactivating an account or setting its password signs it out everywhere. Which role may do what is set in <code>radreport/api/access_policy.xml</code>.", icon_name="users", cls="flush")
+    accounts_card = card(table(("Name", "Role", "Status", "Last sign-in", ""), rows, empty_icon="users") + pager(page=paged.page.number, pages=paged.pages, total=paged.total, path="/admin/users"), title="Accounts", subtitle="Deactivating an account or setting its password signs it out everywhere. Which role may do what is set in <code>radreport/api/access_policy.xml</code>.", icon_name="users", cls="flush")
     return _page("Platform users", f"""{_messages(error, notice)}{kpis}<div class="section">{accounts_card}</div><div class="section">{create_form}</div>""", admin=admin, active="users", eyebrow="People", subtitle="Who can sign in to this panel, and in which role.")
 
 

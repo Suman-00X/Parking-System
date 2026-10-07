@@ -100,6 +100,7 @@
       <param name="error" in="query" type="string" max-length="500"/>
       <param name="notice" in="query" type="string" max-length="500"/>
       <param name="show" in="query" type="string" pattern="all"/>
+      <param name="page" in="query" type="int" pattern="[1-9]\d{0,5}"/>
     </route>
     <route id="admin.labs.create" method="POST" path="/admin/labs" roles="product_admin" rate-limit="admin-write" max-body-bytes="65536">
       <param name="admin_display_name" in="form" type="string" required="true" max-length="200"/>
@@ -183,6 +184,7 @@
     <route id="admin.users.page" method="GET" path="/admin/users" roles="product_admin,support" rate-limit="admin-read">
       <param name="error" in="query" type="string" max-length="500"/>
       <param name="notice" in="query" type="string" max-length="500"/>
+      <param name="page" in="query" type="int" pattern="[1-9]\d{0,5}"/>
     </route>
     <route id="admin.users.create" method="POST" path="/admin/users" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
       <param name="display_name" in="form" type="string" required="true" max-length="200"/>
@@ -211,7 +213,10 @@
 
   <!-- ========================================== admin panel (JSON) -->
   <routes realm="admin">
-    <route id="admin.api.labs.list" method="GET" path="/admin/api/labs" roles="product_admin,support" rate-limit="admin-read"/>
+    <route id="admin.api.labs.list" method="GET" path="/admin/api/labs" roles="product_admin,support" rate-limit="admin-read" description="Labs, a page at a time; totals in X-Total-Count and Link.">
+      <param name="page" in="query" type="int" pattern="[1-9]\d{0,5}"/>
+      <param name="page_size" in="query" type="int" pattern="[1-9]\d{0,2}"/>
+    </route>
     <route id="admin.api.labs.create" method="POST" path="/admin/api/labs" roles="product_admin" rate-limit="admin-write" max-body-bytes="65536">
       <param name="admin_display_name" in="json" type="string" required="true" max-length="200"/>
       <param name="admin_email" in="json" type="string" required="true" pattern="[^@\s]{1,64}@[^@\s]{1,255}" max-length="320"/>
@@ -244,6 +249,16 @@
     <route id="admin.api.lab.onboarding.status" method="GET" path="/admin/api/labs/{tenant_id}/onboarding" roles="product_admin,support" rate-limit="admin-read">
       <param name="tenant_id" in="path" type="uuid" required="true"/>
     </route>
+    <route id="admin.api.lab.onboarding.batches" method="GET" path="/admin/api/labs/{tenant_id}/onboarding/batches" roles="product_admin,support" rate-limit="admin-read" description="A lab's import batches, newest first, paged.">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="page" in="query" type="int" pattern="[1-9]\d{0,5}"/>
+      <param name="page_size" in="query" type="int" pattern="[1-9]\d{0,2}"/>
+      <param name="batch_type" in="query" type="string" pattern="[a-z_]{1,24}" max-length="24"/>
+    </route>
+    <route id="admin.api.lab.onboarding.batch" method="GET" path="/admin/api/labs/{tenant_id}/onboarding/batches/{batch_id}" roles="product_admin,support" rate-limit="admin-read" description="One import batch's status and contents.">
+      <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="batch_id" in="path" type="uuid" required="true"/>
+    </route>
     <route id="admin.api.lab.onboarding.roster" method="POST" path="/admin/api/labs/{tenant_id}/onboarding/roster" roles="product_admin" rate-limit="admin-upload" max-body-bytes="52428800">
       <param name="tenant_id" in="path" type="uuid" required="true"/>
       <param name="trigger" in="form" type="string" pattern="initial_onboarding|template_change|new_radiologist|periodic_remine|site_expansion"/>
@@ -271,6 +286,8 @@
     </route>
     <route id="admin.api.lab.users" method="GET" path="/admin/api/labs/{tenant_id}/users" roles="product_admin,support" rate-limit="admin-read">
       <param name="tenant_id" in="path" type="uuid" required="true"/>
+      <param name="page" in="query" type="int" pattern="[1-9]\d{0,5}"/>
+      <param name="page_size" in="query" type="int" pattern="[1-9]\d{0,2}"/>
     </route>
     <route id="admin.api.lab.user.password" method="POST" path="/admin/api/labs/{tenant_id}/users/{user_id}/password" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
       <param name="tenant_id" in="path" type="uuid" required="true"/>
@@ -308,7 +325,10 @@
       <param name="current_password" in="json" type="string" required="true" max-length="1024"/>
       <param name="new_password" in="json" type="string" required="true" max-length="1024"/>
     </route>
-    <route id="admin.api.users.list" method="GET" path="/admin/api/users" roles="product_admin,support" rate-limit="admin-read"/>
+    <route id="admin.api.users.list" method="GET" path="/admin/api/users" roles="product_admin,support" rate-limit="admin-read">
+      <param name="page" in="query" type="int" pattern="[1-9]\d{0,5}"/>
+      <param name="page_size" in="query" type="int" pattern="[1-9]\d{0,2}"/>
+    </route>
     <route id="admin.api.ops.queries" method="GET" path="/admin/api/ops/queries" roles="product_admin,support" rate-limit="admin-read" description="Statement timings and statements per request, for this worker."/>
     <route id="admin.api.users.create" method="POST" path="/admin/api/users" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
       <param name="display_name" in="json" type="string" required="true" max-length="200"/>
@@ -342,6 +362,11 @@
       <param name="study_id" in="form" type="uuid" required="true"/>
       <param name="file" in="file" type="file" required="true"/>
     </route>
+    <route id="ingest.recordings.list" method="GET" path="/ingest/recordings" roles="radiologist,lab_admin,auditor" rate-limit="lab-read" description="The lab's recordings, newest first, paged.">
+      <param name="radiologist_id" in="query" type="uuid"/>
+      <param name="page" in="query" type="int" pattern="[1-9]\d{0,5}"/>
+      <param name="page_size" in="query" type="int" pattern="[1-9]\d{0,2}"/>
+    </route>
   </routes>
 
   <!-- ======================================= onboarding (lab side) -->
@@ -357,6 +382,8 @@
     </route>
     <route id="onboarding.candidates" method="GET" path="/onboarding/templates/candidates" roles="lab_admin,radiologist" rate-limit="lab-read">
       <param name="batch_id" in="query" type="uuid"/>
+      <param name="page" in="query" type="int" pattern="[1-9]\d{0,5}"/>
+      <param name="page_size" in="query" type="int" pattern="[1-9]\d{0,2}"/>
     </route>
     <route id="onboarding.candidate.review" method="POST" path="/onboarding/templates/candidates/{candidate_id}/review" roles="radiologist" rate-limit="lab-write" max-body-bytes="1048576">
       <param name="candidate_id" in="path" type="uuid" required="true"/>

@@ -304,3 +304,17 @@ def bar_list(rows: Sequence[tuple[str, float]], *, money: bool = True) -> str:
     top = max(v for _, v in rows) or 1.0
     fmt = (lambda v: f"${v:,.4f}" if v < 1 else f"${v:,.2f}") if money else (lambda v: f"{v:,.0f}")
     return '<div class="bars">' + "".join(f'<div class="bar-row"><span class="nowrap" title="{esc(label)}">{esc(label)}</span><div class="bar"><span style="width:{max(2.0, v / top * 100):.1f}%"></span></div><span class="val">{esc(fmt(v))}</span></div>' for label, v in rows) + "</div>"
+
+
+def pager(*, page: int, pages: int, total: int, path: str, extra: dict[str, str] | None = None) -> str:
+    """Previous / next links under a paged table; nothing when it all fits on one page."""
+    if pages <= 1:
+        return ""
+    from urllib.parse import urlencode
+
+    def href(n: int) -> str:
+        return f"{esc(path)}?{esc(urlencode({**(extra or {}), 'page': n}))}"
+
+    prev = f'<a class="btn sm" href="{href(page - 1)}" rel="prev">{icon("back")}Previous</a>' if page > 1 else '<span class="btn sm" aria-disabled="true">Previous</span>'
+    nxt = f'<a class="btn sm" href="{href(page + 1)}" rel="next">Next{icon("arrow")}</a>' if page < pages else '<span class="btn sm" aria-disabled="true">Next</span>'
+    return f'<div class="spread" style="padding:14px 22px"><span class="meta">Page {page} of {pages} · {total} in all</span><div class="row">{prev}{nxt}</div></div>'

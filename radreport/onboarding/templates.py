@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
 from radreport.core.errors import ApprovalRequired, BatchBlocked
@@ -377,13 +377,17 @@ def revert_applied_templates(session: Session, *, tenant_id: uuid.UUID, batch: I
     return restored
 
 
-def list_pending_review(session: Session, *, tenant_id: uuid.UUID, batch_id: uuid.UUID | None = None) -> list[TemplateImportCandidate]:
-    """The radiologists' review queue, low-confidence parses first."""
+def pending_review_query(*, tenant_id: uuid.UUID, batch_id: uuid.UUID | None = None) -> Select[tuple[TemplateImportCandidate]]:
+    """The radiologists' review queue, low-confidence parses first, sorted in the database so it can be paged."""
     stmt = select(TemplateImportCandidate).where(TemplateImportCandidate.tenant_id == tenant_id, TemplateImportCandidate.review_status == CandidateReviewStatus.PENDING)
     if batch_id is not None:
         stmt = stmt.where(TemplateImportCandidate.import_batch_id == batch_id)
-    rows = list(session.execute(stmt).scalars().all())
-    return sorted(rows, key=lambda c: (c.parse_confidence is None, c.parse_confidence or 0.0))
+    return stmt.order_by(TemplateImportCandidate.parse_confidence.asc().nulls_last(), TemplateImportCandidate.id)
+
+
+def list_pending_review(session: Session, *, tenant_id: uuid.UUID, batch_id: uuid.UUID | None = None) -> list[TemplateImportCandidate]:
+    """The radiologists' review queue, low-confidence parses first."""
+    return list(session.execute(pending_review_query(tenant_id=tenant_id, batch_id=batch_id)).scalars().all())
 
 
 def list_artifacts(session: Session, *, tenant_id: uuid.UUID, batch_id: uuid.UUID) -> list[ImportArtifact]:

@@ -12,10 +12,11 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
 from radreport.api.deps import CurrentPrincipal, DbSession
+from radreport.api.pagination import Page, paginate, set_page_headers
 from radreport.cache.lookups import user_roles
 from radreport.core.errors import ApprovalRequired, BatchBlocked, BatchStateError, ConsentRequired
 from radreport.core.tenancy import Principal
@@ -112,10 +113,12 @@ class CandidateSummary(BaseModel):
 
 
 @router.get("/templates/candidates", response_model=list[CandidateSummary])
-def list_candidates(session: DbSession, principal: CurrentPrincipal, batch_id: uuid.UUID | None = None) -> list[CandidateSummary]:
-    """The review queue, lowest parse confidence first."""
+def list_candidates(session: DbSession, principal: CurrentPrincipal, response: Response, batch_id: uuid.UUID | None = None, page: int | None = None, page_size: int | None = None) -> list[CandidateSummary]:
+    """The review queue, lowest parse confidence first, a page at a time."""
     tenant_id = _tenant_of(principal, session)
-    rows = templates.list_pending_review(session, tenant_id=tenant_id, batch_id=batch_id)
+    paged = paginate(session, templates.pending_review_query(tenant_id=tenant_id, batch_id=batch_id), Page.of(page, page_size))
+    set_page_headers(response, paged, "/onboarding/templates/candidates", {"batch_id": str(batch_id)} if batch_id else None)
+    rows = paged.rows
     return [CandidateSummary(id=c.id, proposed_code=c.proposed_code, proposed_spoken_study_code=c.proposed_spoken_study_code, proposed_modality=c.proposed_modality, proposed_body_region=c.proposed_body_region, parse_confidence=float(c.parse_confidence) if c.parse_confidence is not None else None, field_count=len((c.proposed_json_schema or {}).get("properties", {})), needs_field_by_field_review=(c.parse_confidence is None or float(c.parse_confidence) < templates.LOW_CONFIDENCE_THRESHOLD), merged_into_template_id=c.merged_into_template_id) for c in rows]
 
 
