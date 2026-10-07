@@ -14,7 +14,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile, 
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from radreport.adapters.storage.object_store import object_store
+from radreport.adapters.storage.object_store import StorageUnavailable, object_store
 from radreport.api.deps import CurrentPrincipal, DbSession
 from radreport.api.pagination import Page, paginate_async, set_page_headers
 from radreport.core.config import get_settings
@@ -66,6 +66,8 @@ async def upload_recording(session: DbSession, principal: CurrentPrincipal, file
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"message": exc.reason, "code": exc.code}) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except StorageUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
 
     recording = result.recording
     # Queued in the ingest transaction: the job exists exactly when the recording does, and a retried upload queues nothing new.

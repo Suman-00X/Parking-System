@@ -1,7 +1,8 @@
 """Stores and retrieves recorded audio in S3-compatible object storage.
 
 Defines: ObjectStore, the interface; S3ObjectStore for real buckets; LocalFileObjectStore, a folder,
-for developer machines without S3; InMemoryObjectStore for tests; object_store, which picks one from
+for developer machines without S3; InMemoryObjectStore for tests; UnconfiguredObjectStore, which refuses
+every operation (StorageUnavailable) when no S3 is configured; object_store, which picks one from
 settings; and audio_key, which builds the storage path for a recording.
 """
 
@@ -10,8 +11,10 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, BinaryIO, Protocol
 
+from radreport.core import fallbacks
 from radreport.core.config import StorageSettings
 from radreport.core.logging import get_logger
 
@@ -157,8 +160,39 @@ class LocalFileObjectStore:
         self._path(key).unlink(missing_ok=True)
 
 
+class StorageUnavailable(RuntimeError):
+    """No object store is configured, so audio can be neither kept nor read."""
+
+
+class UnconfiguredObjectStore:
+    """Stands in when no S3 is configured: the rest of the app runs, and every audio operation fails with StorageUnavailable."""
+
+    def _refuse(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise StorageUnavailable("audio storage is not configured: set RADREPORT_STORAGE__BUCKET with S3 credentials (or RADREPORT_STORAGE__ENDPOINT_URL)")
+
+    put = get = open = delete = _refuse
+
+    def exists(self, key: str) -> bool:
+        return False
+
+
+@lru_cache(maxsize=1)
+def _aws_credentials_found() -> bool:
+    """Whether boto3's own chain (environment, profile, container or instance role) finds credentials."""
+    try:
+        import boto3
+
+        return boto3.Session().get_credentials() is not None
+    except Exception:  # noqa: BLE001 - no boto3 or a broken profile both mean no credentials
+        return False
+
+
+def _s3_configured(config: StorageSettings) -> bool:
+    return bool(config.endpoint_url or config.access_key_id) or _aws_credentials_found()
+
+
 def object_store(settings: StorageSettings | None = None) -> ObjectStore:
-    """The store the settings name; the local folder only where the environment allows it."""
+    """The store the settings name; the local folder only where the environment allows it, and a refusing stand-in when no S3 is configured."""
     from radreport.core.config import get_settings
 
     config = settings or get_settings().storage
@@ -166,4 +200,7 @@ def object_store(settings: StorageSettings | None = None) -> ObjectStore:
         if get_settings().environment not in ("local", "test", "development"):
             raise RuntimeError("RADREPORT_STORAGE__BACKEND=local is for developer machines; use S3 here")
         return LocalFileObjectStore(config.local_path)
+    if not _s3_configured(config):
+        fallbacks.note("storage", "no S3 credentials or endpoint; audio upload and playback answer 503 until RADREPORT_STORAGE__* is set")
+        return UnconfiguredObjectStore()
     return S3ObjectStore(config)

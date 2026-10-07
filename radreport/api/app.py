@@ -26,6 +26,7 @@ from radreport.api.routes import admin_api, admin_ops_panel, admin_panel, auth, 
 from radreport.auth.lab import require_token_secret
 from radreport.cache import shared as shared_cache
 from radreport.cache.request import RequestCacheMiddleware
+from radreport.core import fallbacks
 from radreport.core.config import get_settings
 from radreport.core.logging import configure_logging, get_logger
 from radreport.db import sharding
@@ -92,6 +93,7 @@ def create_app() -> FastAPI:
 
     app.include_router(showcase.router)
     shared_cache.register_health()
+    fallbacks.register_health()
     if get_settings().db.replica_url:
         health.register_check("replica", _replica_health)
 

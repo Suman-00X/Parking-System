@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from radreport.core.config import get_settings
-from radreport.core.logging import configure_logging
+from radreport.core.logging import configure_logging, get_logger
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -21,6 +21,13 @@ def main(argv: list[str] | None = None) -> None:
 
         Relay().run_forever()
     else:
+        from radreport.events.bus import KafkaEventBus, get_bus
+
+        if not isinstance(get_bus(), KafkaEventBus):
+            # The relay applies events in process when Kafka is off or unreachable; this consumer has nothing to read.
+            get_logger(__name__).warning("kafka_consumer_idle", consumer=args.name, reason="kafka is not configured or not reachable")
+            return
+
         from confluent_kafka import Consumer  # type: ignore[import-not-found]
 
         from radreport.events.consumers import registered, run_kafka_consumer

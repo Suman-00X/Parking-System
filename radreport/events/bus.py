@@ -2,7 +2,8 @@
 
 Order: an event as it travels (Event) -> the interface (EventBus.publish) -> deliver straight to the
 in-process consumers, deduplicated in Postgres (PostgresEventBus) -> or produce to Kafka topics keyed
-by lab, for consumers in other processes (KafkaEventBus) -> pick one from settings (get_bus).
+by lab, for consumers in other processes (KafkaEventBus) -> pick one from settings, falling back to
+Postgres when Kafka cannot be reached (get_bus).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from radreport.core import fallbacks
 from radreport.core.config import get_settings
 from radreport.core.logging import get_logger
 
@@ -89,7 +91,19 @@ class KafkaEventBus:
         if remaining or failures:
             raise RuntimeError(f"kafka did not acknowledge {remaining or len(failures)} event(s): {'; '.join(failures[:3])}")
 
+    def reachable(self, timeout_seconds: float = 10.0) -> None:
+        """Raise unless the broker answers a metadata request within the timeout."""
+        self.producer.list_topics(timeout=timeout_seconds)
+
 
 def get_bus(url: str | None = None) -> EventBus:
-    """The configured bus. The hosted demo runs the Postgres one; Kafka runs locally and in the crash test."""
-    return KafkaEventBus() if get_settings().events.bus == "kafka" else PostgresEventBus(url)
+    """The configured bus; the Postgres one when Kafka is chosen but unusable (no package, incomplete credentials, no broker), since consumed_event keeps delivery exactly-once either way."""
+    if get_settings().events.bus != "kafka":
+        return PostgresEventBus(url)
+    try:
+        bus = KafkaEventBus()
+        bus.reachable()
+    except Exception as exc:  # noqa: BLE001 - any failure to reach Kafka means running without it
+        fallbacks.note("events", f"kafka unusable ({type(exc).__name__}: {exc}"[:300] + "); events are applied in process through Postgres")
+        return PostgresEventBus(url)
+    return bus
