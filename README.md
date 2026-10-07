@@ -1,674 +1,346 @@
 # radreport
 
-Radiology voice-to-structured-report pipeline. Built from `PLAN.md`, which is
-derived from `radiology-reporting-system-design.pdf` (Technical Design Document
-v1.0). Where the two disagree, the design doc wins on clinical and safety
-questions; the plan wins on sequencing.
+Turns a radiologist's spoken dictation into a structured, checked draft report that a
+radiologist reviews and signs, then exports as HL7 v2 ORU^R01 or FHIR R4. Many labs run on
+one deployment, with each lab's rows walled off by Postgres row-level security.
 
-**Status: Phases 0–6 built.** A recording goes in, the pipeline produces a
-draft, a reviewer signs it, and it exports as HL7 v2 ORU^R01 or FHIR R4. Beta
-adds ROVER reconciliation, phonetic post-correction and the LLM critic; GA adds
-the autonomy grant/revocation engine, §8.6.5's adaptation gates and drift
-monitoring.
+> Here to evaluate the project rather than work on it? Start with **[RECRUITERS.md](RECRUITERS.md)**.
 
-Two things are deliberately **not** finished, and both are visible rather than
-papered over: Phase 2's bake-off is blocked on audio from the new microphones,
-and two of §8.6.5's six adaptation gates are unimplemented and **fail closed**
-because their text is not in `PLAN.md` and was not recoverable from the design
-PDF.
-
-A lab can be registered, its roster imported with consent captured, its
-templates parsed and approved into an immutable version history, its report
-corpus loaded and mapped, its lexicon mined and collision-audited, its verbatim
-queue worked, its boilerplate ranked and its critical-findings rules authored —
-and S7 will tell it what is still missing.
-
-The pipeline runs end to end. Eight of its fifteen stages are deterministic —
-the margin guard, self-correction handling, critical-findings alerting,
-grounding, the verification rules and the confidence formula — and those are
-deliberately the ones carrying the safety properties: pure, replayable and
-bit-reproducible, testable without a model. The other seven call a model or an
-ASR engine, and each degrades explicitly rather than silently when none is
-bound.
-
-Two engine-shaped holes remain, both waiting on the same thing: no ASR engine
-has been chosen, because that decision belongs to the Phase 2 bake-off and the
-bake-off needs audio from the new microphones.
-
-The review surface is server-rendered rather than a single-page app. A
-JavaScript build chain is a dependency in the path of every clinical review,
-for a screen that is a form with a timer on it; the two things the client
-genuinely must do — measure focus time and play a cited audio span — are two
-small ES modules with no build step.
+**Stack:** Python 3.12 · FastAPI · SQLAlchemy 2 + Alembic · Postgres 16 (pgvector, RLS) ·
+Redis (optional) · S3 · Anthropic Claude · Kafka/Redpanda (optional) · Prometheus,
+OpenTelemetry, Sentry · Docker · Render + Neon.
 
 ---
 
-## Why Phase 0 looks like this
+## Contents
 
-Three decisions drive everything in this codebase, and all three are cheap now
-and a rewrite later.
+- [Quick start](#quick-start)
+- [How it fits together](#how-it-fits-together)
+- [Hosting it](#hosting-it): [external services and keys](#1-external-services-and-the-keys-they-give-you), [deploying to Render](#2-deploying-to-render)
+- [Day-to-day commands](#day-to-day-commands)
+- [Configuration reference](#configuration-reference)
+- [Code to change carefully](#code-to-change-carefully)
+- [Status and known gaps](#status-and-known-gaps)
+- [Other docs](#other-docs)
 
-**Tenancy is enforced, not annotated.** Every table carries `tenant_id` bar a
-short exception list; every tenant-scoped table has an RLS policy with `FORCE`;
-every foreign key between two tenant-scoped tables is composite. The last one
-is the detail §11.4 says decides whether isolation actually holds: with
-`tenant_id` everywhere you can still have `report_draft.tenant_id = A`
-referencing `recording.tenant_id = B`, and both rows pass their own policy.
+---
 
-**The capture-only ingest path ships first.** Verbatim annotation of the 150
-`current` gold items is the project's critical path — the ASR bake-off waits on
-it, every release gate waits on the bake-off. Recordings need to start
-accumulating before anything can interpret them.
+## Quick start
 
-**Prompts are ordered `stable → cache breakpoint → volatile` from the first one
-written.** Retrofitting means restructuring every prompt and re-running the
-gate. `PromptBundle` makes the wrong order unexpressible rather than merely
-discouraged.
-
-## Corrections to the source document
-
-These are implemented, not just noted (see `PLAN.md` §0 for the full working):
-
-| | Design doc | Here |
-|---|---|---|
-| Sonnet 5 pricing | $3.00 / $15.00 per MTok (§7.9.2) | **$2.00 / $10.00** — that was Sonnet 4.6's rate |
-| Model identifiers | `claude-sonnet-5-20260415` (§6.14) | **`claude-sonnet-5`** — the API rejects date suffixes |
-| Thinking budget | — | `thinking: {type: "adaptive"}`; `budget_tokens` is rejected |
-| `admin` role | `app_user.roles` includes `admin` (§6.2) | **`lab_admin`** — "admin" is reserved for the platform realm |
-| `tenant.status` | free text (§6.13) | an enumerated lifecycle, with `onboarding → pilot` gated on S7 |
-| `is_training_corpus_eligible` | a settable boolean (§6.3) | **derived** from four independent conditions (§10.4) |
-| `template_version` spoken code | `UNIQUE (tenant_id, spoken_study_code)` (§6.5) | **unique among `is_current` rows only** — the plain constraint made a second version of any template impossible, taking §6.5's version history and §9.10's rollback with it (migration 0004) |
-
-## Operations
-
-Every command is a `make` target. `make help` lists them with one-line
-descriptions; this section is the order to run them in and the two things that
-bite people.
-
-### First-time setup
+Requirements: Python 3.12, Docker (for Postgres 16 + pgvector and MinIO) and `make`.
 
 ```bash
-make install                         # venv + dependencies (editable install)
-cp .env.example .env                 # then edit it — see Configuration below
-make up                              # Postgres 16 + pgvector, MinIO (docker)
-make migrate-owner                   # create the schema  <- owner, not app role
-make seed                            # model catalog + the first product admin (see Administration)
-
-# The app must NOT connect as a superuser or the table owner: both bypass RLS,
-# which would make the isolation tests pass vacuously. This creates the
-# least-privileged role the app and the tests use.
-.venv/bin/python -m radreport.db.bootstrap --app-password <pw>
-
-make admin EMAIL=you@example.com     # or create the first product admin interactively
-make check                           # lint + the full test suite
-make run                             # start the API in the background
+make install                      # venv + editable install with dev deps
+cp .env.example .env              # works as-is for local; every variable is commented
+make up                           # Postgres 16 + pgvector on :5433, MinIO on :9000
+make migrate-owner                # create the schema as the database OWNER (not the app role)
+.venv/bin/python -m radreport.db.bootstrap --app-password <pw>   # the least-privileged app login
+make seed-local                   # one account per role -> local-credentials.md (gitignored)
+make dev                          # API on http://127.0.0.1:8000 with auto-reload
+make worker                       # in a second terminal: runs the pipeline jobs
 ```
 
-Then open **http://127.0.0.1:8000/admin/login**.
+Then open:
 
-Without Docker, a local Postgres 16 works. It needs the `vector`, `pgcrypto`
-and `citext` extensions, and `pgvector` may have to be built from source —
-Homebrew's bottle ships `.dylib`s for postgresql@17 and @18 only.
-
-### Running the server
-
-| Command | What it does |
+| URL | What |
 |---|---|
-| `make dev` | Foreground, auto-reload on edit. Ctrl-C to stop. What you want while writing code. |
-| `make run` | Background, 2 workers, waits until `/ready` answers before reporting success. Writes `.uvicorn.pid` and `.uvicorn.log`. |
-| `make restart` | `stop` then `run`. Use after changing code or `.env` — neither is picked up by a running process. |
-| `make stop` | Kills the background server and removes the pid file. |
-| `make status` | Whether it is running, plus `/health` and `/ready`. |
-| `make logs` | `tail -f` on `.uvicorn.log`. |
+| `/admin/login` | Admin panel: labs, users, models, per-step model assignment, ops dashboards |
+| `/ui/login` | Lab sign-in: review queue, signing, lexicon |
+| `/features`, `/recruiter`, `/api-docs`, `/demo` | Public pages, no sign-in |
+| `/docs` | OpenAPI (local/test/development only) |
+| `/health`, `/ready` | Liveness (always 200, reports each dependency) and readiness (DB + migration head) |
 
-Override host, port or worker count per invocation:
+To fill the demo lab with templates, past reports, dictations and signed drafts:
+`.venv/bin/python -m radreport.devtools.demo_lab` (needs the server and a worker running).
 
-```bash
-make run PORT=9000 HOST=0.0.0.0 WORKERS=4
-make dev PORT=8001
+**Two things that bite people:**
+
+1. **The app must not connect as a superuser or the table owner.** Both bypass RLS, so the
+   tenant-isolation tests would pass without proving anything. The app and the tests use
+   `radreport_app_login`; only migrations run as the owner.
+2. **Without Docker**, a local Postgres 16 needs the `vector`, `pgcrypto` and `citext`
+   extensions. Homebrew's pgvector bottle only targets PG 17/18, so on PG 16 build it from source.
+
+---
+
+## How it fits together
+
+```
+ dictation ──► POST /ingest ──► S3 (audio) + job row ──► worker ──► pipeline (17 stages) ──► draft
+                                                                                              │
+ HL7 / FHIR export ◄── sign ◄── review UI (/ui) ◄─── review queue (riskiest first) ◄─────────┘
 ```
 
-**`/health` and `/ready` are not the same check.** `/health` is liveness: it
-always answers 200 while the process serves, because a liveness probe that fails
-during a brief database blip gets the container killed, which does not reconnect
-the database and does lose every in-flight request. Its body still reports each
-dependency for operators (database latency, connection pool use, memory, the
-shared cache, and the replica when one is configured), the `instance_id` (`INSTANCE_ID`, or generated
-at start-up; every response also carries `x-instance-id`) and `status:
-"degraded"` when a check fails. It never writes. `/ready` is readiness: it opens
-a database connection, compares the schema revision against the code's head, and
-checks every shard, returning 503 if anything is wrong. Point your deploy check
-and your load balancer at `/ready`.
+- **One Docker image, four processes** picked by `ops/docker/start.sh`:
+  `web` (uvicorn), `worker` (job queue), `relay` (outbox → event bus), `jobs` (worker + relay
+  in one container), plus `migrate` and `seed`.
+- **Jobs** live in Postgres and are claimed with `FOR UPDATE SKIP LOCKED`; a dead worker's job
+  is reclaimed after its visibility timeout and dead-lettered after its last attempt.
+- **Events** (`recording.ingested`, `draft.ready`, `report.signed`, …) are written to an outbox
+  in the same transaction as the change, so each consumer sees each event exactly once.
+- **The pipeline** has deterministic safety stages (margin guard, self-correction handling,
+  critical-findings alerting, grounding, verification, confidence) and model-backed stages that
+  degrade explicitly when no model is assigned. Graph edges are defined only in
+  `radreport/pipeline/v1.py`.
+- **Access control** is one file: `radreport/api/access_policy.xml` lists every route, the roles
+  allowed to call it, its rate limit, its size cap and every parameter. An unlisted route or an
+  undeclared parameter stops the app from starting.
+- **Models are configured, not hard-coded.** Providers, models and the model used for each
+  pipeline step per lab are set in the admin panel. A provider row stores the *name* of the env
+  var holding its key, never the key itself.
+- **Review UI** is server-rendered with two small ES modules (focus timer, click-to-listen),
+  with no JS build step.
 
-```bash
-curl -s localhost:8000/ready | jq
-# {"status": "ready", "checks": {"database": "ok", "migrations": "at 0005"}}
-```
-
-### Migrations
-
-```bash
-make migrate-owner                   # apply as the database owner
-make migrate                         # apply as the app role
-make revision M="what changed"       # autogenerate a new migration
-```
-
-**Use `migrate-owner`.** Migration 0002 creates database roles and reassigns
-view ownership, and 0005 grants on a new table — neither of which the app role
-may do. `make migrate` exists because it is occasionally what you want, and it
-will fail on those two with a permissions error that does not say why. The
-owner URL defaults to `$(whoami)@localhost/radreport`; override it with
-`OWNER_URL=...`.
-
-To check where a database actually is:
-
-```bash
-RADREPORT_DATABASE_URL=<url> .venv/bin/alembic current
-```
-
-### Tests
-
-```bash
-make test                            # everything
-make test-unit                       # only the tests needing no database
-make check                           # lint + test, what CI runs
-.venv/bin/pytest tests/db/test_review.py -q          # one file
-.venv/bin/pytest -q -k "rover or cusum"              # by name
-```
-
-DB-backed tests **skip** unless `RADREPORT_TEST_DATABASE_URL` is set, so the
-unit suite runs anywhere. They must connect as `radreport_app_login` rather
-than the owner: a superuser or owner bypasses RLS, and the isolation tests —
-the highest-value tests in the suite — would pass without proving anything.
-
-```bash
-export RADREPORT_TEST_DATABASE_URL=postgresql+psycopg://radreport_app_login:<pw>@localhost:5432/radreport_test
-```
-
-### Administration
-
-```bash
-RADREPORT_SEED_ADMIN_PASSWORD=... make seed                        # first product admin, from code
-make admin EMAIL=you@example.com                                   # ...or interactively
-make admin-password EMAIL=you@example.com                          # reset a password
-.venv/bin/python -m radreport.admin.cli revoke-sessions --email ... # sign out everywhere
-```
-
-The admin panel cannot create the first account, because signing in needs an
-account and creating one needs a session, so that loop is broken from code by
-someone who already has the database: `make seed` creates
-`admin@radreport.local` (or `--admin-email`) and sets its password from
-`RADREPORT_SEED_ADMIN_PASSWORD`; `make admin` prompts instead, so the password
-never lands in the shell history. Every later product admin or support account
-is added from the admin panel's **Users** page.
-
-**The admin panel lives at `/admin`** (pages) and `/admin/api` (the same
-operations as JSON). Both use the session cookie from `/admin/login`; there is
-no header that stands in for it. A `support` account can see everything and
-change nothing. From it a product admin can:
-
-- **onboard a lab** — including the §10.8 pooling clause, captured at
-  registration because that is the one moment the answer is known;
-- **register providers and models** — a cloud provider names the *environment
-  variable* holding its key, never the key; a locally hosted model is
-  configured by its address;
-- **assign a model to each pipeline step, per lab** — all ten steps including
-  `asr_primary`, with §7.9.4 enforced (a consequential task refuses a local
-  model) and §6.14's gate intact (an assignment is *proposed*; nothing serves
-  clinical traffic without a gold-set `eval_run`);
-- **move a lab through its lifecycle** — onboarding → pilot is refused until
-  every readiness check passes;
-- **run a lab's onboarding** — upload its roster, templates and report corpus
-  and run the mining steps. The clinical approvals (template candidates,
-  merges, collision findings, critical rules) stay with the lab's radiologists
-  on the lab-side `/onboarding` routes;
-- **manage platform users** — add, deactivate or reactivate product admins and
-  support accounts, and reset their passwords.
-
-### Lab sign-in
-
-Lab staff sign in with `POST /auth/login` (`{"lab": "<slug>", "email", "password"}`)
-and send `Authorization: Bearer <access token>` on every lab request. Access tokens
-last 15 minutes and are checked without a database hit; refresh tokens last 14
-days, are single-use, stored only as hashes, and a replayed one revokes that whole
-sign-in. In a browser, `/ui/login` keeps the same tokens in httponly cookies and
-renews them silently. A product admin sets a lab user's first password from the
-lab's page in the admin panel. Admins keep server-side sessions instead: they are few, use only
-a browser, and need revocation to be instant.
-
-### Who may call what
-
-Every route is listed in **`radreport/api/access_policy.xml`** with the roles
-allowed to call it (`roles="a,b"`), its rate limit, its request-size cap and
-every parameter it accepts (`<param>` with location, type, required, pattern and
-length). Two middlewares check each request against that file before any handler
-runs: an unlisted route is refused, a wrong role gets 403, too many requests get
-429, and an unknown, repeated, malformed or missing parameter gets 400. The app
-refuses to start if the file disagrees with the routes or with the parameters
-the handlers accept. To give `support` a new permission, add it to that route's
-`roles=`. Every rate limit is counted in Postgres (an unlogged table, one upsert
-per request), so it holds however many workers run and across restarts; if that
-table cannot be reached the limiter lets requests through rather than failing them.
-
-### Configuration
-
-Settings are read from the environment and `.env`, prefixed `RADREPORT_`, with
-`__` for nesting (`RADREPORT_STORAGE__BUCKET`). The ones that matter:
-
-| Variable | Why |
-|---|---|
-| `RADREPORT_DATABASE_URL` | The app's connection. Must be the **non-owner** role. |
-| `RADREPORT_TEST_DATABASE_URL` | Unset ⇒ DB-backed tests skip. |
-| `RADREPORT_ENVIRONMENT` | `local` / `test` / `development` serve the API docs (`/docs`, `/openapi.json`) and send the admin cookie without `Secure`. Anything else hides the docs and requires HTTPS for the cookie. |
-| `RADREPORT_STORAGE__*` | S3-compatible audio store; SSE-KMS in a real deployment. |
-| `RADREPORT_LAB_AUTH__TOKEN_SECRET` | Signs lab users' access tokens. **Required outside local/test/development** (32+ random characters); the app refuses to start without it. |
-| `RADREPORT_TRUSTED_ORIGINS` | JSON list of extra origins allowed to send admin writes, for a public hostname in front of a proxy, e.g. `["https://admin.example.com"]`. A cross-site admin write from anywhere else is refused (CSRF). |
-| `RADREPORT_SEED_ADMIN_PASSWORD` | Read only by `make seed`, to set the first product admin's password. |
-| `RADREPORT_DB__POOL_SIZE`, `__MAX_OVERFLOW`, `__WORKERS_HINT` | Per-worker pool (30 + 10 by default) and how many workers share the server, for the start-up connection-budget warning. |
-| `RADREPORT_LLM__RESPONSE_CACHE` | `postgres` (default), `shared` (Redis) or `off`: identical model requests are answered from the cache, per lab. |
-| `INSTANCE_ID` | Names this instance in `/health` and `x-instance-id`; generated when unset. |
-| `GOOGLE_TRANSLATE_API_KEY` | Only for labs that turn on online translation. |
-| `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, … | **Unprefixed, and not settings.** Each provider row names the variable it reads, so a second account is a second variable plus a second provider in the admin panel — no code change. |
-
-### Background work and events
-
-```bash
-make worker CONCURRENCY=2    # drain the job queue: pipeline runs and the periodic jobs
-make relay                   # publish committed outbox events to RADREPORT_EVENTS__BUS
-```
-
-An upload enqueues a `run_pipeline` job and returns; workers claim jobs with
-`FOR UPDATE SKIP LOCKED`, so any number can run, and a job whose worker died is
-reclaimed after its visibility timeout (dead-lettered after its last attempt).
-The worker also runs the periodic jobs: reclaiming stuck jobs (10 min), keeping
-monthly partitions 3 months ahead (6 h), the cost-spike scan (6 h), refreshing
-the canonical eval set (daily) and the new-terms scan (daily).
-
-Domain events (`recording.ingested`, `draft.ready`, `report.signed`,
-`autonomy.revoked`, `cost.anomaly`) are written to `outbox_event` in the same
-transaction as the change; the relay sends them on, and each consumer records
-what it has seen, so a crash between commit and publish delivers each event
-exactly once per consumer. `RADREPORT_EVENTS__BUS=kafka` sends them to Kafka or
-Redpanda (`docker compose --profile kafka up`), keyed by lab.
-
-### Scaling the database
-
-| Piece | Turn it on | Notes |
-|---|---|---|
-| PgBouncer | `make pgbouncer`, then `RADREPORT_DB__PGBOUNCER=true` and the app's URL on port 6432 | Transaction mode. Needed beyond two workers: without it the pools exceed `max_connections`, and the app warns at start-up when they could. |
-| Read replica | `RADREPORT_DB__REPLICA_URL` | Dashboards, lists and exports read from it; it falls back to the primary when it lags more than `RADREPORT_DB__REPLICA_MAX_LAG_SECONDS` or is down, and a browser that just wrote reads the primary for a few seconds. |
-| Shards | `RADREPORT_DB__SHARDS='{"shard2": "postgresql+psycopg://…"}'` | Labs are placed on a consistent-hash ring; `python -m radreport.db.shards` shows placement and pins a lab. Migrate every shard. |
-| Shared cache | `RADREPORT_REDIS_URL` | Lab config, roles, model assignments and admin sessions; an in-process cache is used when unset. |
-| Slow-query log | `make pg-observe` (superuser, restarts Postgres) | Then `python -m radreport.devtools.query_report` for the top statements and missing indexes. |
-
-Measured numbers are in PERFORMANCE_BASELINE.md. Query counts, statement
-percentiles, table sizes and bloat are at `/admin/api/ops/queries` and
-`/admin/api/ops/tables`; PgBouncer's pools at **Connection pools**
-(`/admin/pools`); spend per lab and stage at **Cost & usage** in the
-admin panel. Platform and per-lab thresholds (adapter gates, lexicon matching,
-template import, languages, partition retention) are edited at **System
-settings**; each has an environment-variable fallback named on that page.
-
-### Observability
-
-Everything here is free and stays off until it is configured, so a fresh checkout behaves exactly
-as before.
-
-| What | How it turns on | Where it goes |
-|---|---|---|
-| **Metrics** | always; `/metrics` answers in local/test/development, elsewhere only with `Authorization: Bearer $RADREPORT_OBSERVABILITY__METRICS_TOKEN` | Prometheus, or Grafana Cloud's free tier scraping the URL |
-| **Traces** | `OTEL_EXPORTER_OTLP_ENDPOINT` (+ `OTEL_EXPORTER_OTLP_HEADERS` for Grafana Cloud) | Jaeger locally, Grafana Tempo in the cloud |
-| **Errors** | `RADREPORT_OBSERVABILITY__SENTRY_DSN` | Sentry free tier |
-
-```bash
-make run && make worker                               # app on :8000, worker metrics on :9101
-docker compose --profile observability up -d          # Prometheus :9090, Grafana :3000, Jaeger :16686
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 make run   # with traces into Jaeger
-k6 run ops/k6/synthetic.js -e BASE_URL=http://127.0.0.1:8000  # light synthetic traffic (brew install k6)
-```
-
-Grafana loads `ops/observability/grafana/dashboards/radreport.json` on start: request rate and
-p95 per route, 5xx share, 429s per limit, p95 per pipeline stage, model spend per hour, prompt-cache
-share, job queue depth and age, outbox backlog and cache hit ratio. Import the same file into
-Grafana Cloud. `.github/workflows/synthetic-load.yml` runs the k6 script every 15 minutes against
-the hosted demo, which also keeps a free host awake.
-
-Three rules hold the design together:
-
-- **Labels are bounded.** A route is its access-policy id (`review.queue`), never its raw path,
-  and nothing is labelled per lab: a label per lab grows without limit and names customers.
-- **Nothing clinical leaves the machine.** SQL spans carry statements with placeholders, never
-  parameters. Sentry events lose the request body, cookies, query string, auth headers,
-  exception messages, local variables and breadcrumbs before they are sent.
-- **Every worker is counted.** `make run` sets `PROMETHEUS_MULTIPROC_DIR`, so a scrape that lands
-  on one uvicorn worker reports all of them. The job and outbox backlog are counted live at scrape
-  time by `work_backlog()` (migration 0024), which sees every lab's rows and returns counts only.
-
-### Crash test and screen recordings
-
-```bash
-RADREPORT_TEST_DATABASE_URL=<test db> make crash-test   # breaks the system on purpose; writes docs/CRASH_TEST.md
-make gifs                                               # records docs/media/*.gif and *.mp4 from the running app
-```
-
-The crash test refuses any database whose name does not end in `_test`. It kills a real worker
-with SIGKILL mid-job, crashes the outbox relay between publishing and marking, races eight
-workers over 200 jobs, fires 20 identical enqueues at once, runs a job that always throws, fails
-an AI provider until its circuit opens, starts real servers against a missing database and a
-missing Redis, and floods one route from one address. Each scenario records what it measured;
-the features page's Crash test tab renders the last report.
-
-`make gifs` drives Chromium through the features page, the lab sign-in and the admin panel with
-the demo accounts, then writes a GIF (for the README) and an MP4 (for the page, a quarter of the
-size) per flow. A `<!-- media: name | caption -->` line in FEATURES.md places a recording.
-
-### Demo data and the public pages
-
-```bash
-make seed-local                                              # accounts for every role -> local-credentials.md
-.venv/bin/python -m radreport.devtools.demo_lab              # fill the Sunrise lab through the write API
-.venv/bin/python -m radreport.devtools.demo_lab --only review  # rerun one phase
-```
-
-`demo_lab` signs in as the product admin, both radiologists and the transcriptionist, and does
-what they would: uploads templates, a shorthand sheet and 240 past reports, runs the mining
-steps, approves templates, verifies mappings, resolves collisions, authors critical rules,
-defines autonomy classes, registers studies, uploads 16 dictations, runs a worker over them,
-then edits, signs, grades and amends drafts, acknowledges alerts, and submits transcripts. It
-prints every failed call, so a run is also a check of the write routes. It refuses a lab that
-already has templates unless given `--force`, and it needs the server and the worker to share
-storage: on a machine without S3, set `RADREPORT_STORAGE__BACKEND=local` (audio goes to
-`.storage/`; refused outside local, test and development). The stub speech engine "hears" the
-words a demo WAV carries in its comment chunk, so the drafts differ by dictation. Drafts have
-no field values until an extraction model is wired in; see "What is deliberately not done yet".
-
-`/features`, `/demo`, `/api-docs` and `/recruiter` need no sign-in and are linked from both
-sign-in pages. `/features` renders the features tab of FEATURES.md and `/api-docs` renders API.md.
-`/recruiter` is the recruiter tour: numbers counted from the code, then tabs for the demo sign-ins,
-the screen recordings, the system design and the crash test (the other FEATURES.md tabs). Demo
-sign-ins come from `RADREPORT_DEMO_ACCOUNTS` (`[{"label", "email", "password", "role", "lab"}]`)
-and are shown on the sign-in pages' Test credentials tab, on `/demo` and on `/recruiter`, but only for read-only roles: `support` (admin panel) and
-`auditor` (a lab, with `lab` set to its slug). Any other role in that list is never shown.
-
-### Lexicon growth, template model and languages
-
-- **New terms**: the daily scan collects terms radiologists type that the lab's
-  lexicon lacks; a radiologist approves them at `/ui/lexicon`, which makes a new
-  lexicon version.
-- **Sound-alike matches**: matches above `lexicon.auto_approve_above` are used
-  at once and logged, those between it and `lexicon.review_above` wait on
-  `/ui/lexicon` for a radiologist's answer, the rest are hidden.
-- **Shorthand sheets and RadLex**: from the lab's onboarding page.
-  RadLex lookups need `BIOPORTAL_API_KEY`. See docs/SYNONYMS.md.
-- **Template model**: uploads the parser is unsure of are also read by the lab's
-  `template_parse` model when one is assigned. See docs/TEMPLATE_MODEL.md and
-  docs/FINE_TUNING.md.
-- **Hindi, French, Spanish**: per lab under System settings → Languages. See
-  docs/LANGUAGES.md.
-
-### Housekeeping
-
-```bash
-make fmt        # apply formatting
-make lint       # check it
-make clean      # caches, pid file, server log
-make down       # stop Postgres and MinIO
-```
-
-## Layout
-
-Two companion files go deeper: [`MODULES.md`](MODULES.md) maps `radreport/`
-for someone who has to change it, and [`API.md`](API.md) is the HTTP contract
-— authentication, tenant scoping, every endpoint, and the gaps.
-
-Follows §8.1, with additions where Phases 0–2 needed them.
+Code map:
 
 ```
 radreport/
-  core/          config, types, errors, tenancy, hashing, logging, text
-  db/
-    models/      the full §6 schema (57 tables)
-    migrations/  0001 schema · 0002 RLS + roles + views · 0003 partitions
-                 0004 spoken-code uniqueness scoped to the current version
-    introspect.py  derives the tenancy facts the migration and tests both use
-  autonomy/      §8.3.10 accrual · grant (Bayesian) · revoke (CUSUM)
-  adaptation/    §8.6.5's six gates — two unimplemented, failing closed
-  export/        HL7 v2 ORU^R01 · FHIR R4 DiagnosticReport
-  monitoring/    drift.py — PSI against an explicit baseline window
-  pipeline/      Stage/StageResult contracts, PipelineState, orchestrator
-    v1.py        the graph: the only place edges are defined (V1 and Beta)
-    stages/      preprocess  1 · asr       2 · normalise 3 · study_code 4
-                 segment     5 · repairs   6 · critical  7 · sketch     8
-                 routing     9 · extract  10 · grounding 11 · compose  12
-                 verify     13 · confidence 14 · route_human 15
-                 Beta: reconcile (ROVER) · post_correction · critic
-                 providers.py  per-tenant knowledge, injected not queried
-  adapters/
-    llm/         prompt caching, k-sample fan-out, registry, pricing, clients
-    asr/         engine interface + Whisper/stub + rover.py (voting)
-    storage/     S3-compatible object store
-  ingest/        §9.8 quality gates, capture-only service
-  knowledge/     phonetics + collision audit, consent derivation
-  eval/          harness, §5.2 metrics, release gates
-                 goldset.py  §5.3-stratified assembly, freeze, R21 exclusion
-                 bakeoff.py  ASR bake-off: per-partition, insertions independent
-  onboarding/    the S0–S7 onboarding stages
-                 batches.py       batch lifecycle: the spine all stages share
-                 roster.py        S0 · templates.py + template_parse.py  S1
-                 corpus.py        S2 · lexicon.py  S3 · paired_audio.py  S4
-                 boilerplate.py   S5 · critical_rules.py  S6
-                 readiness.py     S7 · registration.py  lab lifecycle
-  review/        the §7.2 surface: rbac · queue · session · signing
-                 grading (G0–G4) · feedback ("this draft was useless")
-  admin/         admin panel logic: auth (scrypt + sessions) · users ·
-                 modelconfig (providers, models, per-step assignment) ·
-                 onboarding_steps (shared by the panel and its API) · cli
-  api/           FastAPI: access.py + access_policy.xml (who may call what),
-                 admin_panel + admin_api, ingest, onboarding, review, ga
-    static/      review.js (focus timer, click-to-listen) · review.css
-  devtools/      synthetic data (no PHI on developer machines), seed
+  core/         config, tenancy rules, errors, logging, text utils
+  db/           models (68 tables), migrations, sessions, shards, replica routing, first-start seed
+  pipeline/     stage contracts, graph (v1.py), stages/, job runner
+  adapters/     llm/ (prompt caching, k-sampling, registry, pricing) · asr/ · storage/
+  ingest/       audio quality gates, capture-only ingest
+  onboarding/   bringing a lab on board: roster, templates, corpus, lexicon, rules, readiness
+  review/       queue, session, signing, grading, feedback, RBAC
+  autonomy/     grant (Bayesian) and revocation (CUSUM)
+  adaptation/   ASR adaptation gates
+  eval/         harness, metrics, release gates, gold set, ASR bake-off
+  export/       HL7 v2 ORU^R01, FHIR R4
+  knowledge/    phonetics, synonyms/RadLex, languages
+  admin/        admin auth, users, model config, CLI
+  api/          FastAPI app, routes/, access policy, static/
+  workers/ events/ cache/ monitoring/ observability
+  devtools/     seed, demo lab, synthetic data, crash test, query report
+ops/            docker/start.sh, pgbouncer, observability (Prometheus/Grafana), k6, cdn
 ```
 
-## The things most likely to be broken by a careless change
+[MODULES.md](MODULES.md) goes module by module; [API.md](API.md) is the HTTP contract.
 
-Each has a test that fails loudly.
+---
 
-- **`core/tenancy.py`** — `UNTENANTED_TABLES` / `NULLABLE_TENANT_TABLES` are the
-  §11.3 exception list. A new table that is on neither list and has no
-  `tenant_id` fails the build. Migration 0002 generates its policies from the
-  same introspection, so a table cannot be classified and then left unpoliced.
-- **`db/base.py:tenant_fk`** — use it, never a bare `ForeignKey`, between two
-  tenant-scoped tables. (Where either side has a *nullable* `tenant_id`, a plain
-  FK is correct: a composite one is skipped under MATCH SIMPLE when a column is
-  NULL, so it would enforce nothing on exactly the global rows.)
-- **`adapters/llm/prompt.py`** — unpinned exemplars in the stable region are
-  rejected. Retrieved-per-report exemplars invalidate the prefix on every call
-  while still *looking* cached.
-- **`adapters/llm/sampling.py`** — sample 1 completes before 2..k fire. The
-  obvious `asyncio.gather` over all k forfeits ~29% of the LLM bill silently.
-- **`adapters/llm/registry.py`** — no activation without a gold-set `eval_run`.
-  §6.14 flags this for code review because Postgres `CHECK` cannot express it.
-- **`eval/metrics/`** — `WER` and `INS_RATE` stay separate metrics; so do
-  `CODEWORD_COMPLIANCE` and `STUDYCODE_RECALL`.
-- **`eval/bakeoff.py:rank`** — an engine whose insertions dominate its errors
-  sinks regardless of headline WER, and `recommend()` reads the `current`
-  partition only. Blending the two numbers selects the engine that invents
-  findings (§7.6); reading `legacy` selects the engine that was good on the
-  microphones you are replacing (§5.3, R14).
-- **`onboarding/templates.py:apply_templates`** — the collision audit runs
-  before any row is written, so a batch that would introduce an LMC/LMP pair is
-  refused whole rather than applied and then flagged.
-- **`onboarding/boilerplate.py:promote_candidate`** — storing a normal
-  statement and deciding to emit it are two decisions. `enable_auto_fill`
-  defaults to False and a critical field refuses it outright (R4, §6.5).
-- **`pipeline/stages/normalise.py`** — the margin guard escalates instead of
-  picking when the top two candidates sit within `TAU_MARGIN`. It also does
-  **not** rewrite the transcript: char offsets are what provenance cites and
-  what grounding verifies verbatim, so a substitution re-bases every quote.
-- **`pipeline/stages/repairs.py`** — the retraction applies *backwards* and the
-  correction *forwards*. Reversing that turns "left — sorry, right" into a G4
-  laterality error. The cue list stays narrow: a cue that fires on ordinary
-  speech silently deletes findings.
-- **`pipeline/stages/critical.py`** — negation is sentence-local *and*
-  positional. A whole-sentence membership test suppresses "no fracture; large
-  pneumothorax", and a document-wide one suppresses far more.
-- **`pipeline/stages/grounding.py`** — the quote is checked against the cited
-  **character range**, not searched for in the transcript. A quote that appears
-  somewhere proves nothing about the span the model pointed at.
-- **`pipeline/stages/confidence.py`** — `min(critical) × mean(all)`. Averaging
-  hides the one weak critical field among thirty strong ones, which is the only
-  case the number exists to catch.
-- **`core/text.py:split_sentences`** — a period between two digits is not a
-  sentence boundary. The naive `[.;\n]+` this replaced cut "no 3.2 cm
-  pneumothorax" in half and fired a false critical alert, because the negation
-  and the finding landed in different fragments.
-- **`pipeline/stages/repairs.py:apply_repairs`** — a repair inside one
-  utterance **splits** it. Excluding the utterance whole takes the correction
-  out with the retraction, and the finding disappears with no flag.
-- **`pipeline/stages/extract.py:merge_samples`** — a value with no citation is
-  dropped, not flagged (I1); the k-sample denominator is `k`, not the number of
-  samples that answered.
-- **`review/session.py:record_revision`** — `active_edit_seconds` is focus
-  time, measured by the browser and **clamped to the wall clock** by the
-  server. §15.2's commercial argument rests on this number against an 18–36
-  second break-even bar; an unbounded client value is one instrumentation bug
-  away from becoming the headline metric.
-- **`review/rbac.py`** — an assistant revises and a radiologist signs. Two-layer
-  supervision is the whole safety model of the assistant path, and a system
-  that let an assistant sign would have the same screen and none of it.
-- **`review/signing.py:preflight`** — every gate `sign_report` enforces,
-  computed without signing, so the screen can disable the button *and say why*.
-  The two must not drift: a button that looks available while the call refuses
-  teaches people to click and see.
-- **`adapters/asr/rover.py`** — NULL is a voting candidate. That is the whole
-  anti-hallucination property: a word one engine invented and two did not hear
-  loses 2–1 and never reaches the transcript. `AGREEMENT_WEIGHT` leans on
-  agreement over confidence, because confidence is self-reported and §7.6's
-  failure mode is an engine that inserts confidently.
-- **`pipeline/stages/post_correction.py`** — the **only** stage that rewrites
-  the transcript, and only because it runs before any offset is recorded. It
-  raises if utterances or resolutions already exist. Its position in the graph
-  is the safety argument, not the implementation.
-- **`autonomy/accrual.py:_beta_cdf`** — checked against closed forms for
-  Beta(1,1), Beta(2,2) and the arcsine law. An earlier continued fraction was
-  wrong by exactly 1 and returned plausible-looking numbers; a posterior that
-  feeds a grant decision is not somewhere to trust code by inspection.
-- **`autonomy/grant.py`** — granting is deliberate and hard, revocation is
-  mechanical and easy. That asymmetry is the safety argument, and anything that
-  makes revocation as hard as a grant inverts it. `DEFAULT_CUSUM_THRESHOLD` was
-  chosen from simulated run lengths, and `test_grant.py` re-derives them.
-- **`adaptation/gates.py`** — G2 and G5 are unimplemented and fail closed. A
-  gate with invented criteria that passes is indistinguishable from one that
-  was genuinely satisfied, which defeats the point of a checklist.
-- **`export/hl7.py:escape`** — an unescaped `|` truncates the segment, which
-  presents as a report that silently loses its second half. The escape
-  character is replaced first, or the others get double-escaped.
-- **`pipeline/stages/persist.py`** — the seam between the pipeline and the
-  review surface. Emits every domain row through `pending_writes` so a shadow
-  run discards them by the same mechanism as any other write, and orders the
-  utterance inserts so a self-correction's target exists before the row that
-  references it.
-- **`pipeline/timing.py`** — character offset to audio time. Every provenance
-  span's `audio_start_ms` depends on it; without it §7.2's click-to-listen
-  plays from 0 ms and §6.7's training rows carry no usable span. `(0, 0, True)`
-  means *unknown*, and the flag is what distinguishes it from a real span at
-  the start of the recording.
-- **`review/grading.py:_feed_autonomy`** — grading is the only place a graded
-  report exists, so it is the only place accrual and the CUSUM can be fed. An
-  unfed safety monitor is worse than none: it reports as coverage.
-- **`api/access_policy.xml` + `api/access.py`** — the only place a route's
-  roles are decided. A new route that is not added to the XML makes the app
-  refuse to start, and so does a handler parameter the XML does not declare;
-  a role added to a route's `roles=` takes effect everywhere at once.
-  Admin identity comes only from the session cookie: the old
-  `X-Platform-User-Id` header made the admin realm spoofable and is gone.
-- **`api/deps.py:admin_lab_session`** — an admin acting on a lab must go
-  through it (or `AdminLabDb`), which binds the session to that lab. Without
-  the binding RLS hides every row, and the readiness page reported every check
-  as failed for exactly that reason.
-- **`admin/modelconfig.py`** — a provider row stores the *name* of the
-  environment variable holding its API key, never the key. Every tenant-scoped
-  read and write binds the tenant first: an unbound session is refused on write
-  and returns **nothing** on read, and the read failure looks like "this lab
-  has no configuration" rather than like an error.
-- **`api/app.py` `/health` vs `/ready`** — liveness checks nothing but the
-  process, because a liveness probe that fails on a database blip gets the
-  container killed for no benefit. Readiness opens a connection *and* compares
-  the schema revision against the code's head. `/health` alone returns 200
-  against a misconfigured database URL, which is how a server reports healthy
-  and fails every request that touches a table.
-- **`pipeline/stages/persist.py`** — the `seq -> utterance row` map is keyed on
-  each row's own `seq`. The rows are emitted in *reference* order so a
-  self-correction's target is inserted before the row pointing at it, which is
-  not sequence order — zipping two lists paired every provenance span with the
-  wrong utterance as soon as a repair existed.
+## Hosting it
 
-## What is deliberately not done yet
+The production setup is **Render** (web service + background worker + Key Value, all from
+`render.yaml`) with **Neon** for Postgres and **AWS S3** for audio.
 
-- **§8.6.5's second and fifth gates.** Unimplemented, failing closed, so no
-  ASR adaptation can run until their conditions are transcribed from the design
-  doc and the checks written. Every gate report names them.
-- **The distilled classifier and router.** §8.6 places them after the ASR
-  adaptation path, which is gated above.
-- **DICOM.** Conditional on §4.4's trigger rule: ≥95% accession compliance
-  after four weeks defers it indefinitely, <90% pursues it. Nothing to build
-  until that measurement exists.
-- **An actual RIS connection.** The messages are built and tested; nothing
-  sends them. D22 — which field in upload metadata carries the accession
-  number — is still open, and `build_oru` refuses rather than emitting a
-  message with a placeholder.
-- **An LLM-composed report.** Compose renders deterministically from
-  `render_spec`. §7.9.3 lists `compose` as a task and plan §0.2a makes it a
-  local-model candidate for Beta at the earliest — a model asked to write the
-  report from structured fields smooths over the gaps that matter.
-- **No bake-off results.** `eval/bakeoff.py` runs and is tested against stub
-  engines, but the decision it exists to make needs audio from the new
-  microphones. That is blocker #1 below, not a coding task.
-- **No S5 admin panel screen.** Deferred from V1 (plan §3): the ranking
-  accumulates and exports as CSV, which is enough for the pilot.
-- **No PDF template import.** D16 says Word only. PDF is refused explicitly
-  rather than half-parsed — a `template_field` mangled by text-layout
-  extraction is invisible after import.
-- **No model assignments seeded.** An assignment cannot go active without a
-  gold-set `eval_run`, and seeding one would bypass the gate the registry
-  exists to enforce.
-- **No field extraction in the job runner.** `pipeline/runner.py` builds the graph with no
-  model client and no section specs, so the extraction stage never runs and every draft from an
-  upload has its template and alerts but no field values. Wiring it needs the lab's assigned
-  extraction model (and its evaluation run) resolved in `default_graph_factory`.
-- **Production measurements.** Query counts, statement times and a 500-user
-  load test were measured locally (PERFORMANCE_BASELINE.md); DB CPU at peak,
-  monthly query volume, real cost and the replica's share of reads need
-  production traffic and a real replica.
-- **No template model running.** The fallback, its grounding rule and the
-  evaluation harness are built and tested with a stand-in; no Qwen server has
-  been stood up, so the parser-plus-model accuracy is unmeasured, and the
-  fine-tune waits for live approvals and a GPU (TODO.md has the detail).
-- **Language dictionaries unreviewed.** The Hindi, French and Spanish lists are
-  general medical vocabulary, not yet checked by a pilot lab's radiologists.
+### 1. External services and the keys they give you
 
-- **No tenant offboarding cascade.** §6.11 defines erasure per *patient*, not
-  per tenant. The lifecycle transition exists; the cascade behind it does not,
-  and `registration.offboard` says so rather than pretending otherwise.
-- **No manual fallback path.** §9.4 names the requirement — reports must still
-  be produced when the pipeline is down — with no design. `suspended` logs the
-  hook; the operator kill switch and documented degraded mode are still owed.
+#### Required
 
-## Blockers that are not code
+| Service | What to set up | Env var(s) it fills |
+|---|---|---|
+| **GitHub** | Push this repo to GitHub (it has no remote yet). Render deploys from it. | — |
+| **Neon** (Postgres) | Create a project on **Postgres 16** in **AWS ap-southeast-1 (Singapore)**, the same region as the Render services. Copy the **direct** connection string of the owner role (turn *Connection pooling* **off** when copying it). The pooled URL rejects the startup options the migration step sets. `vector`, `pgcrypto` and `citext` are created by the first migration. | `RADREPORT_OWNER_DATABASE_URL` |
+| **Render** | An account with a payment method: the web service and worker use a paid instance (`0.5c-512mb`), and the pre-deploy migration step only runs on paid services. Key Value (Redis) is the free plan. | Render generates `RADREPORT_APP_DB_PASSWORD`, `RADREPORT_LAB_AUTH__TOKEN_SECRET`, `RADREPORT_OBSERVABILITY__METRICS_TOKEN` and `RADREPORT_REDIS_URL` for you. |
+| **You** | Choose the first product admin's password. | `RADREPORT_SEED_ADMIN_PASSWORD` |
 
-From plan §4. None of these are engineering tasks and several gate the
-schedule:
+Why not Render Postgres? Migration 0002 creates a `BYPASSRLS` role, which Render's
+non-superuser database owner may not do. Neon's owner may.
 
-1. **Microphones** — the longest-lead item. The `current` gold partition cannot
-   accumulate until they are deployed, and it gates the bake-off, which gates
-   the pipeline.
-2. **D12 baseline audit** — 50 signed reports graded G0–G4, producing
-   `baseline_cse_rate`. Every non-inferiority calculation depends on it and S7
-   blocks without it. Pure human work on existing data; it can start today.
-3. **Pooling clause + patient-notice wording** — the two genuinely irreversible
-   items (§10.8). Free before contract #1, near-impossible to retrofit across
-   signed labs. The schema is ready for them; the legal text is not written.
-4. **D21 consent wording** — draft it as *two* consents (§10.3). Enrollment for
-   diarization and training use are separate purposes under DPDP.
-5. **D22 accession number field mapping** — without it, RIS filing at GA is
-   impossible, independent of DICOM.
+#### Strongly recommended
+
+| Service | What to set up | Env var(s) |
+|---|---|---|
+| **AWS S3** (audio) | 1. Create a bucket in `ap-southeast-1` with *Block all public access* on.<br>2. Create an IAM user with a policy allowing `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` on `arn:aws:s3:::<bucket>/*` and `s3:ListBucket` on `arn:aws:s3:::<bucket>`.<br>3. Create an access key for that user.<br>4. Optional: a KMS key for SSE-KMS (without one the app uses SSE-S3 and logs a warning). No CORS rule is needed: playback goes through presigned URLs in an `<audio>` element. | `RADREPORT_STORAGE__BUCKET`, `RADREPORT_STORAGE__REGION`, `RADREPORT_STORAGE__ACCESS_KEY_ID`, `RADREPORT_STORAGE__SECRET_ACCESS_KEY`, optionally `RADREPORT_STORAGE__SSE_KMS_KEY_ID` (add it by hand; it is not in `render.yaml`). Leave `RADREPORT_STORAGE__ENDPOINT_URL` **unset** for AWS. |
+| **Demo logins** | The read-only `support` and `auditor` accounts shown on the sign-in pages and `/recruiter`. The value is in the gitignored `.env.render`. | `RADREPORT_DEMO_ACCOUNTS` (JSON) |
+
+Without S3 the app still runs, but audio upload and playback return 503, and `/health` lists
+storage under `fallbacks`.
+
+#### Optional (each stays off until set)
+
+| Service | Unlocks | Env var(s) |
+|---|---|---|
+| **Anthropic** (console.anthropic.com) | Claude models for the pipeline's model steps and template parsing. No model assignment is seeded, so nothing calls Claude until you register a provider and assign models in the admin panel. | `ANTHROPIC_API_KEY` |
+| **Deepgram** | Reserved: `render.yaml` prompts for it, but no Deepgram adapter exists yet. Leave it blank. | `DEEPGRAM_API_KEY` |
+| **Sentry** (free tier) | Error reports, scrubbed of bodies, cookies, messages and locals. | `RADREPORT_OBSERVABILITY__SENTRY_DSN` |
+| **Grafana Cloud** (free tier) | Traces via OTLP; scrape `/metrics` with the generated metrics token; import `ops/observability/grafana/dashboards/radreport.json`. | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` |
+| **BioPortal** | RadLex lookups during onboarding. | `BIOPORTAL_API_KEY` |
+| **Google Cloud Translation** | Online translation of unknown Hindi words (also enable it in System settings → Languages). | `GOOGLE_TRANSLATE_API_KEY` |
+| **GitHub Actions** | `.github/workflows/synthetic-load.yml` runs k6 every 15 min against the live site, which keeps dashboards populated and the host awake. | Repo secrets `RADREPORT_BASE_URL`, `DEMO_ADMIN_EMAIL`, `DEMO_ADMIN_PASSWORD`, `DEMO_LAB`, `DEMO_LAB_EMAIL`, `DEMO_LAB_PASSWORD` (values in `.env.render`) |
+| **Kafka / Redpanda** | Publish domain events to a real broker instead of in-process consumers. | `RADREPORT_EVENTS__BUS=kafka` + `RADREPORT_EVENTS__KAFKA_*` |
+| **Cloudflare** | CDN / custom domain in front of Render; see `ops/cdn/cloudflare.md`. | `RADREPORT_TRUSTED_ORIGINS` if the public hostname differs from the one Render sees |
+
+### 2. Deploying to Render
+
+1. **Push the repo to GitHub.** Keep `.env`, `.env.render` and `local-credentials.md` out of it
+   (all three are gitignored).
+2. **Create the Neon database** and copy the direct owner connection string (see above). It
+   looks like `postgresql://<owner>:<pw>@ep-xxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require`.
+   `start.sh` rewrites `postgresql://` to the psycopg driver itself.
+3. **Create the S3 bucket and IAM key** (see above).
+4. **Render dashboard → New → Blueprint →** connect the GitHub repo. Render reads `render.yaml`
+   and plans three resources: `radreport-web`, `radreport-jobs` and `radreport-cache`.
+5. **Fill in the prompted values** on `radreport-web`. The worker copies them from the web
+   service, so you enter each one once:
+   - `RADREPORT_OWNER_DATABASE_URL`: Neon direct owner URL
+   - `RADREPORT_STORAGE__BUCKET`, `__REGION` (`ap-southeast-1`), `__ACCESS_KEY_ID`, `__SECRET_ACCESS_KEY`
+   - `RADREPORT_SEED_ADMIN_PASSWORD`: the first admin's password
+   - `RADREPORT_DEMO_ACCOUNTS`: from `.env.render`
+   - `ANTHROPIC_API_KEY`: optional; `DEEPGRAM_API_KEY`: leave blank
+6. **Apply.** On each deploy Render:
+   - builds the image from `Dockerfile`;
+   - runs the pre-deploy command `radreport-start migrate`, which applies every migration as
+     the Neon owner and then creates or updates the `radreport_app_login` role with the
+     generated `RADREPORT_APP_DB_PASSWORD`;
+   - starts the web service, which connects as `radreport_app_login` and, on an **empty**
+     database, seeds the model catalog, `admin@radreport.local`, the demo logins and a demo lab;
+   - starts `radreport-jobs` (job worker + outbox relay).
+7. **Check it's up:**
+   ```bash
+   curl -s https://<service>.onrender.com/ready  | jq   # {"status": "ready", ...}; this is Render's health check
+   curl -s https://<service>.onrender.com/health | jq   # each dependency, plus any "fallbacks" in use
+   ```
+8. **Sign in** at `/admin/login` as `admin@radreport.local` with `RADREPORT_SEED_ADMIN_PASSWORD`,
+   then open `/recruiter` and `/features` to check the public pages.
+9. **Optional follow-ups:**
+   - Add the GitHub Actions secrets for synthetic load.
+   - Assign Claude models to pipeline steps per lab in the admin panel. An assignment stays
+     *proposed* until it has a gold-set evaluation run.
+   - Point Grafana Cloud / Sentry at the service (see the optional table).
+   - Add a custom domain in Render (and Cloudflare, if you use it).
+
+**Operating the deployment:**
+
+| Task | How |
+|---|---|
+| Re-sync demo logins after changing `RADREPORT_DEMO_ACCOUNTS` | Render Shell on `radreport-web`: `radreport-start seed` |
+| Reset an admin's password | Render Shell: `radreport-start python -m radreport.admin.cli set-password --email <email>` |
+| Run migrations by hand | Render Shell: `radreport-start migrate` |
+| Scale | Raise `WEB_CONCURRENCY` / `WORKER_CONCURRENCY`, but keep processes × (`POOL_SIZE` + `MAX_OVERFLOW`) under Neon's `max_connections` (≈100 on the smallest compute), or add PgBouncer |
+| Split worker and relay | Replace `radreport-jobs` with two workers running `radreport-start worker` and `radreport-start relay` |
+
+`RADREPORT_SEED_ADMIN_PASSWORD` is only read the first time the database is seeded. Changing it
+later does nothing; reset the password with the admin CLI instead.
+
+---
+
+## Day-to-day commands
+
+`make help` lists every target.
+
+| Area | Command | Notes |
+|---|---|---|
+| Server | `make dev` | Foreground, auto-reload |
+| | `make run` / `stop` / `restart` / `status` / `logs` | Background, 2 workers, waits for `/ready`. `make run PORT=9000 WORKERS=4` |
+| Workers | `make worker CONCURRENCY=2` | Pipeline jobs + periodic jobs (stuck-job reclaim, partitions, cost scan, eval refresh, new-terms scan) |
+| | `make relay` | Publish committed outbox events |
+| DB | `make migrate-owner` | **Use this one.** Some migrations create roles and grants that the app role may not |
+| | `make revision M="what changed"` | Autogenerate a migration |
+| | `RADREPORT_DATABASE_URL=<url> .venv/bin/alembic current` | Where a database is |
+| Tests | `make test` / `make test-unit` / `make check` | `check` = lint + tests, what CI runs |
+| | `.venv/bin/pytest -q -k "rover or cusum"` | By name |
+| Admin | `make seed`, `make admin EMAIL=…`, `make admin-password EMAIL=…` | First admin from code; later ones from the admin panel's Users page |
+| Demo | `make seed-local`, `python -m radreport.devtools.demo_lab [--only review] [--force]` | Set `RADREPORT_STORAGE__BACKEND=local` if you have no S3/MinIO |
+| Resilience | `RADREPORT_TEST_DATABASE_URL=<…_test> make crash-test` | Kills workers, crashes the relay, races jobs, floods a route; writes `docs/CRASH_TEST.md` |
+| Media | `make gifs` | Records `docs/media/*.gif|mp4` from the running app |
+| Observability | `docker compose --profile observability up -d` | Prometheus :9090, Grafana :3000, Jaeger :16686 |
+| Load | `k6 run ops/k6/synthetic.js -e BASE_URL=http://127.0.0.1:8000` | |
+| Scale-out | `make pgbouncer` + `RADREPORT_DB__PGBOUNCER=true` | Needed beyond ~2 workers locally |
+| Housekeeping | `make fmt`, `make lint`, `make clean`, `make down` | |
+
+**Tests and the database:** DB-backed tests skip unless `RADREPORT_TEST_DATABASE_URL` is set,
+and it must point at `radreport_app_login`, not the owner:
+
+```bash
+export RADREPORT_TEST_DATABASE_URL=postgresql+psycopg://radreport_app_login:<pw>@localhost:5433/radreport_test
+```
+
+---
+
+## Configuration reference
+
+Settings come from the environment and `.env`, prefixed `RADREPORT_`, with `__` for nesting
+(`RADREPORT_STORAGE__BUCKET`). `.env.example` documents every variable; these are the ones you
+will actually touch.
+
+| Variable | Notes |
+|---|---|
+| `RADREPORT_DATABASE_URL` | The app's connection. **Must be the non-owner role.** On Render it is derived from the owner URL + `RADREPORT_APP_DB_PASSWORD`. |
+| `RADREPORT_OWNER_DATABASE_URL` | Container only: used by `migrate` and to derive the app URL. |
+| `RADREPORT_ENVIRONMENT` | `local`/`test`/`development` serve `/docs` and send the admin cookie without `Secure`; anything else hides docs and requires HTTPS. |
+| `RADREPORT_LAB_AUTH__TOKEN_SECRET` | Signs lab access tokens. Required outside local/test/development (32+ chars). |
+| `RADREPORT_STORAGE__*` | S3-compatible audio store. `BACKEND=local` writes to `.storage/` (dev only). |
+| `RADREPORT_REDIS_URL` | Shared cache (lab config, roles, model assignments, admin sessions). Unset: per-worker memory cache. |
+| `RADREPORT_DB__POOL_SIZE`, `__MAX_OVERFLOW` | Per process. Default 30 + 10, which is too many for a small managed DB. |
+| `RADREPORT_DB__REPLICA_URL`, `RADREPORT_DB__SHARDS` | Read replica (lag-aware fallback) and consistent-hash shards. |
+| `RADREPORT_LLM__RESPONSE_CACHE` | `postgres` (default), `shared` (Redis) or `off`. |
+| `RADREPORT_EVENTS__BUS` | `postgres` (default) or `kafka`. An unreachable Kafka falls back to postgres. |
+| `RADREPORT_TRUSTED_ORIGINS` | JSON list of extra origins allowed to send admin writes (CSRF). |
+| `RADREPORT_SEED_ON_START`, `RADREPORT_SEED_ADMIN_PASSWORD` | First-start seed of an empty database. |
+| `RADREPORT_DEMO_ACCOUNTS` | `[{"label","email","password","role","lab"}]`. Only `support` and `auditor` are ever displayed. |
+| `ANTHROPIC_API_KEY`, `BIOPORTAL_API_KEY`, … | **Unprefixed and not settings.** Each provider row names the variable it reads, so a second account is a new variable plus a new provider row, with no code change. |
+
+---
+
+## Code to change carefully
+
+Each of these has a test that fails loudly. [MODULES.md](MODULES.md) explains why each one is
+built the way it is.
+
+| Where | The rule |
+|---|---|
+| `core/tenancy.py` | Every table has `tenant_id` or is on the exception list; migration 0002 generates RLS policies from the same introspection. |
+| `db/base.py:tenant_fk` | Use it (composite FK) between two tenant-scoped tables, never a bare `ForeignKey`. |
+| `api/access_policy.xml` | The only place route roles and parameters are decided; the app won't start if it disagrees with the routes. |
+| `api/deps.py:admin_lab_session` | Admin actions on a lab must bind the session to that lab, or RLS silently returns nothing. |
+| `adapters/llm/prompt.py` | Prompts are ordered stable → cache breakpoint → volatile; the wrong order can't be expressed. |
+| `adapters/llm/sampling.py` | Sample 1 completes before samples 2..k fire (prompt-cache warm-up). |
+| `adapters/llm/registry.py` | No model activation without a gold-set `eval_run`. |
+| `pipeline/stages/normalise.py` | Margin guard escalates instead of guessing; it never rewrites the transcript (offsets are provenance). |
+| `pipeline/stages/repairs.py` | Retraction applies backwards, correction forwards; a repair inside an utterance splits it. |
+| `pipeline/stages/critical.py` | Negation is sentence-local and positional. |
+| `pipeline/stages/grounding.py` | The quote is checked against the cited character range, not searched for. |
+| `pipeline/stages/confidence.py` | `min(critical) × mean(all)`; averaging would hide one weak critical field. |
+| `pipeline/stages/post_correction.py` | The only stage allowed to rewrite the transcript, and only before any offset exists. |
+| `pipeline/stages/persist.py` | Utterance rows are keyed on their own `seq`; inserts are in reference order. |
+| `core/text.py:split_sentences` | A period between digits is not a sentence boundary. |
+| `adapters/asr/rover.py` | NULL is a voting candidate, so a word only one engine heard loses. |
+| `review/rbac.py`, `review/signing.py` | An assistant revises, a radiologist signs; `preflight` mirrors every signing gate. |
+| `review/session.py` | Edit time is browser focus time, clamped to wall clock by the server. |
+| `review/grading.py:_feed_autonomy` | The only place autonomy accrual and the CUSUM are fed. |
+| `autonomy/` | Granting is deliberately hard, revocation mechanical. |
+| `adaptation/gates.py` | G2 and G5 are unimplemented and fail closed. |
+| `export/hl7.py:escape` | Escape the escape character first. |
+| `api/app.py` `/health` vs `/ready` | Liveness checks only the process; readiness checks DB and migration head. |
+
+---
+
+## Status and known gaps
+
+Built: ingest, the full pipeline, review and signing, HL7/FHIR export, lab onboarding, ROVER
+reconciliation, the LLM critic, autonomy grant/revocation, drift monitoring, the admin panel,
+observability and the crash test.
+
+Not done, deliberately and visibly:
+
+- **No field extraction in the job runner yet.** `pipeline/runner.py` builds the graph with no
+  model client, so drafts from uploads have their template and alerts but no field values.
+  Wiring it needs the lab's assigned extraction model resolved in `default_graph_factory`.
+- **No ASR engine chosen.** The stub engine is used; the choice waits on the ASR bake-off,
+  which needs audio from the new microphones.
+- **Two adaptation gates (G2, G5) are unimplemented** and fail closed; their criteria aren't in
+  the source spec.
+- **No RIS connection.** Messages are built and tested but not sent; the accession-number field
+  mapping (D22) is still open.
+- **No DICOM, no PDF template import, no tenant offboarding cascade, no manual fallback path.**
+- **Language dictionaries** (Hindi, French, Spanish) still need review by a pilot lab's radiologists.
+- **Production numbers** (DB CPU at peak, real cost, replica share) need production traffic;
+  local measurements are in [PERFORMANCE_BASELINE.md](PERFORMANCE_BASELINE.md).
+
+Non-code blockers: microphone deployment, the baseline audit of 50 graded reports, the legal
+text for the pooling clause, patient notice and consents, and the accession-number mapping.
+
+---
+
+## Other docs
+
+| File | For |
+|---|---|
+| [RECRUITERS.md](RECRUITERS.md) | A 5-minute tour for non-developers |
+| [FEATURES.md](FEATURES.md) | Product features; rendered at `/features` and `/recruiter` (don't move it) |
+| [API.md](API.md) | HTTP contract; rendered at `/api-docs` (don't move it) |
+| [MODULES.md](MODULES.md) | Module-by-module guide to `radreport/` |
+| [PERFORMANCE_BASELINE.md](PERFORMANCE_BASELINE.md) | Measured query counts, latencies, load test |
+| [docs/](docs/) | Crash test report, languages, synonyms, template model, fine-tuning |
+| [ops/cdn/cloudflare.md](ops/cdn/cloudflare.md) | Putting Cloudflare in front |

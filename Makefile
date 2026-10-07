@@ -1,4 +1,4 @@
-# radreport — see README.md "Operations" for what each target is for and the
+# radreport — see README.md "Day-to-day commands" for what each target is for and the
 # order to run them in.
 #
 # Two connection roles matter and are easy to confuse:
