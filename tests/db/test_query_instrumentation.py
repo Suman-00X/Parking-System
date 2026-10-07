@@ -35,6 +35,7 @@ def test_every_response_says_how_many_statements_it_ran(migrated_db: str) -> Non
 
 
 def test_the_ops_endpoint_reports_percentiles_by_route(migrated_db: str) -> None:
+    instrumentation.METRICS.reset()  # earlier tests fill the top-routes list
     client = signed_in(make_platform_user(migrated_db, role=PlatformRole.SUPPORT))
     client.get("/admin/labs")
     body = client.get("/admin/api/ops/queries").json()
