@@ -1,7 +1,7 @@
 """The one endpoint that accepts a recording: validate it, store the audio, write the row, record the audit entry.
 
-Order: upload_recording does all four and returns an IngestResponse. It only captures; nothing
-is transcribed here. list_recordings pages through what a lab has captured.
+Order: upload_recording does all four, queues a run_pipeline job in the same transaction, and
+returns an IngestResponse. Nothing is transcribed in the request; a worker does that. list_recordings pages through what a lab has captured.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from radreport.core.errors import DuplicateRecording, IngestRejected
 from radreport.core.types import CaptureDeviceClass
 from radreport.db.models.ingestion import Recording
 from radreport.ingest.service import IngestRequest, ingest_recording
+from radreport.workers.queue import enqueue
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
@@ -36,6 +37,9 @@ class IngestResponse(BaseModel):
     capture_device_class: str
     warnings: list[str]
     """Warn-level gate results."""
+
+    pipeline_job_id: uuid.UUID | None = None
+    """The queued run_pipeline job; a worker picks it up, so the upload returns without waiting for transcription."""
 
 
 @router.post("/recordings", response_model=IngestResponse, status_code=status.HTTP_201_CREATED)
@@ -60,7 +64,9 @@ async def upload_recording(session: DbSession, principal: CurrentPrincipal, file
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     recording = result.recording
-    return IngestResponse(recording_id=recording.id, content_hash=recording.content_hash, duration_seconds=float(recording.duration_seconds or 0), sample_rate_hz=recording.sample_rate_hz or 0, audio_format=recording.audio_format, measured_snr_db=(float(recording.measured_snr_db) if recording.measured_snr_db is not None else None), silence_ratio=(float(recording.silence_ratio) if recording.silence_ratio is not None else None), capture_device_class=recording.capture_device_class, warnings=result.probe.warnings)
+    # Queued in the ingest transaction: the job exists exactly when the recording does, and a retried upload queues nothing new.
+    pipeline_job = enqueue(session, "run_pipeline", {"recording_id": str(recording.id)}, tenant_id=principal.tenant_id, dedupe_key=f"recording:{recording.id}")
+    return IngestResponse(pipeline_job_id=pipeline_job, recording_id=recording.id, content_hash=recording.content_hash, duration_seconds=float(recording.duration_seconds or 0), sample_rate_hz=recording.sample_rate_hz or 0, audio_format=recording.audio_format, measured_snr_db=(float(recording.measured_snr_db) if recording.measured_snr_db is not None else None), silence_ratio=(float(recording.silence_ratio) if recording.silence_ratio is not None else None), capture_device_class=recording.capture_device_class, warnings=result.probe.warnings)
 
 
 class RecordingSummary(BaseModel):

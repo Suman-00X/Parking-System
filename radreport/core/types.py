@@ -329,6 +329,15 @@ class RunStatus(_Vals):
     CANCELLED = "cancelled"
 
 
+class JobStatus(_Vals):
+    """`job.status`. `dead` is a job that used up its attempts; it waits for a person, not a retry."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    DEAD = "dead"
+
+
 class ActorType(_Vals):
     USER = "user"
     SYSTEM = "system"

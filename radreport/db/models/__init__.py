@@ -6,6 +6,7 @@ from radreport.db.models.asr import AsrRun, AsrSegment, Transcript, TranscriptUt
 from radreport.db.models.evaluation import EvalItem, EvalResult, EvalRun, EvalSet
 from radreport.db.models.identity import AppUser, LabRefreshToken, Patient, RadiologistProfile, Study
 from radreport.db.models.ingestion import Recording
+from radreport.db.models.jobs import Job
 from radreport.db.models.knowledge import AutonomyClass, LexiconSet, LexiconSurfaceVariant, LexiconTerm, SpeakerTermBias, Template, TemplateField, TemplateVersion
 from radreport.db.models.modelconfig import ModelDefinition, ModelProvider, TaskModelAssignment, TaskModelAssignmentLog
 from radreport.db.models.onboarding import BoilerplateCandidate, CollisionAuditFinding, CorpusReport, CorpusReportTemplateMap, ImportArtifact, ImportBatch, LexiconMiningRun, OnboardingReadinessCheck, TemplateImportCandidate, TemplateMergeProposal
@@ -90,4 +91,5 @@ __all__ = [
     "TaskModelAssignmentLog",
     # operations
     "SystemConfig",
+    "Job",
 ]

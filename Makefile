@@ -10,7 +10,7 @@
 #               vacuously)
 
 .PHONY: help install up down migrate migrate-owner revision seed seed-local admin admin-password pg-observe \
-        run dev stop restart status logs test test-unit lint fmt check clean
+        run dev stop restart status logs worker test test-unit lint fmt check clean
 
 PORT ?= 8000
 HOST ?= 127.0.0.1
@@ -96,6 +96,9 @@ status:  ## Is the server up, and are its dependencies reachable?
 	  curl -fsS http://$(HOST):$(PORT)/health && echo; \
 	  curl -sS http://$(HOST):$(PORT)/ready && echo; \
 	else echo "not running"; fi
+
+worker:  ## Run a job worker in the foreground: make worker CONCURRENCY=2
+	.venv/bin/python -m radreport.workers --concurrency $(or $(CONCURRENCY),1)
 
 logs:  ## Follow the background server's log
 	@tail -f $(LOGFILE)

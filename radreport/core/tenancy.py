@@ -140,6 +140,8 @@ NULLABLE_TENANT_TABLES: Final[frozenset[str]] = frozenset(
         "model_adaptation_run",
         # Operational thresholds: NULL is the platform-wide value, a lab id overrides it for that lab.
         "system_config",
+        # Background work: a lab's job carries its id; platform maintenance (partitions, reaping) carries none.
+        "job",
         # System actions have no tenant.
         "audit_log",
     }
