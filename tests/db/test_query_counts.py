@@ -67,8 +67,8 @@ def test_the_users_page_does_not_grow_with_the_number_of_accounts(migrated_db: s
 def test_onboarding_and_readiness_read_each_fact_once(migrated_db: str, two_tenants) -> None:
     tenant_id, _ = two_tenants
     client = signed_in(make_platform_user(migrated_db))
-    assert _count(client, f"/admin/labs/{tenant_id}/readiness") <= 14
-    assert _count(client, f"/admin/labs/{tenant_id}/onboarding") <= 18
+    assert _count(client, f"/admin/labs/{tenant_id}/readiness") <= 5
+    assert _count(client, f"/admin/labs/{tenant_id}/onboarding") <= 7
 
 
 def test_the_legal_basis_check_reads_in_bulk(migrated_db: str, two_tenants) -> None:

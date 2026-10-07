@@ -13,31 +13,53 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+import weakref
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from radreport.core.config import get_settings
 from radreport.core.errors import NoTenantContext
 from radreport.core.tenancy import PRINCIPAL_GUC, TENANT_GUC, Principal, current_tenant_id_or_none, tenant_scope
-from radreport.db import instrumentation
-from radreport.db.session import READ_ONLY, SCOPE, _scope_params, engine_options, replica_url_for_reads
+from radreport.db import instrumentation, sharding
+from radreport.db.session import READ_ONLY, SCOPE, _check_connection_budget, _scope_params, engine_options, replica_url_for_reads, side_pool_options
 
-_engines: dict[tuple[str, int], AsyncEngine] = {}
+_engines: dict[tuple[str, int, bool], tuple[weakref.ref[asyncio.AbstractEventLoop], AsyncEngine]] = {}
+#: Disposals of engines whose loop has closed, kept referenced until they finish.
+_disposals: set[asyncio.Task[None]] = set()
 
 
-def get_async_engine(url: str | None = None) -> AsyncEngine:
-    """One engine per URL per event loop: an async connection belongs to the loop that opened it."""
+def get_async_engine(url: str | None = None, *, side: bool = False) -> AsyncEngine:
+    """One engine per URL per event loop: an async connection belongs to the loop that opened it. `side` is the access middleware's small pool."""
     instrumentation.install()
+    sharding.install_tenant_sync()
     target = url or get_settings().database_url
-    loop = id(asyncio.get_running_loop())
-    engine = _engines.get((target, loop))
-    if engine is None:
-        options = {**engine_options(), "pool_size": get_settings().db.async_pool_size, "max_overflow": get_settings().db.async_max_overflow}
-        engine = _engines[(target, loop)] = create_async_engine(target, **options)
+    # Bridged code runs in a greenlet on the request's loop, where asyncio still reports that loop as running.
+    loop = asyncio.get_running_loop()
+    key = (target, id(loop), side)
+    held = _engines.get(key)
+    if held is not None and held[0]() is loop:
+        return held[1]
+    _dispose_orphans(loop)
+    engine = create_async_engine(target, **(side_pool_options() if side else engine_options()))
+    if not side:
+        event.listen(engine.sync_engine, "first_connect", _check_connection_budget)
+    _engines[key] = (weakref.ref(loop), engine)
     return engine
+
+
+def _dispose_orphans(loop: asyncio.AbstractEventLoop) -> None:
+    """Close the pools of engines whose loop has closed (a server restart, or a test client's per-request loop)."""
+    for key, (loop_ref, engine) in list(_engines.items()):
+        owner = loop_ref()
+        if owner is None or owner.is_closed():
+            del _engines[key]
+            # psycopg's close does no waiting, so the orphaned connections can be closed from this loop.
+            task = loop.create_task(engine.dispose())
+            _disposals.add(task)
+            task.add_done_callback(_disposals.discard)
 
 
 def _factory(url: str | None) -> async_sessionmaker[AsyncSession]:
@@ -87,10 +109,10 @@ async def async_system_session(url: str | None = None) -> AsyncIterator[AsyncSes
 @asynccontextmanager
 async def async_read_session(tenant_id: uuid.UUID | None = None, *, principal: Principal | None = None) -> AsyncIterator[AsyncSession]:
     """A read-only transaction, on the replica when read_session would use it."""
-    url = replica_url_for_reads()
+    url = replica_url_for_reads() if not sharding.shard_map().enabled else None
     if url is not None:
         instrumentation.mark_replica(url)
-    async with _factory(url)() as session:
+    async with _factory(url or sharding.url_for(tenant_id))() as session:
         await _bind_scope(session, tenant_id, principal, read_only=True)
         # Closing (by leaving the block) ends the transaction without expiring what was loaded.
         yield session

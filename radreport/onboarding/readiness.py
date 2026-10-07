@@ -1,6 +1,7 @@
 """The seven checks a lab must pass before it leaves onboarding for a live pilot.
 
-Order: the checks are independent -- collision audit clear (check_collision_audit_clear),
+Order: load_facts reads everything the checks look at in one statement, then the checks
+judge those facts independently -- collision audit clear (check_collision_audit_clear),
 corpus template coverage (check_corpus_template_coverage), voice enrollment
 (check_voice_enrollment_complete), gold set frozen (check_gold_set_frozen), critical rules
 approved (check_critical_rules_approved), baseline error rate measured
@@ -13,8 +14,10 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, literal, select
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 
 from radreport.core.logging import get_logger
@@ -39,79 +42,115 @@ class CheckOutcome:
     """`fail` blocks the pilot transition; `warn` is recorded and does not."""
 
 
-CheckFn = Callable[[Session, uuid.UUID], CheckOutcome]
+@dataclass(frozen=True, slots=True)
+class ReadinessFacts:
+    """Everything the seven checks look at, read in one statement."""
+
+    outstanding_block_findings: int
+    verified_mappings: int
+    profiles: int
+    missing_consent: list[str]
+    missing_embedding: list[str]
+    eval_sets: int
+    frozen_item_counts: dict[str, int] | None
+    """Items per frozen acceptance set; None when no set is frozen."""
+    active_rules: int
+    approved_rules: int
+    autonomy_classes: int
+    classes_without_baseline: list[str]
+    approved_current_versions: int
+
+
+CheckFn = Callable[[ReadinessFacts], CheckOutcome]
+
+
+def _count(model: type, *where: Any) -> Any:
+    return select(func.count()).select_from(model).where(*where).scalar_subquery()
+
+
+def _ids(column: Any, *where: Any) -> Any:
+    return select(func.coalesce(func.array_agg(cast(column, String)), literal([], ARRAY(String)))).where(*where).scalar_subquery()
+
+
+def load_facts(session: Session, tenant_id: uuid.UUID) -> ReadinessFacts:
+    """Read every fact the readiness checks need in a single statement of scalar subqueries."""
+    profile = RadiologistProfile.tenant_id == tenant_id
+    frozen = select(EvalSet.id.label("id"), func.count(EvalItem.id).label("n")).outerjoin(EvalItem, EvalItem.eval_set_id == EvalSet.id).where(EvalSet.tenant_id == tenant_id, EvalSet.is_frozen.is_(True)).group_by(EvalSet.id).subquery()
+    rule = (CriticalFindingRule.tenant_id == tenant_id, CriticalFindingRule.is_active.is_(True))
+    row = session.execute(
+        select(
+            _count(CollisionAuditFinding, CollisionAuditFinding.tenant_id == tenant_id, CollisionAuditFinding.severity == CollisionSeverity.BLOCK, CollisionAuditFinding.resolution == "pending"),
+            _count(CorpusReportTemplateMap, CorpusReportTemplateMap.tenant_id == tenant_id, CorpusReportTemplateMap.is_verified.is_(True)),
+            _count(RadiologistProfile, profile),
+            _ids(RadiologistProfile.id, profile, func.coalesce(RadiologistProfile.voice_consent_ref, "") == ""),
+            _ids(RadiologistProfile.id, profile, RadiologistProfile.voice_embedding.is_(None)),
+            _count(EvalSet, EvalSet.tenant_id == tenant_id),
+            select(func.jsonb_object_agg(cast(frozen.c.id, String), frozen.c.n)).scalar_subquery(),
+            _count(CriticalFindingRule, *rule),
+            _count(CriticalFindingRule, *rule, CriticalFindingRule.approved_by.isnot(None)),
+            _count(AutonomyClass, AutonomyClass.tenant_id == tenant_id),
+            _ids(AutonomyClass.code, AutonomyClass.tenant_id == tenant_id, func.coalesce(AutonomyClass.baseline_cse_rate, 0) <= 0),
+            select(func.count()).select_from(TemplateVersion).join(Template, Template.id == TemplateVersion.template_id).where(TemplateVersion.tenant_id == tenant_id, TemplateVersion.is_current.is_(True), TemplateVersion.approved_by.isnot(None), Template.is_active.is_(True)).scalar_subquery(),
+        )
+    ).one()
+    return ReadinessFacts(*(list(v) if isinstance(v, list) else v for v in row))
 
 
 # --------------------------------------------------------------- checks -----
-def check_collision_audit_clear(session: Session, tenant_id: uuid.UUID) -> CheckOutcome:
+def check_collision_audit_clear(facts: ReadinessFacts) -> CheckOutcome:
     """**Blocking.** Every `severity='block'` finding must be resolved."""
-    outstanding = session.execute(select(func.count()).select_from(CollisionAuditFinding).where(CollisionAuditFinding.tenant_id == tenant_id, CollisionAuditFinding.severity == CollisionSeverity.BLOCK, CollisionAuditFinding.resolution == "pending")).scalar_one()
-
+    outstanding = facts.outstanding_block_findings
     return CheckOutcome(check_id="collision_audit_clear", status=CheckStatus.PASS if outstanding == 0 else CheckStatus.FAIL, measured_value=float(outstanding), threshold=0.0, detail={"outstanding_block_findings": outstanding})
 
 
-def check_corpus_template_coverage(session: Session, tenant_id: uuid.UUID) -> CheckOutcome:
+def check_corpus_template_coverage(facts: ReadinessFacts) -> CheckOutcome:
     """≥200 hand-verified report→template mappings."""
-    verified = session.execute(select(func.count()).select_from(CorpusReportTemplateMap).where(CorpusReportTemplateMap.tenant_id == tenant_id, CorpusReportTemplateMap.is_verified.is_(True))).scalar_one()
-
+    verified = facts.verified_mappings
     threshold = 200
     return CheckOutcome(check_id="corpus_template_coverage", status=CheckStatus.PASS if verified >= threshold else CheckStatus.FAIL, measured_value=float(verified), threshold=float(threshold), detail={"verified_mappings": verified})
 
 
-def check_voice_enrollment_complete(session: Session, tenant_id: uuid.UUID) -> CheckOutcome:
+def check_voice_enrollment_complete(facts: ReadinessFacts) -> CheckOutcome:
     """Every dictating radiologist enrolled **with consent recorded**."""
-    profiles = list(session.execute(select(RadiologistProfile).where(RadiologistProfile.tenant_id == tenant_id)).scalars().all())
-    if not profiles:
+    if not facts.profiles:
         return CheckOutcome(check_id="voice_enrollment_complete", status=CheckStatus.FAIL, detail={"reason": "no radiologist profiles in this tenant"})
 
-    missing_consent = [str(p.id) for p in profiles if not p.voice_consent_ref]
-    missing_embedding = [str(p.id) for p in profiles if p.voice_embedding is None]
-
+    missing_consent, missing_embedding = facts.missing_consent, facts.missing_embedding
     ok = not missing_consent and not missing_embedding
-    return CheckOutcome(check_id="voice_enrollment_complete", status=CheckStatus.PASS if ok else CheckStatus.FAIL, measured_value=float(len(profiles) - len(missing_consent) - len(missing_embedding)), threshold=float(len(profiles)), detail={"missing_consent": missing_consent[:10], "missing_embedding": missing_embedding[:10]})
+    return CheckOutcome(check_id="voice_enrollment_complete", status=CheckStatus.PASS if ok else CheckStatus.FAIL, measured_value=float(facts.profiles - len(missing_consent) - len(missing_embedding)), threshold=float(facts.profiles), detail={"missing_consent": missing_consent[:10], "missing_embedding": missing_embedding[:10]})
 
 
-def check_gold_set_frozen(session: Session, tenant_id: uuid.UUID) -> CheckOutcome:
+def check_gold_set_frozen(facts: ReadinessFacts) -> CheckOutcome:
     """The per-lab **acceptance set** exists and is frozen."""
-    acceptance_sets = list(session.execute(select(EvalSet).where(EvalSet.tenant_id == tenant_id)).scalars().all())
-    if not acceptance_sets:
+    if not facts.eval_sets:
         return CheckOutcome(check_id="gold_set_frozen", status=CheckStatus.FAIL, detail={"reason": "no per-lab acceptance eval_set exists"})
-
-    threshold = 40
-    frozen = [s for s in acceptance_sets if s.is_frozen]
-    if not frozen:
+    if facts.frozen_item_counts is None:
         return CheckOutcome(check_id="gold_set_frozen", status=CheckStatus.FAIL, detail={"reason": "acceptance set exists but is not frozen"})
 
-    # One grouped count for every frozen set, rather than a count per set.
-    found = dict(session.execute(select(EvalItem.eval_set_id, func.count()).where(EvalItem.eval_set_id.in_([s.id for s in frozen])).group_by(EvalItem.eval_set_id)).all())
-    counts = {str(s.id): int(found.get(s.id, 0)) for s in frozen}
+    threshold = 40
+    counts = {k: int(v) for k, v in facts.frozen_item_counts.items()}
     largest = max(counts.values()) if counts else 0
-
     return CheckOutcome(check_id="gold_set_frozen", status=CheckStatus.PASS if largest >= threshold else CheckStatus.FAIL, measured_value=float(largest), threshold=float(threshold), detail={"item_counts": counts})
 
 
-def check_critical_rules_approved(session: Session, tenant_id: uuid.UUID) -> CheckOutcome:
+def check_critical_rules_approved(facts: ReadinessFacts) -> CheckOutcome:
     """**Blocking.** At least one radiologist-approved, active critical rule (critical-findings rules)."""
-    rules = list(session.execute(select(CriticalFindingRule).where(CriticalFindingRule.tenant_id == tenant_id, CriticalFindingRule.is_active.is_(True))).scalars().all())
-    approved = [r for r in rules if r.approved_by is not None]
-
-    return CheckOutcome(check_id="critical_rules_approved", status=CheckStatus.PASS if approved else CheckStatus.FAIL, measured_value=float(len(approved)), threshold=1.0, detail={"active_rules": len(rules), "approved_rules": len(approved)})
+    approved = facts.approved_rules
+    return CheckOutcome(check_id="critical_rules_approved", status=CheckStatus.PASS if approved else CheckStatus.FAIL, measured_value=float(approved), threshold=1.0, detail={"active_rules": facts.active_rules, "approved_rules": approved})
 
 
-def check_baseline_cse_measured(session: Session, tenant_id: uuid.UUID) -> CheckOutcome:
-    """**Blocking.**'s baseline audit has produced a real `baseline_cse_rate`."""
-    classes = list(session.execute(select(AutonomyClass).where(AutonomyClass.tenant_id == tenant_id)).scalars().all())
-    if not classes:
+def check_baseline_cse_measured(facts: ReadinessFacts) -> CheckOutcome:
+    """**Blocking.** The baseline audit has produced a real `baseline_cse_rate` for every autonomy class."""
+    if not facts.autonomy_classes:
         return CheckOutcome(check_id="baseline_cse_measured", status=CheckStatus.FAIL, detail={"reason": "no autonomy_class rows; baseline audit not recorded"})
 
-    unmeasured = [c.code for c in classes if not c.baseline_cse_rate or float(c.baseline_cse_rate) <= 0]
-    return CheckOutcome(check_id="baseline_cse_measured", status=CheckStatus.PASS if not unmeasured else CheckStatus.FAIL, measured_value=float(len(classes) - len(unmeasured)), threshold=float(len(classes)), detail={"classes_without_baseline": unmeasured})
+    unmeasured = facts.classes_without_baseline
+    return CheckOutcome(check_id="baseline_cse_measured", status=CheckStatus.PASS if not unmeasured else CheckStatus.FAIL, measured_value=float(facts.autonomy_classes - len(unmeasured)), threshold=float(facts.autonomy_classes), detail={"classes_without_baseline": unmeasured})
 
 
-def check_template_library_ready(session: Session, tenant_id: uuid.UUID) -> CheckOutcome:
+def check_template_library_ready(facts: ReadinessFacts) -> CheckOutcome:
     """At least the pilot 20 templates are approved and current."""
-    current = session.execute(select(func.count()).select_from(TemplateVersion).join(Template, Template.id == TemplateVersion.template_id).where(TemplateVersion.tenant_id == tenant_id, TemplateVersion.is_current.is_(True), TemplateVersion.approved_by.isnot(None), Template.is_active.is_(True))).scalar_one()
-
+    current = facts.approved_current_versions
     threshold = 20
     return CheckOutcome(
         check_id="template_library_ready",
@@ -149,9 +188,10 @@ class ReadinessReport:
 
 def evaluate_readiness(session: Session, tenant_id: uuid.UUID, *, persist: bool = True) -> ReadinessReport:
     """Run every readiness gate check and record the results."""
+    facts = load_facts(session, tenant_id)
     outcomes: list[CheckOutcome] = []
     for check in ALL_CHECKS:
-        outcome = check(session, tenant_id)
+        outcome = check(facts)
         if outcome.status == CheckStatus.FAIL and outcome.severity_on_failure == CheckStatus.WARN:
             outcome = CheckOutcome(check_id=outcome.check_id, status=CheckStatus.WARN, measured_value=outcome.measured_value, threshold=outcome.threshold, detail=outcome.detail, severity_on_failure=CheckStatus.WARN)
         outcomes.append(outcome)

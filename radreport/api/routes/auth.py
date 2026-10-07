@@ -10,10 +10,11 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from radreport.api.deps import CurrentPrincipal, DbSession, client_ip
+from radreport.api.routing import BridgedRoute
 from radreport.auth import lab
 from radreport.auth.lab import SignInFailed, TokenInvalid
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(prefix="/auth", tags=["auth"], route_class=BridgedRoute)
 
 
 class TokenResponse(BaseModel):

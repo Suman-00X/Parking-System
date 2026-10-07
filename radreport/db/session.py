@@ -1,6 +1,7 @@
 """Opens database connections and binds each one to a single lab, so a query cannot reach another lab's rows.
 
-Order: get the engine and session factory (get_engine, get_sessionmaker) -> open a unit of work
+Order: get the engine and session factory (get_engine, get_sessionmaker; inside bridged request
+code, db/bridge.py, both are the async engine's) -> open a unit of work
 for one lab (tenant_session) or for the system (system_session) -> or a read-only one on the
 replica when one is configured, caught up, and this browser has not just written (read_session,
 replica_url_for_reads). bind_tenant and select_org are the lower-level pieces those use.
@@ -24,6 +25,7 @@ from radreport.core.errors import CrossTenantAccess, NoTenantContext
 from radreport.core.logging import get_logger
 from radreport.core.tenancy import PRINCIPAL_GUC, TENANT_GUC, Principal, current_tenant_id_or_none, tenant_scope
 from radreport.db import instrumentation, sharding
+from radreport.db.bridge import in_bridge
 
 _log = get_logger(__name__)
 
@@ -43,12 +45,22 @@ def engine_options() -> dict[str, Any]:
     return options
 
 
-@lru_cache(maxsize=16)
 def get_engine(url: str | None = None) -> Engine:
+    """The engine for `url`; inside bridged request code, the async engine's sync face, so its queries await instead of blocking."""
+    if in_bridge():
+        from radreport.db.async_session import get_async_engine  # local: async_session imports this module
+
+        return get_async_engine(url).sync_engine
+    # Keyed on the resolved URL, so a changed database_url never returns an engine built for the old one.
+    return _sync_engine(url or get_settings().database_url)
+
+
+@lru_cache(maxsize=16)
+def _sync_engine(url: str) -> Engine:
     instrumentation.install()
     sharding.install_tenant_sync()
     # Tenant scope lives in `SET LOCAL`, so a connection handed back to the pool carries nothing.
-    engine = create_engine(url or get_settings().database_url, **engine_options())
+    engine = create_engine(url, **engine_options())
     event.listen(engine, "first_connect", _check_connection_budget)
     return engine
 
@@ -56,7 +68,8 @@ def get_engine(url: str | None = None) -> Engine:
 def connection_budget(max_connections: int) -> tuple[int, int]:
     """(connections every worker's pools could open together, what the server allows)."""
     db = get_settings().db
-    per_worker = db.pool_size + db.max_overflow + db.async_pool_size + db.async_max_overflow + db.side_pool_size + 2
+    # Request sessions pass one admission gate of pool_size + max_overflow, on whichever driver; the other engine may keep pool_size idle.
+    per_worker = db.pool_size + db.max_overflow + db.pool_size + db.side_pool_size + 2
     return per_worker * db.workers_hint, max_connections
 
 
@@ -75,11 +88,26 @@ def _check_connection_budget(dbapi_connection: Any, _record: Any) -> None:
         _log.warning("connection_budget_exceeded", pools_could_open=wanted, max_connections=allowed, detail="lower RADREPORT_DB__POOL_SIZE, raise max_connections, or put PgBouncer in front (RADREPORT_DB__PGBOUNCER=true)")
 
 
-@lru_cache(maxsize=4)
+get_engine.cache_clear = _sync_engine.cache_clear  # type: ignore[attr-defined]
+
+
 def get_side_engine(url: str | None = None) -> Engine:
     """A small pool for the access middleware's own queries (rate limits, admin sign-in), so they never wait behind request sessions for a connection."""
-    db = get_settings().db
-    return create_engine(url or get_settings().database_url, **{**engine_options(), "pool_size": db.side_pool_size, "max_overflow": 2})
+    if in_bridge():
+        from radreport.db.async_session import get_async_engine
+
+        return get_async_engine(url, side=True).sync_engine
+    return _sync_side_engine(url or get_settings().database_url)
+
+
+def side_pool_options() -> dict[str, Any]:
+    """engine_options with the side pool's size."""
+    return {**engine_options(), "pool_size": get_settings().db.side_pool_size, "max_overflow": 2}
+
+
+@lru_cache(maxsize=4)
+def _sync_side_engine(url: str) -> Engine:
+    return create_engine(url, **side_pool_options())
 
 
 @contextmanager

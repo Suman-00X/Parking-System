@@ -21,6 +21,7 @@ from radreport.core.errors import DuplicateRecording
 from radreport.core.hashing import hash_bytes
 from radreport.core.logging import get_logger
 from radreport.core.types import ActorType, CaptureDeviceClass
+from radreport.db.bridge import offload
 from radreport.db.models.identity import RadiologistProfile, Study
 from radreport.db.models.ingestion import Recording
 from radreport.db.models.orchestration import AuditLog
@@ -60,7 +61,8 @@ def ingest_recording(session: Session, store: ObjectStore, request: IngestReques
     if filters.maybe_seen_recording(session, request.tenant_id, content_hash):
         _raise_if_duplicate(session, request.tenant_id, content_hash)
 
-    probe = probe_audio(request.data, gate_settings)
+    # Decoding and measuring the audio is CPU work; on a thread when called from bridged request code.
+    probe = offload(probe_audio, request.data, gate_settings)
 
     # Both parents must belong to this tenant.
     _assert_same_tenant(session, request)

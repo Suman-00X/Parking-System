@@ -17,17 +17,19 @@ from sqlalchemy import select
 from radreport.adapters.storage.object_store import StorageUnavailable, object_store
 from radreport.api.deps import CurrentPrincipal, DbSession
 from radreport.api.pagination import Page, paginate_async, set_page_headers
+from radreport.api.routing import BridgedRoute
 from radreport.core.config import get_settings
 from radreport.core.errors import DuplicateRecording, IngestRejected
 from radreport.core.types import CaptureDeviceClass
 from radreport.db.async_session import async_read_session
+from radreport.db.bridge import offload
 from radreport.db.models.ingestion import Recording
 from radreport.events.outbox import Topic, emit
 from radreport.ingest.service import IngestRequest, ingest_recording
 from radreport.ingest.studies import StudyIn, register_study
 from radreport.workers.queue import enqueue
 
-router = APIRouter(prefix="/ingest", tags=["ingest"])
+router = APIRouter(prefix="/ingest", tags=["ingest"], route_class=BridgedRoute)
 
 
 class IngestResponse(BaseModel):
@@ -47,12 +49,12 @@ class IngestResponse(BaseModel):
 
 
 @router.post("/recordings", response_model=IngestResponse, status_code=status.HTTP_201_CREATED)
-async def upload_recording(session: DbSession, principal: CurrentPrincipal, file: Annotated[UploadFile, File()], study_id: Annotated[uuid.UUID, Form()], radiologist_id: Annotated[uuid.UUID, Form()], device_id: Annotated[str | None, Form()] = None, capture_device_class: Annotated[str, Form()] = CaptureDeviceClass.DICTATION_MIC_PTT, is_push_to_talk: Annotated[bool, Form()] = True) -> IngestResponse:
+def upload_recording(session: DbSession, principal: CurrentPrincipal, file: Annotated[UploadFile, File()], study_id: Annotated[uuid.UUID, Form()], radiologist_id: Annotated[uuid.UUID, Form()], device_id: Annotated[str | None, Form()] = None, capture_device_class: Annotated[str, Form()] = CaptureDeviceClass.DICTATION_MIC_PTT, is_push_to_talk: Annotated[bool, Form()] = True) -> IngestResponse:
     if principal.tenant_id is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "no tenant bound to this request")
 
     settings = get_settings()
-    data = await file.read()
+    data = offload(file.file.read)
 
     request = IngestRequest(tenant_id=principal.tenant_id, study_id=study_id, radiologist_id=radiologist_id, filename=file.filename or "recording", data=data, device_id=device_id, capture_device_class=capture_device_class, is_push_to_talk=is_push_to_talk, actor_id=principal.id)
 

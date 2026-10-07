@@ -16,7 +16,7 @@ from radreport.db.models.ingestion import Recording
 from radreport.db.session import tenant_session
 from radreport.devtools.synthetic import synth_patient_fields
 from radreport.eval import goldset
-from radreport.onboarding.readiness import check_gold_set_frozen
+from radreport.onboarding.readiness import check_gold_set_frozen, load_facts
 
 pytestmark = pytest.mark.db
 
@@ -53,11 +53,11 @@ def test_assembling_and_freezing_lets_the_gold_set_check_pass(migrated_db: str, 
     _transcripts(migrated_db, tenant_id, goldset.ACCEPTANCE_TARGET + 5)
 
     with tenant_session(tenant_id, url=migrated_db) as session:
-        assert check_gold_set_frozen(session, tenant_id).status == "fail"
+        assert check_gold_set_frozen(load_facts(session, tenant_id)).status == "fail"
         assembled = onboarding_steps.run_step(session, tenant_id, "acceptance-assemble")
         assert assembled["items"] == goldset.ACCEPTANCE_TARGET and assembled["short_by"] == 0
         onboarding_steps.run_step(session, tenant_id, "acceptance-freeze")
-        assert check_gold_set_frozen(session, tenant_id).status == "pass"
+        assert check_gold_set_frozen(load_facts(session, tenant_id)).status == "pass"
 
         # Frozen means frozen: neither step can change it now.
         with pytest.raises(StepRefused, match="already frozen"):

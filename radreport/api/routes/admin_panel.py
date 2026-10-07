@@ -29,12 +29,14 @@ from radreport.api.access import load_policy
 from radreport.api.deps import CurrentAdmin, admin_lab_session, client_ip
 from radreport.api.pagination import Page, paginate
 from radreport.api.routes.admin_api import SLUG_PATTERN, lab_user_out
+from radreport.api.routing import BridgedRoute
 from radreport.api.ui import admin_page, auth_page, badge, banner, card, esc, facts, flash, icon, pager, progress, stat, status_badge, steps, table, with_demo_tab
 from radreport.auth import lab as lab_auth
 from radreport.core.config import get_settings
 from radreport.core.errors import ModelResolutionError, UngatedActivation
 from radreport.core.tenancy import TenantTransitionError, allowed_transitions
 from radreport.core.types import CheckStatus, ImportBatchType, PlatformRole, ProviderKind, TenantStatus
+from radreport.db.bridge import threaded
 from radreport.db.models.identity import AppUser
 from radreport.db.models.modelconfig import ModelDefinition, ModelProvider
 from radreport.db.models.tenancy import PlatformUser, Tenant
@@ -43,7 +45,7 @@ from radreport.onboarding.batches import ArtifactUpload
 from radreport.onboarding.readiness import evaluate_readiness
 from radreport.onboarding.registration import LabRegistration, register_lab, transition_status
 
-router = APIRouter(prefix="/admin", tags=["admin-panel"])
+router = APIRouter(prefix="/admin", tags=["admin-panel"], route_class=BridgedRoute)
 
 _esc = esc
 
@@ -559,8 +561,9 @@ def _summarise(result: dict) -> str:
 
 
 @router.post("/labs/{tenant_id}/onboarding/roster")
-async def upload_roster(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, file: Annotated[UploadFile, File()]) -> Response:
-    data = await file.read()
+@threaded
+def upload_roster(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, file: Annotated[UploadFile, File()]) -> Response:
+    data = file.file.read()
     try:
         with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
             result = onboarding_steps.import_roster_file(session, tenant_id, data)
@@ -570,8 +573,9 @@ async def upload_roster(tenant_id: uuid.UUID, request: Request, admin: CurrentAd
 
 
 @router.post("/labs/{tenant_id}/onboarding/templates")
-async def upload_templates(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, files: Annotated[list[UploadFile], File()]) -> Response:
-    uploads = [ArtifactUpload(filename=f.filename or "unnamed", data=await f.read(), mime_type=f.content_type) for f in files]
+@threaded
+def upload_templates(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, files: Annotated[list[UploadFile], File()]) -> Response:
+    uploads = [ArtifactUpload(filename=f.filename or "unnamed", data=f.file.read(), mime_type=f.content_type) for f in files]
     try:
         with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
             result = onboarding_steps.submit_template_files(session, tenant_id, uploads)
@@ -581,8 +585,9 @@ async def upload_templates(tenant_id: uuid.UUID, request: Request, admin: Curren
 
 
 @router.post("/labs/{tenant_id}/onboarding/shorthand")
-async def upload_shorthand(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, files: Annotated[list[UploadFile], File()]) -> Response:
-    uploads = [ArtifactUpload(filename=f.filename or "unnamed", data=await f.read(), mime_type=f.content_type) for f in files]
+@threaded
+def upload_shorthand(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, files: Annotated[list[UploadFile], File()]) -> Response:
+    uploads = [ArtifactUpload(filename=f.filename or "unnamed", data=f.file.read(), mime_type=f.content_type) for f in files]
     try:
         with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
             result = onboarding_steps.submit_shorthand_files(session, tenant_id, uploads)
@@ -593,8 +598,9 @@ async def upload_shorthand(tenant_id: uuid.UUID, request: Request, admin: Curren
 
 
 @router.post("/labs/{tenant_id}/onboarding/corpus")
-async def upload_corpus(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, file: Annotated[UploadFile, File()]) -> Response:
-    data = await file.read()
+@threaded
+def upload_corpus(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, file: Annotated[UploadFile, File()]) -> Response:
+    data = file.file.read()
     try:
         with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
             result = onboarding_steps.load_corpus_file(session, tenant_id, data, file.filename or "corpus.csv")
@@ -605,6 +611,7 @@ async def upload_corpus(tenant_id: uuid.UUID, request: Request, admin: CurrentAd
 
 
 @router.post("/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals")
+@threaded
 def merge_proposals(tenant_id: uuid.UUID, batch_id: uuid.UUID, request: Request, admin: CurrentAdmin) -> Response:
     try:
         with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
@@ -615,6 +622,7 @@ def merge_proposals(tenant_id: uuid.UUID, batch_id: uuid.UUID, request: Request,
 
 
 @router.post("/labs/{tenant_id}/onboarding/steps/{step}")
+@threaded
 def run_onboarding_step(tenant_id: uuid.UUID, step: str, request: Request, admin: CurrentAdmin, min_frequency: Annotated[int | None, Form()] = None, verified_only: Annotated[str | None, Form()] = None) -> Response:
     """Run one step from its button; the two steps with options read them from the form."""
     options: dict[str, object] = {}

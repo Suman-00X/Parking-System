@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from radreport.api.deps import CurrentPrincipal, DbSession, ReadDbSession
+from radreport.api.routing import BridgedRoute
 from radreport.autonomy import accrual, grant, release
 from radreport.cache.lookups import user_roles
 from radreport.core.tenancy import Principal
@@ -27,7 +28,7 @@ from radreport.export.fhir import FhirContext, build_diagnostic_report
 from radreport.export.hl7 import ExportRefused, OruContext, build_oru
 from radreport.monitoring import drift
 
-router = APIRouter(prefix="/ga", tags=["ga"])
+router = APIRouter(prefix="/ga", tags=["ga"], route_class=BridgedRoute)
 
 
 def _tenant(principal: Principal) -> uuid.UUID:

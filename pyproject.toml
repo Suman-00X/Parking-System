@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
+    "python-dotenv>=1.0",
     "sqlalchemy[asyncio]>=2.0.36",
     "alembic>=1.14",
     "psycopg[binary]>=3.2",
@@ -22,11 +23,20 @@ dependencies = [
     "python-multipart>=0.0.12",
     "pyjwt>=2.9",
     "pypdf>=5.0",
+    "prometheus-client>=0.21",
 ]
 
 [project.optional-dependencies]
 kafka = ["confluent-kafka>=2.5"]
 redis = ["redis>=5.0"]
+# Tracing and error reporting; each stays off until its endpoint or DSN is configured.
+observability = [
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+    "sentry-sdk>=2.14",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",

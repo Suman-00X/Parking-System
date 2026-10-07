@@ -18,11 +18,12 @@ from pydantic import BaseModel, Field
 from radreport.api.deps import CurrentPrincipal, DbSession
 from radreport.api.pagination import Page, paginate, set_page_headers
 from radreport.api.routes.ga import _require_lab_role
+from radreport.api.routing import BridgedRoute
 from radreport.core.types import UserRole
 from radreport.knowledge import variant_review
 from radreport.onboarding import term_watch
 
-router = APIRouter(prefix="/lexicon", tags=["lexicon"])
+router = APIRouter(prefix="/lexicon", tags=["lexicon"], route_class=BridgedRoute)
 
 
 def _out(row: Any) -> dict[str, Any]:

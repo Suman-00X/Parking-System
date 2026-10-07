@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -17,20 +18,16 @@ class DatabaseSettings(BaseModel):
     """Connection pool and query-logging behaviour for every engine the app opens."""
 
     pool_size: int = Field(default=30, ge=1, le=500)
-    """Connections each worker keeps open. Workers x (pool_size + max_overflow) must stay under Postgres max_connections, or behind PgBouncer."""
+    """Connections each worker keeps open, on the async engine for request code and the sync engine for threaded routes and background workers. Workers x (pool_size + max_overflow) must stay under Postgres max_connections, or behind PgBouncer."""
 
     max_overflow: int = Field(default=10, ge=0, le=500)
     """Extra connections a worker may open under a burst; closed again when returned."""
 
-    async_pool_size: int = Field(default=5, ge=1, le=200)
-    """The async engine's own pool, per worker. Small, because it is counted against max_connections alongside the sync pool."""
-
-    async_max_overflow: int = Field(default=5, ge=0, le=200)
     side_pool_size: int = Field(default=4, ge=1, le=50)
     """The access middleware's own pool, per worker: rate-limit counts and admin sign-in checks."""
 
     threadpool_size: int = Field(default=100, ge=8, le=2000)
-    """Worker threads for sync handlers, per process. Above the pool size, so work that needs no connection is never starved by work waiting for one."""
+    """Worker threads per process, for threaded routes and offloaded blocking work. Above the pool size, so work that needs no connection is never starved by work waiting for one."""
 
     workers_hint: int = Field(default=2, ge=1, le=256)
     """How many app processes share the database; only used to warn when their pools together could exceed max_connections."""
@@ -62,6 +59,9 @@ class DatabaseSettings(BaseModel):
     pgbouncer: bool = False
     """Connect through PgBouncer in transaction mode: server-side prepared statements are turned off, since the next transaction may land on another server connection."""
 
+    pgbouncer_admin_url: str | None = None
+    """PgBouncer's admin console for the pool dashboard (a `stats_users` role, database `pgbouncer`). Unset: the app's database URL with the database swapped for `pgbouncer`."""
+
 
 class EventSettings(BaseModel):
     """Where the outbox relay sends domain events."""
@@ -70,6 +70,20 @@ class EventSettings(BaseModel):
     """`postgres` applies events to in-process consumers; `kafka` produces them to topics for consumers anywhere."""
 
     kafka_bootstrap: str = "localhost:9092"
+    kafka_security_protocol: str = Field(default="PLAINTEXT", pattern="^(PLAINTEXT|SSL|SASL_PLAINTEXT|SASL_SSL)$")
+    """`PLAINTEXT` for a local broker; hosted brokers (Confluent Cloud, Redpanda Cloud, MSK, Aiven) want `SASL_SSL`."""
+
+    kafka_sasl_mechanism: str | None = Field(default=None, pattern="^(PLAIN|SCRAM-SHA-256|SCRAM-SHA-512)$")
+    """Confluent Cloud: `PLAIN`. Redpanda Cloud, MSK with SCRAM, Aiven: `SCRAM-SHA-256` or `-512`."""
+
+    kafka_username: str | None = None
+    """The SASL user; on Confluent Cloud, the API key."""
+
+    kafka_password: str | None = None
+    """The SASL password; on Confluent Cloud, the API secret."""
+
+    kafka_ca_location: str | None = None
+    """A CA bundle file, for a broker whose certificate the system store does not trust (Aiven, self-hosted)."""
     topic_prefix: str = "radreport."
     relay_batch_size: int = Field(default=100, ge=1, le=10_000)
 
@@ -146,6 +160,15 @@ class ObservabilitySettings(BaseModel):
     log_level: str = "INFO"
     json_logs: bool = True
 
+    metrics_token: str | None = None
+    """Bearer token a scraper must send to read /metrics (RADREPORT_OBSERVABILITY__METRICS_TOKEN). Unset: /metrics answers only in local, test and development."""
+
+    sentry_dsn: str | None = None
+    """Error reporting (RADREPORT_OBSERVABILITY__SENTRY_DSN). Unset: nothing is sent. Request bodies, cookies and local variables are never sent."""
+
+    service_name: str = "radreport"
+    """The name traces and errors are filed under. Tracing itself turns on with the standard OTEL_EXPORTER_OTLP_ENDPOINT variable."""
+
 
 class LabAuthSettings(BaseModel):
     token_secret: str = ""
@@ -211,4 +234,6 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    """The settings, after copying .env into the environment for the unprefixed keys read from os.environ; a variable already set wins."""
+    load_dotenv(".env", override=False)
     return Settings()

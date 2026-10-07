@@ -3,6 +3,8 @@
 Order: read the caller the access middleware identified (current_admin, current_principal,
 client_ip) -> open a session bound to one lab (get_db for a lab user, get_read_db for one that only
 reads and may use the replica, admin_lab_session and get_admin_lab_db for an admin acting on a lab).
+A bridged route's session is opened and closed in greenlets on the async engine; a threaded
+route's on worker threads with the sync engine (db/bridge.py).
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from radreport.api.access import Identity
 from radreport.cache.lookups import tenant_config
 from radreport.core.config import get_settings
 from radreport.core.tenancy import Principal, tenant_scope
-from radreport.db import sharding
+from radreport.db import bridge, sharding
 from radreport.db.session import ACTING_PLATFORM_USER, get_sessionmaker, read_session, select_org, tenant_session
 
 
@@ -40,7 +42,7 @@ def client_ip(request: Request) -> str | None:
         return None
 
 
-def current_admin(request: Request) -> AuthenticatedAdmin:
+async def current_admin(request: Request) -> AuthenticatedAdmin:
     """The signed-in admin the access middleware resolved."""
     identity = _identity(request)
     if identity is None or identity.admin is None:
@@ -51,7 +53,7 @@ def current_admin(request: Request) -> AuthenticatedAdmin:
 CurrentAdmin = Annotated[AuthenticatedAdmin, Depends(current_admin)]
 
 
-def current_principal(request: Request) -> Principal:
+async def current_principal(request: Request) -> Principal:
     """The lab user the access middleware resolved."""
     identity = _identity(request)
     if identity is None or identity.principal is None:
@@ -82,7 +84,7 @@ def _admission_gate() -> anyio.Semaphore:
     return gate
 
 
-async def _held(cm: AbstractContextManager[Session], *, enter_in_thread: bool) -> AsyncIterator[Session]:
+async def _held(cm: AbstractContextManager[Session], *, enter_in_thread: bool, bridge: bool = False) -> AsyncIterator[Session]:
     """Yield a session and always close it, even when the request is cancelled.
 
     FastAPI's own wrapper for a sync generator dependency skips the teardown on cancellation (a
@@ -92,10 +94,31 @@ async def _held(cm: AbstractContextManager[Session], *, enter_in_thread: bool) -
     gate = _admission_gate()
     await gate.acquire()
     try:
-        async for session in _opened(cm, enter_in_thread=enter_in_thread):
+        opened = _opened_bridged(cm) if bridge else _opened(cm, enter_in_thread=enter_in_thread)
+        async for session in opened:
             yield session
     finally:
         gate.release()
+
+
+async def _opened_bridged(cm: AbstractContextManager[Session]) -> AsyncIterator[Session]:
+    """Open and close the session in greenlets on the event loop, so it lives on the async engine like the route using it."""
+    session = await bridge.run(cm.__enter__)
+    try:
+        yield session
+    except BaseException as exc:
+        with anyio.CancelScope(shield=True):
+            suppressed = await bridge.run(cm.__exit__, type(exc), exc, exc.__traceback__)
+        if not suppressed:
+            raise
+    else:
+        with anyio.CancelScope(shield=True):
+            await bridge.run(cm.__exit__, None, None, None)
+
+
+def _bridged(request: Request) -> bool:
+    """Whether the matched route runs bridged, so its session must be opened on the async engine."""
+    return bridge.is_bridged(request.scope.get("endpoint"))
 
 
 async def _opened(cm: AbstractContextManager[Session], *, enter_in_thread: bool) -> AsyncIterator[Session]:
@@ -112,11 +135,11 @@ async def _opened(cm: AbstractContextManager[Session], *, enter_in_thread: bool)
             await anyio.to_thread.run_sync(cm.__exit__, None, None, None, limiter=_TEARDOWN)
 
 
-async def get_db(principal: CurrentPrincipal) -> AsyncIterator[Session]:
+async def get_db(principal: CurrentPrincipal, request: Request) -> AsyncIterator[Session]:
     """A session bound to the lab user's own tenant."""
     assert principal.tenant_id is not None
     # Entered on the event loop: opening it does no I/O (the lab is bound when the first query starts a transaction).
-    async for session in _held(tenant_session(principal.tenant_id, principal=principal), enter_in_thread=False):
+    async for session in _held(tenant_session(principal.tenant_id, principal=principal), enter_in_thread=False, bridge=_bridged(request)):
         yield session
 
 
@@ -125,10 +148,10 @@ async def get_db(principal: CurrentPrincipal) -> AsyncIterator[Session]:
 DbSession = Annotated[Session, Depends(get_db, scope="function")]
 
 
-async def get_read_db(principal: CurrentPrincipal) -> AsyncIterator[Session]:
+async def get_read_db(principal: CurrentPrincipal, request: Request) -> AsyncIterator[Session]:
     """A read-only session for the lab user's tenant, on the replica when one is usable."""
     assert principal.tenant_id is not None
-    async for session in _held(read_session(principal.tenant_id, principal=principal), enter_in_thread=True):
+    async for session in _held(read_session(principal.tenant_id, principal=principal), enter_in_thread=True, bridge=_bridged(request)):
         yield session
 
 
@@ -155,7 +178,7 @@ def admin_lab_session(admin: AuthenticatedAdmin, tenant_id: uuid.UUID, *, ip_add
 
 async def get_admin_lab_db(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin) -> AsyncIterator[Session]:
     """`admin_lab_session` for the `{tenant_id}` in the route's path."""
-    async for session in _held(admin_lab_session(admin, tenant_id, ip_address=client_ip(request)), enter_in_thread=True):
+    async for session in _held(admin_lab_session(admin, tenant_id, ip_address=client_ip(request)), enter_in_thread=True, bridge=_bridged(request)):
         yield session
 
 

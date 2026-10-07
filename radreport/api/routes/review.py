@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from radreport.adapters.storage.object_store import object_store
 from radreport.api.deps import CurrentPrincipal, DbSession
+from radreport.api.routing import BridgedRoute
 from radreport.cache.lookups import user_roles
 from radreport.core.config import get_settings
 from radreport.core.tenancy import Principal
@@ -27,7 +28,7 @@ from radreport.review import session as review_session
 from radreport.review.rbac import PermissionDenied, Reviewer
 from radreport.review.signing import SigningRefused
 
-router = APIRouter(prefix="/review", tags=["review"])
+router = APIRouter(prefix="/review", tags=["review"], route_class=BridgedRoute)
 
 
 def _reviewer(session: DbSession, principal: Principal) -> Reviewer:

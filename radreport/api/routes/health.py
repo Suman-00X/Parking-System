@@ -22,9 +22,10 @@ from typing import Any
 from fastapi import APIRouter
 from sqlalchemy import text
 
+from radreport.api.routing import BridgedRoute
 from radreport.core.config import get_settings
 
-router = APIRouter(tags=["ops"])
+router = APIRouter(tags=["ops"], route_class=BridgedRoute)
 
 _STARTED = time.monotonic()
 #: name -> a check returning `{"ok": bool, ...detail}`; it must be read-only and quick.

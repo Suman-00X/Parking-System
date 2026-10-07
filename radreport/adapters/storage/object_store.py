@@ -17,6 +17,7 @@ from typing import Any, BinaryIO, Protocol
 from radreport.core import fallbacks
 from radreport.core.config import StorageSettings
 from radreport.core.logging import get_logger
+from radreport.db.bridge import offload
 
 log = get_logger(__name__)
 
@@ -70,28 +71,28 @@ class S3ObjectStore:
     def put(self, key: str, data: bytes, *, content_type: str) -> StoredObject:
         from radreport.core.hashing import hash_bytes
 
-        self._client.put_object(Bucket=self._bucket, Key=key, Body=data, ContentType=content_type, **self._encryption_args())
+        # offload: a network call; on a thread when called from bridged request code, so the event loop keeps serving.
+        offload(self._client.put_object, Bucket=self._bucket, Key=key, Body=data, ContentType=content_type, **self._encryption_args())
         return StoredObject(key=key, size_bytes=len(data), content_hash=hash_bytes(data))
 
     def get(self, key: str) -> bytes:
-        response = self._client.get_object(Bucket=self._bucket, Key=key)
-        return response["Body"].read()
+        return offload(lambda: self._client.get_object(Bucket=self._bucket, Key=key)["Body"].read())
 
     def open(self, key: str) -> BinaryIO:
-        return self._client.get_object(Bucket=self._bucket, Key=key)["Body"]
+        return offload(self._client.get_object, Bucket=self._bucket, Key=key)["Body"]
 
     def exists(self, key: str) -> bool:
         from botocore.exceptions import ClientError
 
         try:
-            self._client.head_object(Bucket=self._bucket, Key=key)
+            offload(self._client.head_object, Bucket=self._bucket, Key=key)
         except ClientError:
             return False
         return True
 
     def delete(self, key: str) -> None:
         """Only for the erasure cascade."""
-        self._client.delete_object(Bucket=self._bucket, Key=key)
+        offload(self._client.delete_object, Bucket=self._bucket, Key=key)
 
     def signed_url(self, key: str, *, expires_seconds: int, content_type: str) -> str:
         """A short-lived link straight to the object, with no-store forced on the response so nothing between keeps a copy."""
@@ -144,11 +145,11 @@ class LocalFileObjectStore:
 
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+        offload(path.write_bytes, data)
         return StoredObject(key=key, size_bytes=len(data), content_hash=hash_bytes(data))
 
     def get(self, key: str) -> bytes:
-        return self._path(key).read_bytes()
+        return offload(self._path(key).read_bytes)
 
     def open(self, key: str) -> BinaryIO:
         return self._path(key).open("rb")

@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from radreport.core import system_config
 from radreport.core.logging import get_logger
+from radreport.db.bridge import offload
 
 log = get_logger(__name__)
 
@@ -149,7 +150,7 @@ class GoogleTranslator:
         import httpx
 
         with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:  # type: ignore[arg-type]
-            response = client.post(self.endpoint, params={"key": self.api_key}, json={"q": words, "source": source, "target": target, "format": "text"})
+            response = offload(client.post, self.endpoint, params={"key": self.api_key}, json={"q": words, "source": source, "target": target, "format": "text"})
             response.raise_for_status()
         return [html.unescape(t["translatedText"]) for t in response.json()["data"]["translations"]]
 

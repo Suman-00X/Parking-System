@@ -19,6 +19,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.util.concurrency import await_only
 
 from radreport.adapters.llm.base import LLMClient, LLMRequest, LLMResponse
 from radreport.adapters.llm.prompt import PromptBundle, VolatileBlock, schema_block, system_block
@@ -26,6 +27,7 @@ from radreport.core import system_config
 from radreport.core.errors import ModelResolutionError
 from radreport.core.logging import get_logger
 from radreport.core.types import FieldDataType, TaskKey
+from radreport.db.bridge import in_bridge
 from radreport.onboarding.template_parse import ParsedField, ParsedTemplate, _field_key, _infer_modality_and_region
 
 log = get_logger(__name__)
@@ -167,6 +169,9 @@ def merge(regex: ParsedTemplate, model_fields: list[ParsedField], model_sections
 
 
 def _run(coro: Awaitable[LLMResponse]) -> LLMResponse:
+    if in_bridge():
+        # Bridged request code: await the call on the request's own loop instead of starting another.
+        return await_only(coro)
     try:
         asyncio.get_running_loop()
     except RuntimeError:

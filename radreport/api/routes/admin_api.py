@@ -25,7 +25,8 @@ from radreport.admin.auth import MIN_PASSWORD_LENGTH
 from radreport.admin.modelconfig import ConfigRefused, propose_assignment, step_configuration
 from radreport.admin.onboarding_steps import StepRefused
 from radreport.api.deps import AdminLabDb, CurrentAdmin
-from radreport.api.pagination import Page, paginate, set_page_headers
+from radreport.api.pagination import Page, paginate, paginate_async, set_page_headers
+from radreport.api.routing import BridgedRoute
 from radreport.auth import lab as lab_auth
 from radreport.autonomy import accrual, grant
 from radreport.autonomy import classes as autonomy_classes
@@ -33,15 +34,17 @@ from radreport.autonomy.grant import GrantRefused
 from radreport.core.errors import ModelResolutionError, UngatedActivation
 from radreport.core.tenancy import TenantTransitionError
 from radreport.core.types import AdaptationTarget, ImportTrigger
+from radreport.db.async_session import async_read_session
+from radreport.db.bridge import threaded
 from radreport.db.models.identity import AppUser, RadiologistProfile
 from radreport.db.models.tenancy import PlatformUser, Tenant
-from radreport.db.session import read_session, system_session
+from radreport.db.session import system_session
 from radreport.onboarding import corpus
 from radreport.onboarding.batches import ArtifactUpload
 from radreport.onboarding.readiness import evaluate_readiness
 from radreport.onboarding.registration import LabRegistration, register_lab, transition_status
 
-router = APIRouter(prefix="/admin/api", tags=["admin-api"])
+router = APIRouter(prefix="/admin/api", tags=["admin-api"], route_class=BridgedRoute)
 
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]{1,62}$"
 
@@ -67,12 +70,12 @@ def _summary(tenant: Tenant) -> LabSummary:
 
 
 @router.get("/labs", response_model=list[LabSummary])
-def list_labs(admin: CurrentAdmin, response: Response, page: int | None = None, page_size: int | None = None) -> list[LabSummary]:
-    """Every lab, in every status, a page at a time."""
-    with read_session() as session:
-        paged = paginate(session, select(Tenant).order_by(Tenant.name, Tenant.id), Page.of(page, page_size))
-        set_page_headers(response, paged, "/admin/api/labs")
-        return [_summary(t) for t in paged.rows]
+async def list_labs(admin: CurrentAdmin, response: Response, page: int | None = None, page_size: int | None = None) -> list[LabSummary]:
+    """Every lab, in every status, a page at a time. On the async driver."""
+    async with async_read_session() as session:
+        paged = await paginate_async(session, select(Tenant).order_by(Tenant.name, Tenant.id), Page.of(page, page_size))
+    set_page_headers(response, paged, "/admin/api/labs")
+    return [_summary(t) for t in paged.rows]
 
 
 class RegisterLabRequest(BaseModel):
@@ -184,18 +187,20 @@ def batch_status(tenant_id: uuid.UUID, batch_id: uuid.UUID, session: AdminLabDb)
 
 
 @router.post("/labs/{tenant_id}/onboarding/roster")
-async def upload_roster(tenant_id: uuid.UUID, session: AdminLabDb, file: Annotated[UploadFile, File()], trigger: Annotated[str, Form()] = ImportTrigger.INITIAL_ONBOARDING) -> dict[str, Any]:
+@threaded
+def upload_roster(tenant_id: uuid.UUID, session: AdminLabDb, file: Annotated[UploadFile, File()], trigger: Annotated[str, Form()] = ImportTrigger.INITIAL_ONBOARDING) -> dict[str, Any]:
     """Import the lab's roster from an HR CSV export."""
     try:
-        return onboarding_steps.import_roster_file(session, tenant_id, await file.read(), trigger=trigger)
+        return onboarding_steps.import_roster_file(session, tenant_id, file.file.read(), trigger=trigger)
     except StepRefused as exc:
         raise _refused(exc) from exc
 
 
 @router.post("/labs/{tenant_id}/onboarding/templates")
-async def upload_templates(tenant_id: uuid.UUID, session: AdminLabDb, files: Annotated[list[UploadFile], File()], trigger: Annotated[str, Form()] = ImportTrigger.INITIAL_ONBOARDING) -> dict[str, Any]:
+@threaded
+def upload_templates(tenant_id: uuid.UUID, session: AdminLabDb, files: Annotated[list[UploadFile], File()], trigger: Annotated[str, Form()] = ImportTrigger.INITIAL_ONBOARDING) -> dict[str, Any]:
     """Parse uploaded template documents into candidates for radiologist review."""
-    uploads = [ArtifactUpload(filename=f.filename or "unnamed", data=await f.read(), mime_type=f.content_type) for f in files]
+    uploads = [ArtifactUpload(filename=f.filename or "unnamed", data=f.file.read(), mime_type=f.content_type) for f in files]
     try:
         return onboarding_steps.submit_template_files(session, tenant_id, uploads, trigger=trigger)
     except StepRefused as exc:
@@ -218,9 +223,10 @@ class CorpusLoadRequest(BaseModel):
 
 
 @router.post("/labs/{tenant_id}/onboarding/shorthand", status_code=status.HTTP_201_CREATED)
-async def upload_shorthand(tenant_id: uuid.UUID, session: AdminLabDb, files: Annotated[list[UploadFile], File()]) -> dict[str, Any]:
+@threaded
+def upload_shorthand(tenant_id: uuid.UUID, session: AdminLabDb, files: Annotated[list[UploadFile], File()]) -> dict[str, Any]:
     """Shorthand reference sheets (PDF, Word or text) into the lab's lexicon."""
-    uploads = [ArtifactUpload(filename=f.filename or "unnamed", data=await f.read(), mime_type=f.content_type) for f in files]
+    uploads = [ArtifactUpload(filename=f.filename or "unnamed", data=f.file.read(), mime_type=f.content_type) for f in files]
     try:
         return onboarding_steps.submit_shorthand_files(session, tenant_id, uploads)
     except StepRefused as exc:
@@ -228,12 +234,14 @@ async def upload_shorthand(tenant_id: uuid.UUID, session: AdminLabDb, files: Ann
 
 
 @router.post("/labs/{tenant_id}/onboarding/corpus")
+@threaded
 def upload_corpus(tenant_id: uuid.UUID, body: CorpusLoadRequest, session: AdminLabDb) -> dict[str, Any]:
     """Bulk-load historical signed reports."""
     return onboarding_steps.load_corpus_records(session, tenant_id, [corpus.CorpusRecord(**r.model_dump()) for r in body.records], trigger=body.trigger)
 
 
 @router.post("/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals")
+@threaded
 def merge_proposals(tenant_id: uuid.UUID, batch_id: uuid.UUID, session: AdminLabDb) -> dict[str, Any]:
     """Propose merges for near-duplicate templates in one batch."""
     try:
@@ -243,6 +251,7 @@ def merge_proposals(tenant_id: uuid.UUID, batch_id: uuid.UUID, session: AdminLab
 
 
 @router.post("/labs/{tenant_id}/onboarding/steps/{step}")
+@threaded
 def run_onboarding_step(tenant_id: uuid.UUID, step: str, session: AdminLabDb, options: Annotated[dict[str, Any] | None, Body()] = None) -> dict[str, Any]:
     """Run one mining or seeding step by name; see `onboarding_steps.STEPS`."""
     try:
@@ -407,12 +416,12 @@ def _user_out(user: PlatformUser) -> PlatformUserOut:
 
 
 @router.get("/users", response_model=list[PlatformUserOut])
-def list_users(admin: CurrentAdmin, response: Response, page: int | None = None, page_size: int | None = None) -> list[PlatformUserOut]:
-    """Every product admin and support account, a page at a time."""
-    with read_session() as session:
-        paged = paginate(session, users.platform_users_query(), Page.of(page, page_size))
-        set_page_headers(response, paged, "/admin/api/users")
-        return [_user_out(u) for u in paged.rows]
+async def list_users(admin: CurrentAdmin, response: Response, page: int | None = None, page_size: int | None = None) -> list[PlatformUserOut]:
+    """Every product admin and support account, a page at a time. On the async driver."""
+    async with async_read_session() as session:
+        paged = await paginate_async(session, users.platform_users_query(), Page.of(page, page_size))
+    set_page_headers(response, paged, "/admin/api/users")
+    return [_user_out(u) for u in paged.rows]
 
 
 class CreateUserRequest(BaseModel):

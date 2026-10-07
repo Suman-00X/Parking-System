@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 
 from radreport.core.logging import get_logger
+from radreport.db.bridge import offload
 
 log = get_logger(__name__)
 
@@ -131,7 +132,7 @@ class RadLexClient:
             return RadLexHit(**{**body, "synonyms": tuple(body["synonyms"])}) if body else None
         try:
             client = self._client or httpx.Client(timeout=5)
-            response = client.get(self.BASE, params={"q": term, "ontologies": "RADLEX", "require_exact_match": "true", "pagesize": 1}, headers={"Authorization": f"apikey token={self.api_key}"})
+            response = offload(client.get, self.BASE, params={"q": term, "ontologies": "RADLEX", "require_exact_match": "true", "pagesize": 1}, headers={"Authorization": f"apikey token={self.api_key}"})
             response.raise_for_status()
             hit = _first_hit(response.json())
         except (httpx.HTTPError, ValueError) as exc:

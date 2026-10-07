@@ -25,6 +25,7 @@ from radreport.cache.keys import GLOBAL, CacheKey
 from radreport.cache.keys import key as cache_key
 from radreport.core.logging import get_logger
 from radreport.core.types import ActorType, PlatformRole
+from radreport.db.bridge import offload
 from radreport.db.models.orchestration import AuditLog
 from radreport.db.models.tenancy import AdminSession, PlatformUser
 
@@ -55,7 +56,7 @@ def hash_password(password: str) -> str:
     if len(password) < MIN_PASSWORD_LENGTH:
         raise ValueError(f"a password must be at least {MIN_PASSWORD_LENGTH} characters; length resists an offline attack better than composition rules")
     salt = secrets.token_bytes(_SALT_BYTES)
-    derived = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=_KEY_LEN, maxmem=64 * 1024 * 1024)
+    derived = offload(hashlib.scrypt, password.encode("utf-8"), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=_KEY_LEN, maxmem=64 * 1024 * 1024)
     return "$".join(["scrypt", str(_SCRYPT_N), str(_SCRYPT_R), str(_SCRYPT_P), base64.b64encode(salt).decode("ascii"), base64.b64encode(derived).decode("ascii")])
 
 
@@ -67,7 +68,7 @@ def verify_password(password: str, stored: str | None) -> bool:
         scheme, n, r, p, salt_b64, hash_b64 = stored.split("$")
         if scheme != "scrypt":
             return False
-        derived = hashlib.scrypt(password.encode("utf-8"), salt=base64.b64decode(salt_b64), n=int(n), r=int(r), p=int(p), dklen=len(base64.b64decode(hash_b64)), maxmem=64 * 1024 * 1024)
+        derived = offload(hashlib.scrypt, password.encode("utf-8"), salt=base64.b64decode(salt_b64), n=int(n), r=int(r), p=int(p), dklen=len(base64.b64decode(hash_b64)), maxmem=64 * 1024 * 1024)
     except (ValueError, TypeError):
         return False
     return hmac.compare_digest(derived, base64.b64decode(hash_b64))

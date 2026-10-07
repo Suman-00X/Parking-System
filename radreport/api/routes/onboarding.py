@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from radreport.api.deps import CurrentPrincipal, DbSession
 from radreport.api.pagination import Page, paginate, set_page_headers
+from radreport.api.routing import BridgedRoute
 from radreport.cache.lookups import user_roles
 from radreport.core.errors import ApprovalRequired, BatchBlocked, BatchStateError, ConsentRequired
 from radreport.core.tenancy import Principal
@@ -26,7 +27,7 @@ from radreport.db.models.knowledge import Template
 from radreport.db.models.onboarding import CollisionAuditFinding, CorpusReport, CorpusReportTemplateMap, ImportBatch
 from radreport.onboarding import boilerplate, corpus, critical_rules, lexicon, paired_audio, roster, templates
 
-router = APIRouter(prefix="/onboarding", tags=["onboarding"])
+router = APIRouter(prefix="/onboarding", tags=["onboarding"], route_class=BridgedRoute)
 
 
 def _tenant_of(principal: Principal, session: DbSession) -> uuid.UUID:
