@@ -82,7 +82,9 @@ def check_gold_set_frozen(session: Session, tenant_id: uuid.UUID) -> CheckOutcom
     if not frozen:
         return CheckOutcome(check_id="gold_set_frozen", status=CheckStatus.FAIL, detail={"reason": "acceptance set exists but is not frozen"})
 
-    counts = {str(s.id): session.execute(select(func.count()).select_from(EvalItem).where(EvalItem.eval_set_id == s.id)).scalar_one() for s in frozen}
+    # One grouped count for every frozen set, rather than a count per set.
+    found = dict(session.execute(select(EvalItem.eval_set_id, func.count()).where(EvalItem.eval_set_id.in_([s.id for s in frozen])).group_by(EvalItem.eval_set_id)).all())
+    counts = {str(s.id): int(found.get(s.id, 0)) for s in frozen}
     largest = max(counts.values()) if counts else 0
 
     return CheckOutcome(check_id="gold_set_frozen", status=CheckStatus.PASS if largest >= threshold else CheckStatus.FAIL, measured_value=float(largest), threshold=float(threshold), detail={"item_counts": counts})

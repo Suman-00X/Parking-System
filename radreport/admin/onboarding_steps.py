@@ -35,13 +35,17 @@ class StepRefused(Exception):
 
 def onboarding_overview(session: Session, tenant_id: uuid.UUID) -> dict[str, Any]:
     """One view of where this lab is across every onboarding stage."""
-    verified, target = corpus.verification_progress(session, tenant_id)
     report = evaluate_readiness(session, tenant_id, persist=False)
+    # The readiness checks already counted these; reading them again would double the page's queries.
+    by_id = {o.check_id: o for o in report.outcomes}
+    verified = int((by_id["corpus_template_coverage"].detail or {}).get("verified_mappings", 0)) if "corpus_template_coverage" in by_id else corpus.verification_progress(session, tenant_id)[0]
+    target = corpus.VERIFIED_MAPPING_TARGET
+    approved_rules = int((by_id["critical_rules_approved"].detail or {}).get("approved_rules", 0)) if "critical_rules_approved" in by_id else len(critical_rules.active_rules(session, tenant_id=tenant_id))
     batches = list(session.execute(select(ImportBatch).where(ImportBatch.tenant_id == tenant_id).order_by(ImportBatch.created_at.desc()).limit(20)).scalars().all())
     return {
         "corpus_verification": {"verified": verified, "target": target},
         "gold_progress": {k: {"annotated": v[0], "target": v[1]} for k, v in paired_audio.gold_partition_progress(session, tenant_id=tenant_id).items()},
-        "active_critical_rules": len(critical_rules.active_rules(session, tenant_id=tenant_id)),
+        "active_critical_rules": approved_rules,
         "recent_batches": [{"id": str(b.id), "batch_type": b.batch_type, "stage": b.stage, "status": b.status, "blocking_issue_count": b.blocking_issue_count, "accepted": b.accepted_count, "submitted_by": str(b.submitted_by) if b.submitted_by else None, "submitted_by_platform_user_id": str(b.submitted_by_platform_user_id) if b.submitted_by_platform_user_id else None} for b in batches],
         "readiness": {"passed": report.passed, "failures": [o.check_id for o in report.failures], "warnings": [o.check_id for o in report.warnings], "checks": [{"check_id": o.check_id, "status": o.status, "measured_value": o.measured_value, "threshold": o.threshold} for o in report.outcomes]},
     }

@@ -48,8 +48,8 @@ def get_sessionmaker(url: str | None = None) -> sessionmaker[Session]:
 
 def _bind_scope(session: Session, tenant_id: uuid.UUID | None, principal: Principal | None) -> None:
     """Apply the session GUCs the RLS policies read."""
-    session.execute(text(f"SELECT set_config('{TENANT_GUC}', :tid, true)"), {"tid": str(tenant_id) if tenant_id else ""})
-    session.execute(text(f"SELECT set_config('{PRINCIPAL_GUC}', :kind, true)"), {"kind": principal.kind if principal else "system"})
+    # Both in one round trip: every session opens with this.
+    session.execute(text(f"SELECT set_config('{TENANT_GUC}', :tid, true), set_config('{PRINCIPAL_GUC}', :kind, true)"), {"tid": str(tenant_id) if tenant_id else "", "kind": principal.kind if principal else "system"})
 
 
 @contextmanager

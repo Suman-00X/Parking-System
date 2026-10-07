@@ -143,8 +143,12 @@ def authenticate(session: Session, token: str | None) -> AuthenticatedAdmin | No
     if not token:
         return None
 
-    record = session.execute(select(AdminSession).where(AdminSession.token_hash == _token_hash(token))).scalar_one_or_none()
-    if record is None or record.revoked_at is not None:
+    # One statement for the session and its account: this runs on every admin request.
+    row = session.execute(select(AdminSession, PlatformUser).join(PlatformUser, PlatformUser.id == AdminSession.platform_user_id).where(AdminSession.token_hash == _token_hash(token))).first()
+    if row is None:
+        return None
+    record, user = row
+    if record.revoked_at is not None:
         return None
 
     expires = record.expires_at
@@ -153,8 +157,7 @@ def authenticate(session: Session, token: str | None) -> AuthenticatedAdmin | No
     if expires <= dt.datetime.now(dt.UTC):
         return None
 
-    user = session.get(PlatformUser, record.platform_user_id)
-    if user is None or not user.is_active:
+    if not user.is_active:
         # Deactivating an admin must take effect on their live sessions, not
         # only at their next login.
         return None

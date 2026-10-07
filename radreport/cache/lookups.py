@@ -47,6 +47,8 @@ def tenant_config(session: Session, tenant_id: uuid.UUID) -> TenantConfig | None
         tenant = session.get(Tenant, tenant_id)
         if tenant is None:
             return None
+        # The identity map holds rows weakly; keep this one alive so the page's own read of it is free.
+        session.info.setdefault("pinned_rows", []).append(tenant)
         return TenantConfig(id=tenant.id, name=tenant.name, slug=tenant.slug, status=tenant.status, training_pooling_consent=tenant.training_pooling_consent, consent_withdrawn=tenant.consent_withdrawn_at is not None)
 
     return request.request_cached(key("tenant_config", tenant_id), load)

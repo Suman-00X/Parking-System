@@ -81,10 +81,18 @@ def derive_training_eligibility(session: Session, recording: Recording, *, commi
 def rederive_for_tenant(session: Session, tenant_id: uuid.UUID) -> tuple[int, int]:
     """Re-derive every recording in a tenant. Returns (eligible, ineligible)."""
     recordings = session.execute(select(Recording).where(Recording.tenant_id == tenant_id)).scalars().all()
+    tenant = session.get(Tenant, tenant_id)
+    if tenant is None:
+        raise ValueError(f"no tenant {tenant_id}")
+    # One read of the lab's radiologists and one flush, instead of two reads and a flush per recording.
+    radiologists = {p.id: p for p in session.execute(select(RadiologistProfile).where(RadiologistProfile.tenant_id == tenant_id)).scalars().all()}
     eligible = 0
     for recording in recordings:
-        verdict = derive_training_eligibility(session, recording)
+        verdict = evaluate_eligibility(recording, tenant, radiologists.get(recording.radiologist_id))
+        if recording.is_training_corpus_eligible != verdict.eligible:
+            recording.is_training_corpus_eligible = verdict.eligible
         eligible += int(verdict.eligible)
+    session.flush()
 
     log.info("training_eligibility_rederived", tenant_id=str(tenant_id), total=len(recordings), eligible=eligible)
     return eligible, len(recordings) - eligible
@@ -128,14 +136,17 @@ def record_consent_event(session: Session, *, tenant_id: uuid.UUID, event: str, 
 def verify_g6_legal_basis(session: Session, recording_ids: list[uuid.UUID]) -> tuple[bool, dict[str, list[str]]]:
     """`G6_legal_basis`, strengthened."""
     failures: dict[str, list[str]] = {}
+    # Three bulk reads, however many recordings: a training corpus runs to thousands.
+    recordings = {r.id: r for r in session.execute(select(Recording).where(Recording.id.in_(recording_ids))).scalars().all()} if recording_ids else {}
+    tenants = {t.id: t for t in session.execute(select(Tenant).where(Tenant.id.in_({r.tenant_id for r in recordings.values()}))).scalars().all()} if recordings else {}
+    radiologists = {p.id: p for p in session.execute(select(RadiologistProfile).where(RadiologistProfile.id.in_({r.radiologist_id for r in recordings.values()}))).scalars().all()} if recordings else {}
     for recording_id in recording_ids:
-        recording = session.get(Recording, recording_id)
+        recording = recordings.get(recording_id)
         if recording is None:
             failures[str(recording_id)] = ["recording not found"]
             continue
-        tenant = session.get(Tenant, recording.tenant_id)
-        radiologist = session.get(RadiologistProfile, recording.radiologist_id)
-        verdict = evaluate_eligibility(recording, tenant, radiologist) if tenant else None
+        tenant = tenants.get(recording.tenant_id)
+        verdict = evaluate_eligibility(recording, tenant, radiologists.get(recording.radiologist_id)) if tenant else None
         if verdict is None or not verdict.eligible:
             failures[str(recording_id)] = list(verdict.reasons) if verdict else ["no tenant"]
 
