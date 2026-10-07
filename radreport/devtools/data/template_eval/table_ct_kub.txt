@@ -1,0 +1,8 @@
+CT KUB
+Organ	Finding
+Right kidney	size __ cm, calculus yes / no
+Left kidney	size __ cm, calculus yes / no
+Ureters	dilated / not dilated
+Urinary bladder	normal / wall thickening
+Prostate	volume __ cc
+Conclusion	___

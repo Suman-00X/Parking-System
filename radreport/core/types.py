@@ -488,6 +488,9 @@ class TaskKey(_Vals):
     COMPOSE = "compose"
     """Not in the list and not in the exclusion list."""
 
+    TEMPLATE_PARSE = "template_parse"
+    """Reads a template document the regular parser was unsure of. Bounded: a radiologist reviews every field before it goes live."""
+
 
 class TaskBucket(_Vals):
     CONSEQUENTIAL = "consequential"

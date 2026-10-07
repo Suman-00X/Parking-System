@@ -110,6 +110,8 @@ class CandidateSummary(BaseModel):
     field_count: int
     needs_field_by_field_review: bool
     merged_into_template_id: uuid.UUID | None
+    model_fields_added: int = 0
+    """Fields the template model read that the parser missed; any at all means every field is checked."""
 
 
 @router.get("/templates/candidates", response_model=list[CandidateSummary])
@@ -119,7 +121,8 @@ def list_candidates(session: DbSession, principal: CurrentPrincipal, response: R
     paged = paginate(session, templates.pending_review_query(tenant_id=tenant_id, batch_id=batch_id), Page.of(page, page_size))
     set_page_headers(response, paged, "/onboarding/templates/candidates", {"batch_id": str(batch_id)} if batch_id else None)
     rows = paged.rows
-    return [CandidateSummary(id=c.id, proposed_code=c.proposed_code, proposed_spoken_study_code=c.proposed_spoken_study_code, proposed_modality=c.proposed_modality, proposed_body_region=c.proposed_body_region, parse_confidence=float(c.parse_confidence) if c.parse_confidence is not None else None, field_count=len((c.proposed_json_schema or {}).get("properties", {})), needs_field_by_field_review=(c.parse_confidence is None or float(c.parse_confidence) < templates.LOW_CONFIDENCE_THRESHOLD), merged_into_template_id=c.merged_into_template_id) for c in rows]
+    added = templates.model_fields_added(session, [c.import_artifact_id for c in rows])
+    return [CandidateSummary(id=c.id, proposed_code=c.proposed_code, proposed_spoken_study_code=c.proposed_spoken_study_code, proposed_modality=c.proposed_modality, proposed_body_region=c.proposed_body_region, parse_confidence=float(c.parse_confidence) if c.parse_confidence is not None else None, field_count=len((c.proposed_json_schema or {}).get("properties", {})), needs_field_by_field_review=(c.parse_confidence is None or float(c.parse_confidence) < templates.LOW_CONFIDENCE_THRESHOLD or added.get(c.import_artifact_id, 0) > 0), merged_into_template_id=c.merged_into_template_id, model_fields_added=added.get(c.import_artifact_id, 0)) for c in rows]
 
 
 class CandidateReviewRequest(BaseModel):

@@ -1,0 +1,10 @@
+{
+  "structured_ct_chest.txt": ["lungs", "pleura", "mediastinum", "heart size", "lymph nodes", "airways", "impression"],
+  "structured_usg_abdomen.txt": ["liver", "gall bladder", "cbd", "pancreas", "spleen", "right kidney", "left kidney", "urinary bladder", "impression"],
+  "prose_mri_brain.txt": ["ventricles", "midline shift", "grey white matter differentiation", "posterior fossa", "diffusion restriction", "enhancement", "pituitary gland", "orbits", "paranasal sinuses", "opinion"],
+  "bullets_xray_chest.txt": ["trachea", "cardiothoracic ratio", "lung fields", "costophrenic angles", "domes of diaphragm", "bony thorax", "remarks"],
+  "table_ct_kub.txt": ["right kidney", "left kidney", "ureters", "urinary bladder", "prostate", "conclusion"],
+  "runon_usg_pelvis.txt": ["uterus", "endometrial thickness", "right ovary", "left ovary", "adnexal mass", "free fluid", "impression"],
+  "mixed_ct_abdomen.txt": ["liver", "gallbladder", "common bile duct", "spleen", "pancreas", "adrenals", "kidneys", "bowel loops", "impression"],
+  "numbered_doppler.txt": ["right cca intima media thickness", "left cca intima media thickness", "right ica peak systolic velocity", "left ica peak systolic velocity", "plaque", "vertebral arteries", "final opinion"]
+}

@@ -135,7 +135,7 @@
     <route id="admin.lab.assign" method="POST" path="/admin/labs/{tenant_id}/assign" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
       <param name="tenant_id" in="path" type="uuid" required="true"/>
       <param name="model_definition_id" in="form" type="uuid" required="true"/>
-      <param name="task_key" in="form" type="string" required="true" pattern="asr_primary|asr_secondary|extraction|self_correction|verification|routing_pick|utterance_classification|routing_shortlist|roundtrip_check|compose"/>
+      <param name="task_key" in="form" type="string" required="true" pattern="asr_primary|asr_secondary|extraction|self_correction|verification|routing_pick|utterance_classification|routing_shortlist|roundtrip_check|compose|template_parse"/>
     </route>
     <route id="admin.lab.assignment.activate" method="POST" path="/admin/labs/{tenant_id}/assignments/{assignment_id}/activate" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
       <param name="assignment_id" in="path" type="uuid" required="true"/>
@@ -265,7 +265,7 @@
     <route id="admin.api.lab.assignments.propose" method="POST" path="/admin/api/labs/{tenant_id}/assignments" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
       <param name="tenant_id" in="path" type="uuid" required="true"/>
       <param name="model_definition_id" in="json" type="uuid" required="true"/>
-      <param name="task_key" in="json" type="string" required="true" pattern="asr_primary|asr_secondary|extraction|self_correction|verification|routing_pick|utterance_classification|routing_shortlist|roundtrip_check|compose"/>
+      <param name="task_key" in="json" type="string" required="true" pattern="asr_primary|asr_secondary|extraction|self_correction|verification|routing_pick|utterance_classification|routing_shortlist|roundtrip_check|compose|template_parse"/>
     </route>
     <route id="admin.api.lab.assignment.activate" method="POST" path="/admin/api/labs/{tenant_id}/assignments/{assignment_id}/activate" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
       <param name="assignment_id" in="path" type="uuid" required="true"/>

@@ -1,0 +1,10 @@
+CT CHEST PLAIN
+FINDINGS:
+Lungs: [clear/consolidation/ground glass]
+Pleura: No effusion.
+Mediastinum: Normal.
+Heart size: [normal/enlarged]
+Lymph nodes: Largest ___ mm
+Airways: Patent.
+IMPRESSION:
+Impression: ___

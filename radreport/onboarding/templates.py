@@ -4,7 +4,8 @@ Order: upload documents (submit_templates) -> build each one's field schema
 (build_json_schema) -> a radiologist reviews it (review_candidate) -> near-duplicates are
 proposed for merging (propose_merges, decide_merge) -> approved templates go live
 (apply_templates), and a bad batch is rolled back (revert_applied_templates).
-list_pending_review and list_artifacts feed the review screens.
+Uploads the parser is unsure of are also read by the lab's template model (onboarding/template_llm.py).
+list_pending_review, list_artifacts and model_fields_added feed the review screens.
 """
 
 from __future__ import annotations
@@ -24,9 +25,10 @@ from radreport.db.models.knowledge import Template, TemplateField, TemplateVersi
 from radreport.db.models.onboarding import ImportArtifact, ImportBatch, TemplateImportCandidate, TemplateMergeProposal
 from radreport.db.models.orchestration import AuditLog
 from radreport.knowledge.phonetics import CollisionCandidate, double_metaphone
+from radreport.onboarding import template_llm
 from radreport.onboarding.batches import ArtifactUpload, open_batch, record_counts, register_artifact, revert_batch, transition
 from radreport.onboarding.lexicon import pending_blocking_collisions, run_collision_audit
-from radreport.onboarding.template_parse import ParsedTemplate, UnsupportedDocument, parse_template
+from radreport.onboarding.template_parse import ParsedTemplate, UnsupportedDocument, _title_from_filename, extract_paragraphs, infer_structure
 
 log = get_logger(__name__)
 
@@ -46,15 +48,18 @@ class TemplateSubmission:
     """`(filename, reason)` — surfaced to the lab admin, not swallowed."""
 
     low_confidence: list[TemplateImportCandidate] = field(default_factory=list)
+    model_assisted: list[str] = field(default_factory=list)
+    """Filenames the template model also read."""
 
 
-def submit_templates(session: Session, *, tenant_id: uuid.UUID, uploads: list[ArtifactUpload], submitted_by: uuid.UUID | None = None, trigger: str = ImportTrigger.INITIAL_ONBOARDING, batch: ImportBatch | None = None) -> TemplateSubmission:
-    """Parse uploaded documents into candidates. Nothing goes live here."""
+def submit_templates(session: Session, *, tenant_id: uuid.UUID, uploads: list[ArtifactUpload], submitted_by: uuid.UUID | None = None, trigger: str = ImportTrigger.INITIAL_ONBOARDING, batch: ImportBatch | None = None, fallback: template_llm.Fallback | None = None) -> TemplateSubmission:
+    """Parse uploaded documents into candidates; an unsure parse is also read by the lab's template model. Nothing goes live here."""
     batch = batch or open_batch(session, tenant_id=tenant_id, batch_type=ImportBatchType.TEMPLATE, stage="S1", trigger=trigger, submitted_by=submitted_by)
     if batch.status == ImportStatus.UPLOADING:
         transition(session, batch, ImportStatus.PARSING, actor_id=submitted_by)
 
     submission = TemplateSubmission(batch=batch)
+    model, looked_up = fallback, fallback is not None
 
     for upload in uploads:
         artifact, created = register_artifact(session, batch, upload)
@@ -64,7 +69,8 @@ def submit_templates(session: Session, *, tenant_id: uuid.UUID, uploads: list[Ar
             continue
 
         try:
-            parsed = parse_template(upload.data, upload.filename)
+            paragraphs = extract_paragraphs(upload.data, upload.filename)
+            parsed = infer_structure(paragraphs, fallback_title=_title_from_filename(upload.filename))
         except UnsupportedDocument as exc:
             artifact.parse_status = ParseStatus.FAILED
             artifact.parse_warnings = {"error": str(exc)}
@@ -72,8 +78,21 @@ def submit_templates(session: Session, *, tenant_id: uuid.UUID, uploads: list[Ar
             record_counts(session, batch, rejected=1)
             continue
 
+        regex_confidence = parsed.confidence
+        outcome: template_llm.FallbackOutcome | None = None
+        if template_llm.needs_fallback(session, tenant_id, parsed):
+            if not looked_up:
+                model, looked_up = template_llm.fallback_for(session, tenant_id), True
+            if model is not None:
+                outcome = template_llm.apply_fallback(paragraphs, parsed, model)
+                parsed = outcome.parsed
+                submission.model_assisted.append(upload.filename)
+
         artifact.parse_status = ParseStatus.OK if parsed.fields else ParseStatus.PARTIAL
-        artifact.parse_warnings = {"warnings": parsed.warnings} if parsed.warnings else None
+        warnings: dict[str, Any] = {"warnings": parsed.warnings} if parsed.warnings else {}
+        if outcome is not None:
+            warnings["template_model"] = {**outcome.audit(), "parser_confidence": regex_confidence}
+        artifact.parse_warnings = warnings or None
 
         candidate = TemplateImportCandidate(tenant_id=tenant_id, import_batch_id=batch.id, import_artifact_id=artifact.id, proposed_code=_propose_code(parsed), proposed_json_schema=build_json_schema(parsed), proposed_sections={"sections": parsed.sections}, proposed_modality=parsed.modality, proposed_body_region=parsed.body_region, proposed_spoken_study_code=_propose_spoken_code(parsed), parse_confidence=parsed.confidence, review_status=CandidateReviewStatus.PENDING)
         session.add(candidate)
@@ -86,7 +105,7 @@ def submit_templates(session: Session, *, tenant_id: uuid.UUID, uploads: list[Ar
     if batch.status == ImportStatus.PARSING:
         transition(session, batch, ImportStatus.AWAITING_REVIEW, actor_id=submitted_by)
 
-    log.info("s1_templates_submitted", tenant_id=str(tenant_id), batch_id=str(batch.id), candidates=len(submission.candidates), low_confidence=len(submission.low_confidence), failures=len(submission.failures))
+    log.info("s1_templates_submitted", tenant_id=str(tenant_id), batch_id=str(batch.id), candidates=len(submission.candidates), low_confidence=len(submission.low_confidence), model_assisted=len(submission.model_assisted), failures=len(submission.failures))
     return submission
 
 
@@ -388,6 +407,14 @@ def pending_review_query(*, tenant_id: uuid.UUID, batch_id: uuid.UUID | None = N
 def list_pending_review(session: Session, *, tenant_id: uuid.UUID, batch_id: uuid.UUID | None = None) -> list[TemplateImportCandidate]:
     """The radiologists' review queue, low-confidence parses first."""
     return list(session.execute(pending_review_query(tenant_id=tenant_id, batch_id=batch_id)).scalars().all())
+
+
+def model_fields_added(session: Session, artifact_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+    """Per artifact, how many fields the template model added; one query for a page of candidates."""
+    if not artifact_ids:
+        return {}
+    rows = session.execute(select(ImportArtifact.id, ImportArtifact.parse_warnings).where(ImportArtifact.id.in_(artifact_ids))).all()
+    return {artifact_id: int(((warnings or {}).get("template_model") or {}).get("fields_added") or 0) for artifact_id, warnings in rows}
 
 
 def list_artifacts(session: Session, *, tenant_id: uuid.UUID, batch_id: uuid.UUID) -> list[ImportArtifact]:

@@ -1,0 +1,8 @@
+Carotid Doppler
+1) Right CCA intima media thickness __ mm
+2) Left CCA intima media thickness __ mm
+3) Right ICA peak systolic velocity __ cm/s
+4) Left ICA peak systolic velocity __ cm/s
+5) Plaque present / absent
+6) Vertebral arteries antegrade flow
+Final opinion ___
