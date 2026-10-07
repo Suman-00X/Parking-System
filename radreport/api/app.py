@@ -3,8 +3,8 @@
 Order: create_app assembles the app, refuses to start if the access policy disagrees with the
 routes or their parameters, and installs AccessMiddleware (who may call) in front of
 InputValidationMiddleware (with what), all inside RequestCacheMiddleware (one lookup per request)
-and QueryMetricsMiddleware (how many statements); current_revision and head_revision report
-whether the database schema is up to date.
+and QueryMetricsMiddleware (how many statements); on start, a database with no labs is seeded once
+(_first_seed); current_revision and head_revision report whether the database schema is up to date.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from radreport.auth.lab import require_token_secret
 from radreport.cache import shared as shared_cache
 from radreport.cache.request import RequestCacheMiddleware
 from radreport.core.config import get_settings
-from radreport.core.logging import configure_logging
+from radreport.core.logging import configure_logging, get_logger
 from radreport.db import sharding
 from radreport.db.instrumentation import QueryMetricsMiddleware
 from radreport.db.session import get_engine, system_session
@@ -53,6 +53,16 @@ def _replica_health() -> dict[str, object]:
     return {"ok": lag <= settings.replica_max_lag_seconds, "lag_seconds": round(lag, 3), "max_lag_seconds": settings.replica_max_lag_seconds}
 
 
+def _first_seed() -> None:
+    """Seed a database with no labs; a failure is logged and the API starts anyway, with /ready reporting the database."""
+    from radreport.db.first_seed import seed_if_empty
+
+    try:
+        seed_if_empty()
+    except Exception:  # noqa: BLE001 - never keep the API down over seed data
+        get_logger(__name__).exception("first_seed_failed")
+
+
 def create_app() -> FastAPI:
     configure_logging()
 
@@ -60,6 +70,8 @@ def create_app() -> FastAPI:
     async def lifespan(_app: FastAPI):  # type: ignore[no-untyped-def]
         # More threads than connections, so handlers that need no connection are never starved by ones waiting for one.
         anyio.to_thread.current_default_thread_limiter().total_tokens = get_settings().db.threadpool_size
+        if get_settings().seed_on_start:
+            await anyio.to_thread.run_sync(_first_seed)
         yield
 
     app = FastAPI(lifespan=lifespan, title="radreport", version="0.1.0", description=("Radiology voice-to-structured-report: the admin panel, the 15-stage V1 pipeline, and the review surface."))

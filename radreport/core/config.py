@@ -195,6 +195,9 @@ class Settings(BaseSettings):
     trusted_origins: list[str] = Field(default_factory=list)
     """Extra origins (scheme://host[:port]) allowed to send state-changing admin requests, e.g. a public hostname in front of a proxy. Set as JSON in RADREPORT_TRUSTED_ORIGINS."""
 
+    seed_on_start: bool = True
+    """Seed a database with no labs when the API starts (RADREPORT_SEED_ON_START); a database with any lab is never touched."""
+
     demo_accounts: list[DemoAccount] = Field(default_factory=list)
     """Empty => the login page has no credentials tab. Set as JSON in RADREPORT_DEMO_ACCOUNTS."""
 
