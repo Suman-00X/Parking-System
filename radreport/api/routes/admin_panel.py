@@ -38,7 +38,7 @@ from radreport.core.types import CheckStatus, ImportBatchType, PlatformRole, Pro
 from radreport.db.models.identity import AppUser
 from radreport.db.models.modelconfig import ModelDefinition, ModelProvider
 from radreport.db.models.tenancy import PlatformUser, Tenant
-from radreport.db.session import system_session
+from radreport.db.session import read_session, system_session
 from radreport.onboarding.batches import ArtifactUpload
 from radreport.onboarding.readiness import evaluate_readiness
 from radreport.onboarding.registration import LabRegistration, register_lab, transition_status
@@ -168,7 +168,7 @@ def home(admin: CurrentAdmin) -> Response:
 def labs_page(admin: CurrentAdmin, error: str | None = None, notice: str | None = None, show: str | None = None, page: int | None = None) -> HTMLResponse:
     """The lab list, a page at a time; offboarded labs are hidden unless asked for."""
     show_all = show == "all"
-    with system_session() as session:
+    with read_session() as session:
         counts = dict(session.execute(sa.select(Tenant.status, sa.func.count()).group_by(Tenant.status)).all())
         query = sa.select(Tenant).order_by(Tenant.name, Tenant.id)
         if not show_all:
@@ -403,7 +403,7 @@ def activate_step(tenant_id: uuid.UUID, assignment_id: uuid.UUID, request: Reque
 # =============================================================== providers ===
 @router.get("/providers", response_class=HTMLResponse)
 def providers_page(admin: CurrentAdmin, error: str | None = None, notice: str | None = None) -> HTMLResponse:
-    with system_session() as session:
+    with read_session() as session:
         providers = session.execute(sa.select(ModelProvider).order_by(ModelProvider.name)).scalars().all()
         definitions = session.execute(sa.select(ModelDefinition, ModelProvider).join(ModelProvider, ModelProvider.id == ModelDefinition.provider_id).order_by(ModelProvider.name, ModelDefinition.display_name)).all()
 
@@ -645,7 +645,7 @@ def users_page(admin: CurrentAdmin, error: str | None = None, notice: str | None
     sample = uuid.UUID(int=0)
     can_toggle = _can(admin, "POST", f"/admin/users/{sample}/deactivate")
     can_reset = _can(admin, "POST", f"/admin/users/{sample}/password")
-    with system_session() as session:
+    with read_session() as session:
         role_counts = dict(session.execute(sa.select(PlatformUser.role, sa.func.count()).where(PlatformUser.is_active.is_(True)).group_by(PlatformUser.role)).all())
         all_count = session.execute(sa.select(sa.func.count()).select_from(PlatformUser)).scalar_one()
         paged = paginate(session, users.platform_users_query(), Page.of(page, 25))

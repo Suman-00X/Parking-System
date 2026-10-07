@@ -1,8 +1,8 @@
 """Shared request plumbing: who the access check let through, and a database session bound to their lab.
 
 Order: read the caller the access middleware identified (current_admin, current_principal,
-client_ip) -> open a session bound to one lab (get_db for a lab user, admin_lab_session and
-get_admin_lab_db for an admin acting on a lab).
+client_ip) -> open a session bound to one lab (get_db for a lab user, get_read_db for one that only
+reads and may use the replica, admin_lab_session and get_admin_lab_db for an admin acting on a lab).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from radreport.admin.auth import AuthenticatedAdmin
 from radreport.api.access import Identity
 from radreport.cache.lookups import tenant_config
 from radreport.core.tenancy import Principal, tenant_scope
-from radreport.db.session import ACTING_PLATFORM_USER, get_sessionmaker, select_org, tenant_session
+from radreport.db.session import ACTING_PLATFORM_USER, get_sessionmaker, read_session, select_org, tenant_session
 
 
 def _identity(request: Request) -> Identity | None:
@@ -66,6 +66,16 @@ def get_db(principal: CurrentPrincipal) -> Iterator[Session]:
 
 
 DbSession = Annotated[Session, Depends(get_db)]
+
+
+def get_read_db(principal: CurrentPrincipal) -> Iterator[Session]:
+    """A read-only session for the lab user's tenant, on the replica when one is usable."""
+    assert principal.tenant_id is not None
+    with read_session(principal.tenant_id, principal=principal) as session:
+        yield session
+
+
+ReadDbSession = Annotated[Session, Depends(get_read_db)]
 
 
 @contextmanager

@@ -93,10 +93,13 @@ class QueryMetrics:
     _routes: dict[str, _RouteTotals] = field(default_factory=dict)
     _total: int = 0
     _slow: int = 0
+    _by_target: dict[str, int] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def record_query(self, ms: float, *, slow: bool) -> None:
+    def record_query(self, ms: float, *, slow: bool, target: str = "primary", read: bool = False) -> None:
         with self._lock:
+            if read:
+                self._by_target[target] = self._by_target.get(target, 0) + 1
             self._durations.append(ms)
             if len(self._durations) > self.window:
                 self._durations.popleft()
@@ -121,8 +124,12 @@ class QueryMetrics:
             per_scope = sorted(self._per_scope)
             routes = sorted(self._routes.items(), key=lambda kv: kv[1].queries / max(kv[1].scopes, 1), reverse=True)[:top]
             total, slow = self._total, self._slow
+            by_target = dict(self._by_target)
+        reads = sum(by_target.values())
         return {
             "queries_total": total,
+            "reads_by_target": by_target,
+            "replica_read_share": round(by_target.get("replica", 0) / reads, 4) if reads else 0.0,
             "slow_queries_total": slow,
             "slow_query_ms": get_settings().db.slow_query_ms,
             "query_ms": {"p50": round(_percentile(durations, 0.50), 3), "p95": round(_percentile(durations, 0.95), 3), "p99": round(_percentile(durations, 0.99), 3), "sampled": len(durations)},
@@ -135,10 +142,17 @@ class QueryMetrics:
             self._durations.clear()
             self._per_scope.clear()
             self._routes.clear()
+            self._by_target.clear()
             self._total = self._slow = 0
 
 
 METRICS = QueryMetrics()
+
+
+def _is_read(statement: str) -> bool:
+    """A query that reads data; the scope-binding set_config calls are bookkeeping, not reads."""
+    head = statement.lstrip()[:20].upper()
+    return head.startswith(("SELECT", "WITH")) and not head.startswith("SELECT SET_CONFIG")
 
 
 def _before(conn: Any, _cursor: Any, _statement: str, _parameters: Any, context: Any, _executemany: bool) -> None:
@@ -155,9 +169,19 @@ def _after(conn: Any, _cursor: Any, statement: str, _parameters: Any, context: A
     stats = _current.get()
     if stats is not None:
         stats.record(ms, statement, slow=slow)
-    METRICS.record_query(ms, slow=slow)
+    METRICS.record_query(ms, slow=slow, target="replica" if conn.engine.url.render_as_string(hide_password=True) in REPLICA_URLS else "primary", read=_is_read(statement))
     if slow:
         log.warning("slow_query", ms=round(ms, 1), threshold_ms=threshold, scope=stats.label if stats else "unscoped", statement=" ".join(statement.split())[:_STATEMENT_CHARS])
+
+
+#: Engines that point at a read replica, so their statements are counted as replica reads.
+REPLICA_URLS: set[str] = set()
+
+
+def mark_replica(url: str) -> None:
+    from sqlalchemy.engine import make_url
+
+    REPLICA_URLS.add(make_url(url).render_as_string(hide_password=True))
 
 
 _installed = False

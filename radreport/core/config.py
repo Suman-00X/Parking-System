@@ -34,6 +34,15 @@ class DatabaseSettings(BaseModel):
     slow_query_ms: float = Field(default=100.0, ge=0)
     """A statement slower than this is logged as slow_query, with its timing and the route that ran it."""
 
+    replica_url: str | None = None
+    """A streaming read replica (RADREPORT_DB__REPLICA_URL). Dashboards, cost views, lists and exports read from it; unset, they read from the primary."""
+
+    replica_max_lag_seconds: float = Field(default=10.0, gt=0)
+    """Replica reads go back to the primary while the replica is further behind than this."""
+
+    read_your_writes_seconds: int = Field(default=10, ge=1, le=600)
+    """After a browser writes, its reads stay on the primary this long, so it sees its own change."""
+
     pgbouncer: bool = False
     """Connect through PgBouncer in transaction mode: server-side prepared statements are turned off, since the next transaction may land on another server connection."""
 

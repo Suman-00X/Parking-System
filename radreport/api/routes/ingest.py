@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from radreport.adapters.storage.object_store import S3ObjectStore
-from radreport.api.deps import CurrentPrincipal, DbSession
+from radreport.api.deps import CurrentPrincipal, DbSession, ReadDbSession
 from radreport.api.pagination import Page, paginate, set_page_headers
 from radreport.core.config import get_settings
 from radreport.core.errors import DuplicateRecording, IngestRejected
@@ -83,7 +83,7 @@ class RecordingSummary(BaseModel):
 
 
 @router.get("/recordings", response_model=list[RecordingSummary])
-def list_recordings(session: DbSession, principal: CurrentPrincipal, response: Response, radiologist_id: uuid.UUID | None = None, page: int | None = None, page_size: int | None = None) -> list[RecordingSummary]:
+def list_recordings(session: ReadDbSession, principal: CurrentPrincipal, response: Response, radiologist_id: uuid.UUID | None = None, page: int | None = None, page_size: int | None = None) -> list[RecordingSummary]:
     """The lab's recordings, newest first, a page at a time."""
     query = select(Recording).where(Recording.tenant_id == principal.tenant_id)
     if radiologist_id is not None:

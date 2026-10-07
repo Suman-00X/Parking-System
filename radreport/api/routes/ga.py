@@ -13,14 +13,16 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
-from radreport.api.deps import CurrentPrincipal, DbSession
+from radreport.api.deps import CurrentPrincipal, DbSession, ReadDbSession
 from radreport.autonomy import accrual, grant, release
 from radreport.cache.lookups import user_roles
 from radreport.core.tenancy import Principal
 from radreport.core.types import UserRole
 from radreport.db.models.identity import AppUser, Patient, Study
 from radreport.db.models.review import FinalReport
+from radreport.db.session import tenant_session
 from radreport.export.fhir import FhirContext, build_diagnostic_report
 from radreport.export.hl7 import ExportRefused, OruContext, build_oru
 from radreport.monitoring import drift
@@ -45,7 +47,7 @@ def _require_lab_role(session: DbSession, principal: Principal, *roles: str) -> 
 
 # ================================================================ autonomy ===
 @router.get("/autonomy/{class_code}")
-def get_accrual(class_code: str, session: DbSession, principal: CurrentPrincipal) -> dict[str, Any]:
+def get_accrual(class_code: str, session: ReadDbSession, principal: CurrentPrincipal) -> dict[str, Any]:
     """Current evidence for a class. Read-only; grants nothing."""
     try:
         snapshot = accrual.snapshot(session, tenant_id=_tenant(principal), class_code=class_code)
@@ -82,7 +84,7 @@ def post_revoke(class_code: str, body: RevokeIn, session: DbSession, principal: 
 
 
 @router.get("/autonomy-coverage")
-def get_autonomy_coverage(session: DbSession, principal: CurrentPrincipal, days: int = 30) -> dict[str, Any]:
+def get_autonomy_coverage(session: ReadDbSession, principal: CurrentPrincipal, days: int = 30) -> dict[str, Any]:
     """How much review autonomy is actually removing."""
     _require_lab_role(session, principal, UserRole.RADIOLOGIST, UserRole.LAB_ADMIN, UserRole.AUDITOR)
     since = dt.datetime.now(dt.UTC) - dt.timedelta(days=days)
@@ -91,18 +93,30 @@ def get_autonomy_coverage(session: DbSession, principal: CurrentPrincipal, days:
 
 
 # ================================================================== export ===
-def _export_context(session: DbSession, tenant_id: uuid.UUID, report_id: uuid.UUID):
+def _load_export(session: Session, tenant_id: uuid.UUID, report_id: uuid.UUID) -> tuple[Any, Any, Any, Any] | None:
     final = session.get(FinalReport, report_id)
     if final is None or final.tenant_id != tenant_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no final_report {report_id}")
+        return None
     study = session.get(Study, final.study_id)
     patient = session.get(Patient, study.patient_id) if study else None
     signer = session.get(AppUser, final.signed_by)
     return final, study, patient, signer
 
 
+def _export_context(session: Session, tenant_id: uuid.UUID, report_id: uuid.UUID) -> tuple[Any, Any, Any, Any]:
+    """The report and what its message needs, from the replica, or the primary when the replica has not caught up."""
+    found = _load_export(session, tenant_id, report_id)
+    if found is None and session.info.get("read_only"):
+        # Signed moments ago: the replica may not have it yet, and the primary does.
+        with tenant_session(tenant_id) as primary:
+            found = _load_export(primary, tenant_id, report_id)
+    if found is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no final_report {report_id}")
+    return found
+
+
 @router.get("/export/{report_id}/hl7")
-def get_hl7(report_id: uuid.UUID, session: DbSession, principal: CurrentPrincipal) -> Response:
+def get_hl7(report_id: uuid.UUID, session: ReadDbSession, principal: CurrentPrincipal) -> Response:
     """ORU^R01 for a signed report. Refused without an accession."""
     tenant_id = _tenant(principal)
     final, study, patient, signer = _export_context(session, tenant_id, report_id)
@@ -114,7 +128,7 @@ def get_hl7(report_id: uuid.UUID, session: DbSession, principal: CurrentPrincipa
 
 
 @router.get("/export/{report_id}/fhir")
-def get_fhir(report_id: uuid.UUID, session: DbSession, principal: CurrentPrincipal) -> dict[str, Any]:
+def get_fhir(report_id: uuid.UUID, session: ReadDbSession, principal: CurrentPrincipal) -> dict[str, Any]:
     """FHIR R4 DiagnosticReport for a signed report."""
     tenant_id = _tenant(principal)
     final, study, patient, signer = _export_context(session, tenant_id, report_id)
@@ -144,7 +158,7 @@ def get_fhir(report_id: uuid.UUID, session: DbSession, principal: CurrentPrincip
 
 # =================================================================== drift ===
 @router.get("/drift")
-def get_drift(session: DbSession, principal: CurrentPrincipal, baseline_days: int = 60, window_days: int = 14) -> dict[str, Any]:
+def get_drift(session: ReadDbSession, principal: CurrentPrincipal, baseline_days: int = 60, window_days: int = 14) -> dict[str, Any]:
     """Compare a recent window against an explicit baseline window."""
     tenant_id = _tenant(principal)
     now = dt.datetime.now(dt.UTC)

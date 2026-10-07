@@ -19,7 +19,7 @@ from radreport.admin.auth import AuthenticatedAdmin
 from radreport.api.deps import CurrentAdmin, admin_lab_session, client_ip
 from radreport.core import system_config
 from radreport.db.instrumentation import METRICS
-from radreport.db.session import system_session
+from radreport.db.session import read_session, system_session
 
 router = APIRouter(prefix="/admin/api/ops", tags=["admin-ops"])
 
@@ -35,7 +35,7 @@ def table_health(admin: CurrentAdmin) -> dict[str, Any]:
     """Dead rows, last autovacuum and size per table, with the bloated ones flagged."""
     from radreport.db.table_health import BLOAT_RATIO, table_stats
 
-    with system_session() as session:
+    with read_session() as session:
         stats = table_stats(session)
     return {"bloat_ratio_threshold": BLOAT_RATIO, "bloated": [t.table for t in stats if t.bloated], "tables": [t.as_dict() for t in stats]}
 

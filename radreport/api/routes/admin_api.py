@@ -34,7 +34,7 @@ from radreport.core.tenancy import TenantTransitionError
 from radreport.core.types import AdaptationTarget, ImportTrigger
 from radreport.db.models.identity import AppUser
 from radreport.db.models.tenancy import PlatformUser, Tenant
-from radreport.db.session import system_session
+from radreport.db.session import read_session, system_session
 from radreport.onboarding import corpus
 from radreport.onboarding.batches import ArtifactUpload
 from radreport.onboarding.readiness import evaluate_readiness
@@ -68,7 +68,7 @@ def _summary(tenant: Tenant) -> LabSummary:
 @router.get("/labs", response_model=list[LabSummary])
 def list_labs(admin: CurrentAdmin, response: Response, page: int | None = None, page_size: int | None = None) -> list[LabSummary]:
     """Every lab, in every status, a page at a time."""
-    with system_session() as session:
+    with read_session() as session:
         paged = paginate(session, select(Tenant).order_by(Tenant.name, Tenant.id), Page.of(page, page_size))
         set_page_headers(response, paged, "/admin/api/labs")
         return [_summary(t) for t in paged.rows]
@@ -370,7 +370,7 @@ def _user_out(user: PlatformUser) -> PlatformUserOut:
 @router.get("/users", response_model=list[PlatformUserOut])
 def list_users(admin: CurrentAdmin, response: Response, page: int | None = None, page_size: int | None = None) -> list[PlatformUserOut]:
     """Every product admin and support account, a page at a time."""
-    with system_session() as session:
+    with read_session() as session:
         paged = paginate(session, users.platform_users_query(), Page.of(page, page_size))
         set_page_headers(response, paged, "/admin/api/users")
         return [_user_out(u) for u in paged.rows]

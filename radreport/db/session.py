@@ -1,15 +1,18 @@
 """Opens database connections and binds each one to a single lab, so a query cannot reach another lab's rows.
 
 Order: get the engine and session factory (get_engine, get_sessionmaker) -> open a unit of work
-for one lab (tenant_session) or for the system (system_session). bind_tenant and select_org are
-the lower-level pieces those use.
+for one lab (tenant_session) or for the system (system_session) -> or a read-only one on the
+replica when one is configured, caught up, and this browser has not just written (read_session,
+replica_url_for_reads). bind_tenant and select_org are the lower-level pieces those use.
 """
 
 from __future__ import annotations
 
+import contextvars
+import time
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import lru_cache
 from typing import Any
 
@@ -84,6 +87,54 @@ def system_session(url: str | None = None) -> Iterator[Session]:
         except Exception:
             session.rollback()
             raise
+
+
+#: Set for a request whose browser wrote moments ago; its reads go to the primary so it sees its own change.
+RECENT_WRITE: contextvars.ContextVar[bool] = contextvars.ContextVar("radreport_recent_write", default=False)
+_lag_checked: dict[str, tuple[float, float]] = {}
+_LAG_RECHECK_SECONDS = 5.0
+
+
+def replica_lag_seconds(url: str) -> float:
+    """How far behind the replica is; 0 for a server that is not in recovery."""
+    with get_engine(url).connect() as conn:
+        lag = conn.execute(text("SELECT CASE WHEN pg_is_in_recovery() THEN COALESCE(EXTRACT(EPOCH FROM now() - pg_last_xact_replay_timestamp()), 0) ELSE 0 END")).scalar()
+    return float(lag or 0.0)
+
+
+def replica_url_for_reads() -> str | None:
+    """The replica to read from now, or None for the primary."""
+    db = get_settings().db
+    if not db.replica_url or RECENT_WRITE.get():
+        return None
+    now = time.monotonic()
+    checked = _lag_checked.get(db.replica_url)
+    if checked is None or now - checked[0] > _LAG_RECHECK_SECONDS:
+        try:
+            lag = replica_lag_seconds(db.replica_url)
+        except Exception:  # noqa: BLE001 - an unreachable replica means reading from the primary
+            lag = float("inf")
+        _lag_checked[db.replica_url] = checked = (now, lag)
+    return db.replica_url if checked[1] <= db.replica_max_lag_seconds else None
+
+
+@contextmanager
+def read_session(tenant_id: uuid.UUID | None = None, *, principal: Principal | None = None) -> Iterator[Session]:
+    """A read-only transaction, on the replica when replica_url_for_reads allows, bound to one lab or to none."""
+    url = replica_url_for_reads()
+    if url is not None:
+        instrumentation.mark_replica(url)
+    factory = get_sessionmaker(url)
+    scope = tenant_scope(tenant_id, principal) if tenant_id else nullcontext()
+    with scope, factory() as session:
+        # First statement of the transaction, as Postgres requires; on the primary it guards against a write slipping in.
+        session.execute(text("SET TRANSACTION READ ONLY"))
+        _bind_scope(session, tenant_id, principal)
+        session.info["read_only"] = True
+        try:
+            yield session
+        finally:
+            session.rollback()
 
 
 def bind_tenant(session: Session, tenant_id: uuid.UUID, *, principal: Principal | None = None) -> None:
