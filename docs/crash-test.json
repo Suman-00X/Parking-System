@@ -1,0 +1,143 @@
+{
+  "ran_at": "2026-10-07T13:52:11.952450+00:00",
+  "machine": "Darwin arm64, Python 3.13.1",
+  "passed": 9,
+  "total": 9,
+  "scenarios": [
+    {
+      "key": "worker_killed",
+      "title": "A worker is killed in the middle of a job",
+      "broke": "Started a real worker process on a 4-second job and killed it with SIGKILL one second in: no shutdown, no cleanup, no chance to say anything.",
+      "expected": "The job is not lost and not run twice: its lease runs out, a second worker claims it, and it finishes exactly once.",
+      "observed": "A second worker finished it 7.2 s after the kill (the 3-second lease running out, plus starting the new worker and redoing the 4-second job), on attempt 2. The killed worker's half-done work never committed.",
+      "passed": true,
+      "numbers": {
+        "lease_seconds": 3,
+        "recovered_seconds": 7.22,
+        "attempts": 2,
+        "finished_by": "rescuer"
+      },
+      "seconds": 9.032523832982406
+    },
+    {
+      "key": "relay_crash",
+      "title": "The event relay crashes after sending, before recording it",
+      "broke": "Made the relay publish an event and then fail before it could mark the event as sent, the worst moment for a message system to die.",
+      "expected": "The event is sent again on the next pass (at least once), and the consumer ignores the repeat (applied exactly once).",
+      "observed": "The event was delivered on 2 passes and applied 1 time. The repeat was recognised by its id and skipped.",
+      "passed": true,
+      "numbers": {
+        "deliveries": 2,
+        "applied": 1
+      },
+      "seconds": 0.0452824579551816
+    },
+    {
+      "key": "double_claim",
+      "title": "Eight workers fight over the same queue",
+      "broke": "Put 200 jobs on the queue and let 8 workers grab them as fast as they could, all at once.",
+      "expected": "Every job is handed to exactly one worker: none skipped, none done twice.",
+      "observed": "200 of 200 jobs claimed, 0 handed out twice, at about 2,161 jobs a second.",
+      "passed": true,
+      "numbers": {
+        "jobs": 200,
+        "workers": 8,
+        "duplicates": 0,
+        "jobs_per_second": 2161
+      },
+      "seconds": 0.20783370803110301
+    },
+    {
+      "key": "duplicate_enqueue",
+      "title": "The same upload arrives 20 times at once",
+      "broke": "Fired 20 simultaneous requests to queue processing for the same recording, as a flaky network retrying would.",
+      "expected": "One job is queued; the other 19 are recognised as repeats.",
+      "observed": "1 job queued, 19 repeats turned away.",
+      "passed": true,
+      "numbers": {
+        "requests": 20,
+        "jobs_queued": 1
+      },
+      "seconds": 0.019754250068217516
+    },
+    {
+      "key": "poison_job",
+      "title": "A job that crashes every time",
+      "broke": "Queued a job whose code always throws an error, next to an ordinary job.",
+      "expected": "The bad job is retried after a pause, then parked for a person to look at. It never blocks the queue.",
+      "observed": "The healthy job finished on the first pass, 55 ms in. The bad one failed 2 times, 5 s apart, and was parked as dead with its error kept.",
+      "passed": true,
+      "numbers": {
+        "attempts": 2,
+        "status": "dead",
+        "healthy_job_seconds": 0.06
+      },
+      "seconds": 5.290415042079985
+    },
+    {
+      "key": "provider_outage",
+      "title": "The AI provider goes down",
+      "broke": "Made the AI provider fail every call, then sent 20 more requests while it was down, then brought it back.",
+      "expected": "After a few failures the system stops calling the broken provider, refuses instantly instead of hanging, and tries again on its own after a cool-down.",
+      "observed": "The circuit opened after 3 failed calls. All 20 follow-up calls were refused in at most 0.006 ms without touching the provider. One second later a trial call went through and the circuit closed.",
+      "passed": true,
+      "numbers": {
+        "calls_while_failing": 6,
+        "refused_while_open": 20,
+        "calls_reaching_provider_while_open": 0,
+        "refusal_ms": 0.006,
+        "recovered": true,
+        "breaker_closed": true
+      },
+      "seconds": 1.0673211249522865
+    },
+    {
+      "key": "database_down",
+      "title": "The database disappears",
+      "broke": "Started a real server pointed at a database that does not exist.",
+      "expected": "The server stays alive and says what is wrong, but tells the load balancer to stop sending it traffic. Pages that need no data still load.",
+      "observed": "/health answered 200 (degraded), /ready answered 503 so a load balancer routes away, and the public pages still served 200. Both checks answered in 26 ms instead of hanging.",
+      "passed": true,
+      "numbers": {
+        "health_status": 200,
+        "ready_status": 503,
+        "public_page_status": 200,
+        "check_seconds": 0.03
+      },
+      "seconds": 1.8090844580437988
+    },
+    {
+      "key": "cache_down",
+      "title": "The shared cache (Redis) goes away",
+      "broke": "Started a real server configured to use a Redis server that is not there.",
+      "expected": "A cache outage makes the system slower, never broken: every request still succeeds, and the health check reports the cache as down.",
+      "observed": "All 3 pages answered 200. /health reported the cache as down (redis), so an operator sees it while users don't.",
+      "passed": true,
+      "numbers": {
+        "page_statuses": [
+          200,
+          200,
+          200
+        ],
+        "cache_ok": false
+      },
+      "seconds": 1.9216934158466756
+    },
+    {
+      "key": "request_flood",
+      "title": "One visitor floods the site",
+      "broke": "Sent 300 requests for the same page from one address, all at once.",
+      "expected": "The first 120 in the minute are served, the rest get a polite 'slow down' with a time to retry, and the server keeps answering everyone else.",
+      "observed": "120 served, 180 told to slow down (every one with a Retry-After time), in 0.9 s. The health check right after answered in 15 ms.",
+      "passed": true,
+      "numbers": {
+        "requests": 300,
+        "served": 120,
+        "rate_limited": 180,
+        "burst_seconds": 0.94,
+        "health_ms_after": 15
+      },
+      "seconds": 2.375833166996017
+    }
+  ]
+}
