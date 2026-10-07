@@ -1,7 +1,7 @@
 """Tables operations staff change without a code release.
 
 Defines: SystemConfig, one operational setting either platform-wide (tenant_id NULL) or overridden
-for one lab.
+for one lab; LabShard, a lab pinned to a database shard regardless of the hash ring.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import DateTime, Index, Text, text
+from sqlalchemy import DateTime, ForeignKey, Index, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -32,3 +32,14 @@ class SystemConfig(Base, TenantOptional):
     """The platform user who set it; no foreign key, like `audit_log.actor_id`."""
 
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class LabShard(Base):
+    """A lab held on one shard whatever the ring says. Lives in the directory database; keyed by lab_id, not tenant_id, because it is read before any lab is bound."""
+
+    __tablename__ = "lab_shard"
+
+    lab_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("tenant.id", ondelete="CASCADE"), primary_key=True)
+    shard_name: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    pinned_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))

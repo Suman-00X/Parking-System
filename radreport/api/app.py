@@ -25,6 +25,7 @@ from radreport.cache import shared as shared_cache
 from radreport.cache.request import RequestCacheMiddleware
 from radreport.core.config import get_settings
 from radreport.core.logging import configure_logging
+from radreport.db import sharding
 from radreport.db.instrumentation import QueryMetricsMiddleware
 from radreport.db.session import get_engine, system_session
 
@@ -96,6 +97,17 @@ def create_app() -> FastAPI:
             checks["migrations"] = f"{type(exc).__name__}: {exc}"[:200]
             ok = False
 
+        if sharding.shard_map().enabled:
+            # Every shard must be reachable and on the code's schema; a lab on a stale shard fails in the same random ways.
+            for name, url in sharding.shard_map().urls.items():
+                try:
+                    with get_engine(url).connect() as connection:
+                        at = MigrationContext.configure(connection).get_current_revision()
+                    checks[f"shard:{name}"] = "ok" if at == head_revision() else f"at {at}, head is {head_revision()}"
+                    ok = ok and at == head_revision()
+                except Exception as exc:  # noqa: BLE001
+                    checks[f"shard:{name}"] = f"{type(exc).__name__}: {exc}"[:200]
+                    ok = False
         extra_ok, extra = health.readiness_checks()
         checks.update(extra)
         ok = ok and extra_ok

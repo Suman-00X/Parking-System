@@ -43,6 +43,9 @@ class DatabaseSettings(BaseModel):
     read_your_writes_seconds: int = Field(default=10, ge=1, le=600)
     """After a browser writes, its reads stay on the primary this long, so it sees its own change."""
 
+    shards: dict[str, str] = Field(default_factory=dict)
+    """Shard name -> database URL (RADREPORT_DB__SHARDS, JSON). Two or more turn sharding by lab on; see db/sharding.py."""
+
     pgbouncer: bool = False
     """Connect through PgBouncer in transaction mode: server-side prepared statements are turned off, since the next transaction may land on another server connection."""
 

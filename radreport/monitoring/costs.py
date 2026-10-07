@@ -19,6 +19,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from radreport.core.logging import get_logger
+from radreport.db import sharding
 from radreport.db.models.tenancy import Tenant
 
 log = get_logger(__name__)
@@ -71,11 +72,25 @@ def _window(days: int, today: dt.date | None) -> tuple[dt.date, dt.date]:
 
 
 def daily_costs(session: Session, *, start: dt.date, end: dt.date, tenant_id: uuid.UUID | None = None) -> list[dict[str, Any]]:
+    """Spend per lab per day; with sharding on, from every shard, since each holds its own labs' runs."""
+    if sharding.shard_map().enabled:
+        return sharding.fan_out(lambda shard: _daily(shard, start=start, end=end, tenant_id=tenant_id))
+    return _daily(session, start=start, end=end, tenant_id=tenant_id)
+
+
+def _daily(session: Session, *, start: dt.date, end: dt.date, tenant_id: uuid.UUID | None) -> list[dict[str, Any]]:
     rows = session.execute(text("SELECT tenant_id, day, run_count, total_cost_usd, avg_cost_usd, max_cost_usd, failed_runs, budget_hits FROM tenant_daily_cost(:a, :b, :t)"), {"a": start, "b": end, "t": tenant_id}).all()
     return [{"tenant_id": r[0], "day": r[1], "runs": int(r[2]), "cost_usd": float(r[3] or 0), "avg_cost_usd": float(r[4] or 0), "max_cost_usd": float(r[5] or 0), "failed_runs": int(r[6]), "budget_hits": int(r[7])} for r in rows]
 
 
 def stage_costs(session: Session, *, start: dt.date, end: dt.date, tenant_id: uuid.UUID | None = None) -> list[dict[str, Any]]:
+    """Spend per lab per stage, from every shard when sharding is on."""
+    if sharding.shard_map().enabled:
+        return sharding.fan_out(lambda shard: _stages(shard, start=start, end=end, tenant_id=tenant_id))
+    return _stages(session, start=start, end=end, tenant_id=tenant_id)
+
+
+def _stages(session: Session, *, start: dt.date, end: dt.date, tenant_id: uuid.UUID | None) -> list[dict[str, Any]]:
     rows = session.execute(text("SELECT tenant_id, stage_name, task_key, executions, cost_usd, tokens_in, tokens_out, cache_read_tokens, avg_duration_ms, failures FROM tenant_stage_cost(:a, :b, :t)"), {"a": start, "b": end, "t": tenant_id}).all()
     out = []
     for r in rows:

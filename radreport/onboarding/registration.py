@@ -16,11 +16,12 @@ from radreport.cache.lookups import forget_tenant
 from radreport.core.logging import get_logger
 from radreport.core.tenancy import assert_transition_allowed
 from radreport.core.types import ActorType, TenantStatus, TrainingConsentEvent, UserRole
+from radreport.db import sharding
 from radreport.db.models.evaluation import EvalSet
 from radreport.db.models.identity import AppUser
 from radreport.db.models.orchestration import AuditLog
 from radreport.db.models.tenancy import Tenant, TenantBranding
-from radreport.db.session import bind_tenant
+from radreport.db.session import bind_tenant, tenant_session
 from radreport.knowledge.consent import record_consent_event
 from radreport.onboarding.readiness import evaluate_readiness
 
@@ -66,6 +67,17 @@ def register_lab(session: Session, registration: LabRegistration, *, actor_id: u
     session.add(tenant)
     session.flush()
 
+    if not sharding.on_lab_shard(session, tenant.id):
+        # The lab's own rows belong on its shard. Commit the lab row here first; the commit copies it to the shard, where the rest is written.
+        session.commit()
+        with tenant_session(tenant.id) as lab_session:
+            result = _provision(lab_session, lab_session.get(Tenant, tenant.id) or tenant, registration, actor_id=actor_id)
+        return RegistrationResult(tenant=tenant, lab_admin=result.lab_admin, acceptance_eval_set=result.acceptance_eval_set)
+    return _provision(session, tenant, registration, actor_id=actor_id)
+
+
+def _provision(session: Session, tenant: Tenant, registration: LabRegistration, *, actor_id: uuid.UUID | None) -> RegistrationResult:
+    """The lab's own rows: its first lab admin, branding, acceptance set, consent history, and the move to onboarding."""
     # Everything below this line writes tenant-owned rows, so the session has to narrow onto the tenant it just created.
     bind_tenant(session, tenant.id)
 

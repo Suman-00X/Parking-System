@@ -116,6 +116,8 @@ UNTENANTED_TABLES: Final[frozenset[str]] = frozenset(
         "rate_limit_counter",
         # Which consumer has applied which event: keyed by consumer and event id, never read for lab data.
         "consumed_event",
+        # Which shard a pinned lab lives on: read before any lab is bound, from the directory database.
+        "lab_shard",
         "alembic_version",
     }
 )

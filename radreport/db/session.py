@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from radreport.core.config import get_settings
 from radreport.core.errors import CrossTenantAccess, NoTenantContext
 from radreport.core.tenancy import PRINCIPAL_GUC, TENANT_GUC, Principal, current_tenant_id_or_none, tenant_scope
-from radreport.db import instrumentation
+from radreport.db import instrumentation, sharding
 
 #: `session.info` key naming the product admin acting through a session, if any.
 ACTING_PLATFORM_USER = "acting_platform_user_id"
@@ -40,9 +40,10 @@ def engine_options() -> dict[str, Any]:
     return options
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=16)
 def get_engine(url: str | None = None) -> Engine:
     instrumentation.install()
+    sharding.install_tenant_sync()
     # Tenant scope lives in `SET LOCAL`, so a connection handed back to the pool carries nothing.
     return create_engine(url or get_settings().database_url, **engine_options())
 
@@ -64,7 +65,8 @@ def tenant_session(tenant_id: uuid.UUID | None = None, *, principal: Principal |
     if resolved is None:
         raise NoTenantContext("tenant_session() needs a tenant: pass one, or wrap the call in `tenant_scope(...)`. For the enumerated cross-tenant reads use `system_session()` instead.")
 
-    factory = get_sessionmaker(url)
+    # A lab's rows live on its shard; with sharding off this is the one database.
+    factory = get_sessionmaker(url or sharding.url_for(resolved))
     with tenant_scope(resolved, principal), factory() as session:
         _bind_scope(session, resolved, principal)
         try:
@@ -121,16 +123,28 @@ def replica_url_for_reads() -> str | None:
 @contextmanager
 def read_session(tenant_id: uuid.UUID | None = None, *, principal: Principal | None = None) -> Iterator[Session]:
     """A read-only transaction, on the replica when replica_url_for_reads allows, bound to one lab or to none."""
-    url = replica_url_for_reads()
+    url = replica_url_for_reads() if not sharding.shard_map().enabled else None
     if url is not None:
         instrumentation.mark_replica(url)
-    factory = get_sessionmaker(url)
+    factory = get_sessionmaker(url or sharding.url_for(tenant_id))
     scope = tenant_scope(tenant_id, principal) if tenant_id else nullcontext()
     with scope, factory() as session:
         # First statement of the transaction, as Postgres requires; on the primary it guards against a write slipping in.
         session.execute(text("SET TRANSACTION READ ONLY"))
         _bind_scope(session, tenant_id, principal)
         session.info["read_only"] = True
+        try:
+            yield session
+        finally:
+            session.rollback()
+
+
+@contextmanager
+def read_session_on(url: str) -> Iterator[Session]:
+    """A read-only, lab-less transaction on one named database; what a fan-out across shards runs in."""
+    with get_sessionmaker(url)() as session:
+        session.execute(text("SET TRANSACTION READ ONLY"))
+        _bind_scope(session, None, None)
         try:
             yield session
         finally:
