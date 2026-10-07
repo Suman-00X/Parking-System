@@ -16,13 +16,16 @@ from contextlib import contextmanager, nullcontext
 from functools import lru_cache
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from radreport.core.config import get_settings
 from radreport.core.errors import CrossTenantAccess, NoTenantContext
+from radreport.core.logging import get_logger
 from radreport.core.tenancy import PRINCIPAL_GUC, TENANT_GUC, Principal, current_tenant_id_or_none, tenant_scope
 from radreport.db import instrumentation, sharding
+
+_log = get_logger(__name__)
 
 #: `session.info` key naming the product admin acting through a session, if any.
 ACTING_PLATFORM_USER = "acting_platform_user_id"
@@ -45,17 +48,70 @@ def get_engine(url: str | None = None) -> Engine:
     instrumentation.install()
     sharding.install_tenant_sync()
     # Tenant scope lives in `SET LOCAL`, so a connection handed back to the pool carries nothing.
-    return create_engine(url or get_settings().database_url, **engine_options())
+    engine = create_engine(url or get_settings().database_url, **engine_options())
+    event.listen(engine, "first_connect", _check_connection_budget)
+    return engine
+
+
+def connection_budget(max_connections: int) -> tuple[int, int]:
+    """(connections every worker's pools could open together, what the server allows)."""
+    db = get_settings().db
+    per_worker = db.pool_size + db.max_overflow + db.async_pool_size + db.async_max_overflow
+    return per_worker * db.workers_hint, max_connections
+
+
+def _check_connection_budget(dbapi_connection: Any, _record: Any) -> None:
+    """Warn once per engine when the pools could exhaust the server: the failure is "too many clients" under peak load, not at start-up."""
+    if get_settings().db.pgbouncer:
+        return
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("SHOW max_connections")
+        allowed = int(cursor.fetchone()[0])
+    finally:
+        cursor.close()
+    wanted, allowed = connection_budget(allowed)
+    if wanted > allowed * 0.9:
+        _log.warning("connection_budget_exceeded", pools_could_open=wanted, max_connections=allowed, detail="lower RADREPORT_DB__POOL_SIZE, raise max_connections, or put PgBouncer in front (RADREPORT_DB__PGBOUNCER=true)")
 
 
 def get_sessionmaker(url: str | None = None) -> sessionmaker[Session]:
     return sessionmaker(bind=get_engine(url), expire_on_commit=False, future=True)
 
 
-def _bind_scope(session: Session, tenant_id: uuid.UUID | None, principal: Principal | None) -> None:
-    """Apply the session GUCs the RLS policies read."""
-    # Both in one round trip: every session opens with this.
-    session.execute(text(f"SELECT set_config('{TENANT_GUC}', :tid, true), set_config('{PRINCIPAL_GUC}', :kind, true)"), {"tid": str(tenant_id) if tenant_id else "", "kind": principal.kind if principal else "system"})
+#: `session.info` keys: the scope to apply at the start of each transaction, and whether it is read-only.
+SCOPE = "radreport_scope"
+READ_ONLY = "radreport_read_only"
+_SCOPE_SQL = text(f"SELECT set_config('{TENANT_GUC}', :tid, true), set_config('{PRINCIPAL_GUC}', :kind, true)")
+
+
+def _scope_params(tenant_id: uuid.UUID | None, principal: Principal | None) -> dict[str, str]:
+    return {"tid": str(tenant_id) if tenant_id else "", "kind": principal.kind if principal else "system"}
+
+
+def _bind_scope(session: Session, tenant_id: uuid.UUID | None, principal: Principal | None, *, read_only: bool = False) -> None:
+    """Set the GUCs the RLS policies read: now, if a transaction is open, and at the start of every later one.
+
+    Not by opening a transaction here. A request's session is created in a dependency, on one worker
+    thread, and first used by the handler on another; a transaction begun in between holds a pooled
+    (or PgBouncer) server connection idle while the request waits for a thread.
+    """
+    params = _scope_params(tenant_id, principal)
+    session.info[SCOPE] = params
+    if read_only:
+        session.info[READ_ONLY] = True
+    if session.in_transaction():
+        session.execute(_SCOPE_SQL, params)
+
+
+@event.listens_for(Session, "after_begin")
+def _apply_scope(session: Session, _transaction: Any, connection: Any) -> None:
+    """The first statements of every transaction: read-only if asked, then the lab and principal."""
+    if session.info.get(READ_ONLY):
+        connection.execute(text("SET TRANSACTION READ ONLY"))
+    params = session.info.get(SCOPE)
+    if params is not None:
+        connection.execute(_SCOPE_SQL, params)
 
 
 @contextmanager
@@ -130,25 +186,18 @@ def read_session(tenant_id: uuid.UUID | None = None, *, principal: Principal | N
     scope = tenant_scope(tenant_id, principal) if tenant_id else nullcontext()
     with scope, factory() as session:
         # First statement of the transaction, as Postgres requires; on the primary it guards against a write slipping in.
-        session.execute(text("SET TRANSACTION READ ONLY"))
-        _bind_scope(session, tenant_id, principal)
+        _bind_scope(session, tenant_id, principal, read_only=True)
         session.info["read_only"] = True
-        try:
-            yield session
-        finally:
-            session.rollback()
+        # Closing ends the read-only transaction without expiring what was loaded, as a rollback would.
+        yield session
 
 
 @contextmanager
 def read_session_on(url: str) -> Iterator[Session]:
     """A read-only, lab-less transaction on one named database; what a fan-out across shards runs in."""
     with get_sessionmaker(url)() as session:
-        session.execute(text("SET TRANSACTION READ ONLY"))
-        _bind_scope(session, None, None)
-        try:
-            yield session
-        finally:
-            session.rollback()
+        _bind_scope(session, None, None, read_only=True)
+        yield session
 
 
 def bind_tenant(session: Session, tenant_id: uuid.UUID, *, principal: Principal | None = None) -> None:

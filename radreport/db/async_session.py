@@ -23,7 +23,7 @@ from radreport.core.config import get_settings
 from radreport.core.errors import NoTenantContext
 from radreport.core.tenancy import PRINCIPAL_GUC, TENANT_GUC, Principal, current_tenant_id_or_none, tenant_scope
 from radreport.db import instrumentation
-from radreport.db.session import engine_options, replica_url_for_reads
+from radreport.db.session import READ_ONLY, SCOPE, _scope_params, engine_options, replica_url_for_reads
 
 _engines: dict[tuple[str, int], AsyncEngine] = {}
 
@@ -35,7 +35,8 @@ def get_async_engine(url: str | None = None) -> AsyncEngine:
     loop = id(asyncio.get_running_loop())
     engine = _engines.get((target, loop))
     if engine is None:
-        engine = _engines[(target, loop)] = create_async_engine(target, **engine_options())
+        options = {**engine_options(), "pool_size": get_settings().db.async_pool_size, "max_overflow": get_settings().db.async_max_overflow}
+        engine = _engines[(target, loop)] = create_async_engine(target, **options)
     return engine
 
 
@@ -43,8 +44,14 @@ def _factory(url: str | None) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(get_async_engine(url), expire_on_commit=False)
 
 
-async def _bind_scope(session: AsyncSession, tenant_id: uuid.UUID | None, principal: Principal | None) -> None:
-    await session.execute(text(f"SELECT set_config('{TENANT_GUC}', :tid, true), set_config('{PRINCIPAL_GUC}', :kind, true)"), {"tid": str(tenant_id) if tenant_id else "", "kind": principal.kind if principal else "system"})
+async def _bind_scope(session: AsyncSession, tenant_id: uuid.UUID | None, principal: Principal | None, *, read_only: bool = False) -> None:
+    """The same deferred binding as the sync sessions: applied by the after_begin listener when the transaction starts."""
+    sync = session.sync_session
+    sync.info[SCOPE] = _scope_params(tenant_id, principal)
+    if read_only:
+        sync.info[READ_ONLY] = True
+    if sync.in_transaction():
+        await session.execute(text(f"SELECT set_config('{TENANT_GUC}', :tid, true), set_config('{PRINCIPAL_GUC}', :kind, true)"), sync.info[SCOPE])
 
 
 @asynccontextmanager
@@ -84,9 +91,6 @@ async def async_read_session(tenant_id: uuid.UUID | None = None, *, principal: P
     if url is not None:
         instrumentation.mark_replica(url)
     async with _factory(url)() as session:
-        await session.execute(text("SET TRANSACTION READ ONLY"))
-        await _bind_scope(session, tenant_id, principal)
-        try:
-            yield session
-        finally:
-            await session.rollback()
+        await _bind_scope(session, tenant_id, principal, read_only=True)
+        # Closing (by leaving the block) ends the transaction without expiring what was loaded.
+        yield session

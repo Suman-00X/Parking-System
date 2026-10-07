@@ -22,6 +22,13 @@ class DatabaseSettings(BaseModel):
     max_overflow: int = Field(default=10, ge=0, le=500)
     """Extra connections a worker may open under a burst; closed again when returned."""
 
+    async_pool_size: int = Field(default=5, ge=1, le=200)
+    """The async engine's own pool, per worker. Small, because it is counted against max_connections alongside the sync pool."""
+
+    async_max_overflow: int = Field(default=5, ge=0, le=200)
+    workers_hint: int = Field(default=2, ge=1, le=256)
+    """How many app processes share the database; only used to warn when their pools together could exceed max_connections."""
+
     pool_timeout_seconds: float = Field(default=10.0, gt=0)
     """How long a request waits for a free connection before failing, instead of queueing forever."""
 

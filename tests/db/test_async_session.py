@@ -61,3 +61,21 @@ def test_the_moved_endpoints_still_answer(migrated_db: str, two_tenants) -> None
         assert client.get("/health").json()["checks"]["database"]["ok"]
         listing = client.get("/ingest/recordings", headers=lab_headers(migrated_db, lab, "radiologist"))
         assert listing.status_code == 200 and listing.headers["x-total-count"] == "0"
+
+
+def test_rows_read_in_a_read_session_stay_usable_after_it(migrated_db: str, two_tenants) -> None:
+    """The bug this pins: ending a read session with a rollback expired every loaded row, and the handler then failed reading them."""
+    from radreport.db.models.tenancy import Tenant
+    from radreport.db.session import read_session
+
+    lab, _ = two_tenants
+    with read_session() as session:
+        tenant = session.get(Tenant, lab)
+    assert tenant is not None and tenant.slug
+
+    async def read() -> str:
+        async with async_read_session() as session:
+            row = await session.get(Tenant, lab)
+        return row.slug
+
+    assert asyncio.run(read()) == tenant.slug
