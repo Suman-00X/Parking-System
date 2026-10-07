@@ -1,0 +1,44 @@
+concept,preferred,synonyms
+consolidation,consolidation,airspace opacity|airspace disease|infiltrate|alveolar opacity
+pleural_effusion,pleural effusion,pleural fluid|fluid in the pleural space
+atelectasis,atelectasis,lung collapse|subsegmental collapse|plate atelectasis
+cardiomegaly,cardiomegaly,enlarged heart|cardiac enlargement
+hepatomegaly,hepatomegaly,enlarged liver|liver enlargement
+splenomegaly,splenomegaly,enlarged spleen|splenic enlargement
+hepatosplenomegaly,hepatosplenomegaly,enlarged liver and spleen
+nephrolithiasis,nephrolithiasis,renal calculus|renal calculi|kidney stone|renal stone
+cholelithiasis,cholelithiasis,gallstones|gallbladder calculi|gall stones
+choledocholithiasis,choledocholithiasis,common bile duct stone|cbd calculus|cbd stone
+hydronephrosis,hydronephrosis,pelvicalyceal dilatation|dilated pelvicalyceal system|pelvicaliectasis
+ascites,ascites,free fluid in the abdomen|peritoneal fluid|intraperitoneal fluid
+ground_glass_opacity,ground glass opacity,ground glass opacification|ground glass attenuation|ggo
+tree_in_bud,tree in bud,tree and bud|tree in bud nodularity
+bronchiectasis,bronchiectasis,dilated bronchi|bronchial dilatation
+hepatic_steatosis,hepatic steatosis,fatty liver|fatty infiltration of the liver|steatosis
+cirrhosis,cirrhosis,liver cirrhosis|hepatic cirrhosis|cirrhotic liver
+intracranial_hemorrhage,intracranial hemorrhage,intracranial bleed|brain hemorrhage
+subdural_hematoma,subdural hematoma,subdural hemorrhage|subdural collection of blood
+osteophyte,osteophyte,bone spur|osteophytic lipping
+disc_herniation,disc herniation,herniated disc|prolapsed intervertebral disc|disc prolapse|pivd
+lymphadenopathy,lymphadenopathy,enlarged lymph nodes|adenopathy|lymph node enlargement
+pericardial_effusion,pericardial effusion,pericardial fluid
+appendicolith,appendicolith,fecalith|appendiceal calculus
+renal_cyst,renal cyst,kidney cyst
+hepatic_cyst,hepatic cyst,liver cyst
+leiomyoma,leiomyoma,uterine fibroid|fibroid|myoma
+prostatomegaly,prostatomegaly,enlarged prostate|prostatic enlargement
+gallbladder_wall_thickening,gallbladder wall thickening,thickened gallbladder wall
+hemangioma,hemangioma,vascular malformation of the liver
+pulmonary_edema,pulmonary edema,lung edema|fluid in the lungs
+interstitial_lung_disease,interstitial lung disease,ild|diffuse parenchymal lung disease
+copd,chronic obstructive pulmonary disease,copd|chronic obstructive airway disease
+widened_mediastinum,widened mediastinum,mediastinal widening
+hiatal_hernia,hiatal hernia,hiatus hernia
+small_bowel_obstruction,small bowel obstruction,sbo|small intestinal obstruction
+pneumoperitoneum,pneumoperitoneum,free intraperitoneal air|free air under the diaphragm|free gas under the diaphragm
+cerebral_infarct,cerebral infarct,ischemic stroke|cerebral infarction|brain infarct
+deep_vein_thrombosis,deep vein thrombosis,dvt|deep venous thrombosis
+pulmonary_embolism,pulmonary embolism,pulmonary thromboembolism
+calcification,calcification,calcified focus|calcific focus
+emphysema,emphysema,emphysematous changes
+ventricular_dilatation,ventricular dilatation,dilated ventricles

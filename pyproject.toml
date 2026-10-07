@@ -43,6 +43,7 @@ include = ["radreport*"]
 
 [tool.setuptools.package-data]
 "radreport.api" = ["access_policy.xml", "static/*"]
+"radreport.knowledge" = ["data/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

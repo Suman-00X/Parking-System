@@ -186,7 +186,37 @@ def _freeze_acceptance(session: Session, tenant_id: uuid.UUID, options: dict[str
 
 
 #: Step name -> (label shown in the panel, what it does). Each takes optional `options`.
-STEPS: dict[str, tuple[str, Callable[[Session, uuid.UUID, dict[str, Any]], dict[str, Any]]]] = {"derive-map": ("Derive the report-to-template map", _derive_map), "lexicon-mine": ("Mine terms from the corpus", _mine_lexicon), "collision-audit": ("Run the sound-alike collision audit", _collision_audit), "mine-variants": ("Mine what the ASR actually heard", _mine_variants), "boilerplate-mine": ("Rank normal statements", _mine_boilerplate), "critical-rules-seed": ("Propose critical-finding rules", _seed_critical_rules), "acceptance-assemble": ("Fill the acceptance set from verbatim transcripts", _assemble_acceptance), "acceptance-freeze": ("Freeze the acceptance set", _freeze_acceptance)}
+def _annotate_radlex(session: Session, tenant_id: uuid.UUID, options: dict[str, Any]) -> dict[str, Any]:
+    """Fill lexicon_term.radlex_id from RadLex for terms that lack one; needs BIOPORTAL_API_KEY."""
+    from sqlalchemy import update
+
+    from radreport.db.models.knowledge import LexiconTerm
+    from radreport.knowledge.synonyms import RadLexClient
+
+    client = RadLexClient()
+    if not client.enabled:
+        raise StepRefused(409, "set BIOPORTAL_API_KEY on the server to look terms up in RadLex")
+    terms = list(session.execute(select(LexiconTerm.id, LexiconTerm.canonical_form).where(LexiconTerm.tenant_id == tenant_id, LexiconTerm.radlex_id.is_(None)).limit(int(options.get("limit", 200)))).all())
+    found = 0
+    for term_id, form in terms:
+        hit = client.lookup(form)
+        if hit is not None and hit.rid:
+            session.execute(update(LexiconTerm).where(LexiconTerm.id == term_id).values(radlex_id=hit.rid))
+            found += 1
+    return {"looked_up": len(terms), "annotated": found}
+
+
+STEPS: dict[str, tuple[str, Callable[[Session, uuid.UUID, dict[str, Any]], dict[str, Any]]]] = {
+    "derive-map": ("Derive the report-to-template map", _derive_map),
+    "lexicon-mine": ("Mine terms from the corpus", _mine_lexicon),
+    "collision-audit": ("Run the sound-alike collision audit", _collision_audit),
+    "mine-variants": ("Mine what the ASR actually heard", _mine_variants),
+    "boilerplate-mine": ("Rank normal statements", _mine_boilerplate),
+    "critical-rules-seed": ("Propose critical-finding rules", _seed_critical_rules),
+    "acceptance-assemble": ("Fill the acceptance set from verbatim transcripts", _assemble_acceptance),
+    "acceptance-freeze": ("Freeze the acceptance set", _freeze_acceptance),
+    "radlex-annotate": ("Look terms up in RadLex", _annotate_radlex),
+}
 
 
 def run_step(session: Session, tenant_id: uuid.UUID, step: str, options: dict[str, Any] | None = None) -> dict[str, Any]:

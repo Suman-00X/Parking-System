@@ -65,7 +65,10 @@ def _known_terms(session: Session, tenant_id: uuid.UUID) -> list[str]:
     forms = session.execute(select(LexiconTerm.canonical_form).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where((LexiconSet.tenant_id == tenant_id) | LexiconSet.tenant_id.is_(None))).scalars().all()
     shorts = session.execute(select(LexiconTerm.short_form).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where(LexiconSet.tenant_id == tenant_id, LexiconTerm.short_form.isnot(None))).scalars().all()
     variants = session.execute(select(LexiconSurfaceVariant.surface_text).where(LexiconSurfaceVariant.tenant_id == tenant_id)).scalars().all()
-    return [t.lower() for t in (*forms, *shorts, *variants) if t]
+    from radreport.knowledge.synonyms import normalise
+
+    # The same normalised form the lexicon lookup compares, so the filter never calls "ground-glass" new when "ground glass" is known.
+    return [normalise(t) for t in (*forms, *shorts, *variants) if t]
 
 
 RECORDINGS = _TenantFilters(_recording_hashes, fp_rate=0.001)
@@ -81,7 +84,9 @@ def remember_recording(tenant_id: uuid.UUID, content_hash: str) -> None:
 
 
 def maybe_known_term(session: Session, tenant_id: uuid.UUID, term: str) -> bool:
-    return term.strip().lower() in TERMS.get(session, tenant_id)
+    from radreport.knowledge.synonyms import normalise
+
+    return normalise(term) in TERMS.get(session, tenant_id)
 
 
 def forget_lexicon(tenant_id: uuid.UUID) -> None:
