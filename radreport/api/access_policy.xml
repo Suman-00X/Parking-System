@@ -55,6 +55,7 @@
     <route id="ops.ready" method="GET" path="/ready" rate-limit="probe" description="Readiness of dependencies; 503 routes traffic away."/>
     <route id="ui.static" method="GET" path="/ui/static/{name}" rate-limit="public" description="Stylesheets and scripts.">
       <param name="name" in="path" type="string" required="true" pattern="(review|app)\.(js|css)" max-length="200"/>
+      <param name="v" in="query" type="string" pattern="[0-9a-f]{12}"/>
     </route>
     <route id="docs.openapi" method="GET" path="/openapi.json" rate-limit="public" environments="local test development"/>
     <route id="docs.swagger" method="GET" path="/docs" rate-limit="public" environments="local test development"/>

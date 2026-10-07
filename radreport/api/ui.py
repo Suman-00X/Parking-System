@@ -90,10 +90,16 @@ def _head(title: str, suffix: str) -> str:
 <meta name="color-scheme" content="light dark">
 <title>{esc(title)} · {esc(suffix)}</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234f46e5'/%3E%3Cstop offset='1' stop-color='%2306b6d4'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='9' fill='url(%23g)'/%3E%3Cpath d='M5 16h3l2.5-7 4 14 4-11 2.5 7 2-3H27' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/ui/static/app.css">
-<link rel="stylesheet" href="/ui/static/review.css">
-<script src="/ui/static/app.js" defer></script>
+<link rel="stylesheet" href="{_asset("app.css")}">
+<link rel="stylesheet" href="{_asset("review.css")}">
+<script src="{_asset("app.js")}" defer></script>
 </head>"""
+
+
+def _asset(name: str) -> str:
+    from radreport.api.routes.review_ui import asset_url
+
+    return asset_url(name)
 
 
 def _brand(sub: str, href: str) -> str:

@@ -90,7 +90,7 @@ async def health() -> dict[str, Any]:
 
 
 class InstanceIdMiddleware:
-    """Adds X-Instance-Id to every response, so a request can be traced to the instance behind the load balancer."""
+    """Adds X-Instance-Id to every response, so a request can be traced to the instance behind the load balancer, and no-store to any that did not choose its own caching."""
 
     def __init__(self, app: Any) -> None:
         self.app = app
@@ -103,7 +103,11 @@ class InstanceIdMiddleware:
 
         async def send_with_id(message: dict[str, Any]) -> None:
             if message["type"] == "http.response.start":
-                message = {**message, "headers": [*message.get("headers", []), self.header]}
+                headers = [*message.get("headers", []), self.header]
+                if not any(name.lower() == b"cache-control" for name, _ in headers):
+                    # Pages and API answers carry lab data: no CDN or shared proxy may keep them. Static assets set their own.
+                    headers.append((b"cache-control", b"private, no-store"))
+                message = {**message, "headers": headers}
             await send(message)
 
         await self.app(scope, receive, send_with_id)

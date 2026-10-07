@@ -150,12 +150,20 @@ def get_audio(draft_id: uuid.UUID, session: DbSession, principal: CurrentPrincip
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no recording for this draft")
 
     store = S3ObjectStore(get_settings().storage)
+    media = "audio/flac" if recording.audio_format == "flac" else "audio/wav"
+    signer = getattr(store, "signed_url", None)
+    if signer is not None:
+        # Straight from the bucket on a link that expires in a minute: the audio never passes through the app or any CDN.
+        try:
+            url = signer(recording.object_key, expires_seconds=get_settings().storage.signed_url_seconds, content_type=media)
+        except Exception as exc:  # noqa: BLE001 - the store's failures are opaque
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"audio unavailable: {exc}") from exc
+        return Response(status_code=status.HTTP_307_TEMPORARY_REDIRECT, headers={"Location": url, "Cache-Control": "private, no-store"})
     try:
         data = store.get(recording.object_key)
     except Exception as exc:  # noqa: BLE001 - the store's failures are opaque
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"audio unavailable: {exc}") from exc
 
-    media = "audio/flac" if recording.audio_format == "flac" else "audio/wav"
     return Response(
         data,
         media_type=media,

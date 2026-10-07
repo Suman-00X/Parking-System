@@ -69,6 +69,9 @@ class StorageSettings(BaseModel):
     sse_kms_key_id: str | None = None
     """None => SSE-term mining. Production must set a KMS key."""
 
+    signed_url_seconds: int = 60
+    """How long a signed audio link stays valid. Audio is never cached or served through a CDN; the browser fetches it from the bucket directly."""
+
 
 class AudioGateSettings(BaseModel):
     """Ingest quality gates. Warn-level bounds are separate from rejects."""

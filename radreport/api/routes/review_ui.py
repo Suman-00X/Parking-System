@@ -7,9 +7,11 @@ render_field, render_retractions). static_file serves the few assets.
 
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 import uuid
+from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlencode
@@ -100,13 +102,35 @@ def logout_submit(radreport_lab_refresh: Annotated[str | None, Cookie()] = None)
 
 
 @router.get("/static/{name}")
-def static_file(name: str) -> Response:
-    """Serve the stylesheets and scripts. No bundler, no build step."""
-    if name not in {"review.js", "review.css", "app.js", "app.css"}:
+def static_file(name: str, request: Request, v: str | None = None) -> Response:
+    """Serve the stylesheets and scripts. No bundler, no build step.
+
+    A request carrying the file's current version (`?v=`, which every page's link does) may be cached
+    for a year by browsers and a CDN: a new release changes the version, so the URL changes with it.
+    """
+    if name not in STATIC_ASSETS:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown asset")
-    path = _STATIC / name
-    media = "text/javascript" if name.endswith(".js") else "text/css"
-    return Response(path.read_text(encoding="utf-8"), media_type=media)
+    body, version = _asset(name)
+    etag = f'"{version}"'
+    headers = {"ETag": etag, "Cache-Control": "public, max-age=31536000, immutable" if v == version else "public, max-age=300"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    return Response(body, media_type="text/javascript" if name.endswith(".js") else "text/css", headers=headers)
+
+
+STATIC_ASSETS = frozenset({"review.js", "review.css", "app.js", "app.css"})
+
+
+@lru_cache(maxsize=8)
+def _asset(name: str) -> tuple[str, str]:
+    """The file's text and a short hash of it, read once per process."""
+    body = (_STATIC / name).read_text(encoding="utf-8")
+    return body, hashlib.sha256(body.encode()).hexdigest()[:12]
+
+
+def asset_url(name: str) -> str:
+    """The versioned URL a page links to."""
+    return f"/ui/static/{name}?v={_asset(name)[1]}"
 
 
 def _esc(value: object) -> str:
@@ -228,7 +252,7 @@ def review_screen(draft_id: uuid.UUID, session: DbSession, principal: CurrentPri
     {aside}
   </div>
 <script type="module">
-import {{ FocusTimer, wireClickToListen, collectEdits }} from "/ui/static/review.js";
+import {{ FocusTimer, wireClickToListen, collectEdits }} from "{asset_url("review.js")}";
 const timer = new FocusTimer();
 wireClickToListen(document.getElementById("dictation"));
 const form = document.getElementById("review-form");

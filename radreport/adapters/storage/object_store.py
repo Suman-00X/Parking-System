@@ -89,6 +89,10 @@ class S3ObjectStore:
         """Only for the erasure cascade."""
         self._client.delete_object(Bucket=self._bucket, Key=key)
 
+    def signed_url(self, key: str, *, expires_seconds: int, content_type: str) -> str:
+        """A short-lived link straight to the object, with no-store forced on the response so nothing between keeps a copy."""
+        return str(self._client.generate_presigned_url("get_object", Params={"Bucket": self._bucket, "Key": key, "ResponseCacheControl": "private, no-store, max-age=0", "ResponseContentType": content_type}, ExpiresIn=expires_seconds))
+
 
 class InMemoryObjectStore:
     """For tests and the synthetic-data dev path. No PHI ever reaches it."""
