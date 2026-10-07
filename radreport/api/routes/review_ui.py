@@ -19,8 +19,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from radreport.api.deps import CurrentPrincipal, DbSession, client_ip
 from radreport.api.routes.review import _reviewer, _tenant
+from radreport.api.ui import auth_page, badge, banner, card, empty, facts, flash, icon, lab_page, stat
 from radreport.auth import lab
 from radreport.auth.lab import ACCESS_COOKIE, REFRESH_COOKIE, REFRESH_COOKIE_PATH, SignInFailed, TokenInvalid
+from radreport.cache.lookups import user_roles
 from radreport.core.config import get_settings
 from radreport.review import session as review_session
 from radreport.review import signing
@@ -55,22 +57,15 @@ def _without_tokens(response: Response) -> Response:
 @router.get("/login", response_class=HTMLResponse)
 def login_page(error: str | None = None, next: str | None = None) -> HTMLResponse:  # noqa: A002 - the query parameter is called next
     """A lab user's sign-in form."""
-    problem = f'<div class="banner alert">{_esc(error)}</div>' if error else ""
-    return HTMLResponse(f"""<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in · radreport</title><link rel="stylesheet" href="/ui/static/review.css">
-</head><body><main>
-  <h1>Sign in</h1>
-  {problem}
-  <form method="post" action="/ui/login" style="max-width:420px">
+    form = f"""{flash(error)}
+  <form method="post" action="/ui/login">
     <input type="hidden" name="next" value="{_esc(_safe_next(next))}">
-    <p><label>Lab<br><input name="lab" required autocomplete="organization" pattern="[a-z0-9][a-z0-9-]{{1,62}}"></label></p>
-    <p><label>Email<br><input name="email" type="email" required autocomplete="username"></label></p>
-    <p><label>Password<br><input name="password" type="password" required autocomplete="current-password"></label></p>
+    <label for="lab">Lab</label><input id="lab" name="lab" required autocomplete="organization" pattern="[a-z0-9][a-z0-9-]{{1,62}}" placeholder="your-lab">
+    <label for="email">Email</label><input id="email" name="email" type="email" required autocomplete="username" placeholder="you@hospital.org">
+    <label for="password">Password</label><input id="password" name="password" type="password" required autocomplete="current-password" placeholder="••••••••••••">
     <div class="actions"><button class="primary" type="submit">Sign in</button></div>
-  </form>
-</main></body></html>""")
+  </form>"""
+    return auth_page("Sign in", form, subtitle="Radiologists, transcriptionists and lab staff sign in with their lab's short name.", realm="Reporting")
 
 
 @router.post("/login")
@@ -106,8 +101,8 @@ def logout_submit(radreport_lab_refresh: Annotated[str | None, Cookie()] = None)
 
 @router.get("/static/{name}")
 def static_file(name: str) -> Response:
-    """Serve the two review-screen assets. No bundler, no build step."""
-    if name not in {"review.js", "review.css"}:
+    """Serve the stylesheets and scripts. No bundler, no build step."""
+    if name not in {"review.js", "review.css", "app.js", "app.css"}:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown asset")
     path = _STATIC / name
     media = "text/javascript" if name.endswith(".js") else "text/css"
@@ -143,7 +138,7 @@ def render_field(field: review_session.FieldView) -> str:
 
     provenance = ""
     if field.provenance:
-        spans = "".join(f'<span class="quote" data-audio-start="{int(p["audio_start_ms"])}" data-audio-end="{int(p["audio_end_ms"])}">▶ listen ({int(p["audio_start_ms"]) / 1000:.1f}s)</span> ' for p in field.provenance)
+        spans = "".join(f'<span class="quote" role="button" tabindex="0" data-audio-start="{int(p["audio_start_ms"])}" data-audio-end="{int(p["audio_end_ms"])}">▶ listen {int(p["audio_start_ms"]) / 1000:.1f}s</span>' for p in field.provenance)
         provenance = f'<div class="provenance">{spans}</div>'
     else:
         provenance = '<div class="provenance">no cited audio</div>'
@@ -157,7 +152,7 @@ def render_field(field: review_session.FieldView) -> str:
     <div class="{" ".join(classes)}" data-field-value-id="{field.field_value_id}">
       <div class="field-head">
         <span class="label">{_esc(field.display_label)}</span>
-        <span class="section">{_esc(field.section)}</span>
+        <span class="field-section">{_esc(field.section)}</span>
         {"".join(tags)}
       </div>
       <input class="field-input" value="{_esc(value)}"
@@ -173,7 +168,14 @@ def render_retractions(view: review_session.DraftView) -> str:
         return ""
 
     rows = "".join(f'<div><span class="retracted" data-audio-start="{r.audio_start_ms}" data-audio-end="{r.audio_end_ms}">{_esc(r.text)}</span> <span class="override">&rarr; {_esc(r.superseded_by_text or "corrected")}</span></div>' for r in view.retractions)
-    return f'<div class="banner blocked"><strong>{len(view.retractions)} self-correction(s)</strong> — the struck-through text was retracted by the radiologist and does not support any field.{rows}</div>'
+    return f'<div class="banner blocked">{icon("alert")}<div><strong>{len(view.retractions)} self-correction(s)</strong> — the struck-through text was retracted by the radiologist and does not support any field.{rows}</div></div>'
+
+
+def _who(session: DbSession, principal: CurrentPrincipal) -> tuple[str, tuple[str, ...]]:
+    """The signed-in person's name and roles, for the page frame."""
+    assert principal.tenant_id is not None
+    user = user_roles(session, principal.tenant_id, principal.id)
+    return (user.display_name if user else "Lab user"), (user.roles if user else ())
 
 
 @router.get("/drafts/{draft_id}", response_class=HTMLResponse)
@@ -189,78 +191,82 @@ def review_screen(draft_id: uuid.UUID, session: DbSession, principal: CurrentPri
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
     checks = signing.preflight(session, tenant_id=tenant_id, draft_id=draft_id)
+    name, roles = _who(session, principal)
 
     banners: list[str] = []
     if checks.unacknowledged_alerts:
-        banners.append(f'<div class="banner alert">⚠ {len(checks.unacknowledged_alerts)} unacknowledged critical finding. Acknowledge before signing.</div>')
+        banners.append(banner(f"<strong>{len(checks.unacknowledged_alerts)} unacknowledged critical finding.</strong> Acknowledge before signing.", tone="alert"))
     if checks.blocking_findings:
-        banners.append(f'<div class="banner blocked">This draft contradicts its source: {_esc(", ".join(checks.blocking_findings))}. Signing is blocked.</div>')
+        banners.append(banner(f"This draft contradicts its source: {_esc(', '.join(checks.blocking_findings))}. <strong>Signing is blocked.</strong>", tone="blocked"))
     asserted = view.system_asserted_fields
     if asserted:
-        banners.append(f'<div class="banner blocked">{len(asserted)} field(s) were filled by the system rather than dictated. Check each one.</div>')
+        banners.append(banner(f"<strong>{len(asserted)} field(s) were filled by the system</strong> rather than dictated. Check each one.", tone="blocked"))
 
     can_sign = reviewer.can("sign_report") and checks.may_sign
     sign_note = "" if reviewer.can("sign_report") else " (an assistant may revise; a radiologist signs)"
+    flagged = len([f for f in view.fields if f.is_flagged])
+    critical = len([f for f in view.fields if f.is_critical])
 
-    fields_html = "".join(render_field(f) for f in view.fields)
-
-    return HTMLResponse(f"""<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Review {_esc(str(draft_id)[:8])}</title>
-<link rel="stylesheet" href="/ui/static/review.css">
-</head><body><main>
-  <h1>Report review</h1>
-  <div class="meta">
-    {_esc(reviewer.display_role)} · confidence {view.overall_confidence:.2f} ·
-    {len([f for f in view.fields if f.is_flagged])} flagged of {len(view.fields)} fields ·
-    active <span id="active-seconds" class="timer">0</span>s
-  </div>
-  {"".join(banners)}
+    fields_html = "".join(render_field(f) for f in view.fields) or empty("This draft has no fields to review.", icon_name="doc")
+    confidence_tone = "ok" if view.overall_confidence >= 0.85 else "warn" if view.overall_confidence >= 0.6 else "danger"
+    aside = f"""<aside class="review-aside">
+      {card(facts((("Reviewer", _esc(reviewer.display_role)), ("Confidence", badge(f"{view.overall_confidence:.2f}", confidence_tone)), ("Flagged", f"{flagged} of {len(view.fields)} fields"), ("Critical", str(critical)), ("Active time", '<span id="active-seconds" class="timer">0</span>s'))), title="This draft", icon_name="doc")}
+      {card('<p class="meta">Click <span class="quote">▶ listen</span> on any field to hear the audio it came from. Edits are saved as a revision; signing files the report.</p><audio id="dictation" src="/review/drafts/' + str(draft_id) + '/audio" preload="none" controls style="width:100%"></audio>', title="Dictation", icon_name="mic")}
+    </aside>"""
+    body = f"""{"".join(banners)}
   {render_retractions(view)}
-  <audio id="dictation" src="/review/drafts/{draft_id}/audio" preload="none"></audio>
-  <form id="review-form">{fields_html}</form>
-  <div class="actions">
-    <button type="button" id="save" class="primary">Save revision</button>
-    <button type="button" id="sign" {"" if can_sign else "disabled"}>Sign{_esc(sign_note)}</button>
-    <button type="button" id="useless">This draft was useless</button>
+  <div class="review-layout">
+    <div>
+      <form id="review-form">{fields_html}</form>
+      <div class="review-actions">
+        <button type="button" id="save" class="primary">{icon("check")}Save revision</button>
+        <button type="button" id="sign" {"" if can_sign else "disabled"}>{icon("shield")}Sign{_esc(sign_note)}</button>
+        <button type="button" id="useless" class="ghost">This draft was useless</button>
+        <span id="status" class="meta" role="status"></span>
+      </div>
+    </div>
+    {aside}
   </div>
 <script type="module">
 import {{ FocusTimer, wireClickToListen, collectEdits }} from "/ui/static/review.js";
 const timer = new FocusTimer();
 wireClickToListen(document.getElementById("dictation"));
 const form = document.getElementById("review-form");
+const statusLine = document.getElementById("status");
 const draftId = {str(draft_id)!r};
+form.addEventListener("input", (e) => {{ if (e.target.matches(".field-input")) e.target.classList.toggle("changed", e.target.value !== e.target.dataset.original); }});
 
 async function post(url, body) {{
   // No body at all when there is nothing to send: a route that takes none refuses even "{{}}".
   const init = body === undefined ? {{ method: "POST" }} : {{ method: "POST", headers: {{ "content-type": "application/json" }}, body: JSON.stringify(body) }};
   const res = await fetch(url, init);
   if (res.status === 401) {{ location.href = "/ui/refresh?next=" + encodeURIComponent(location.pathname); return res; }}
-  if (!res.ok) alert(await res.text());
+  if (!res.ok) statusLine.textContent = (await res.text()).slice(0, 300);
   return res;
 }}
 
 document.getElementById("save").onclick = async () => {{
-  await post(`/review/drafts/${{draftId}}/revisions`, {{
+  statusLine.textContent = "Saving…";
+  const res = await post(`/review/drafts/${{draftId}}/revisions`, {{
     edits: collectEdits(form),
     rendered_text: document.querySelector("#review-form").innerText,
     // Focus time and wall clock together: the server clamps one by the other.
     active_edit_seconds: timer.activeSeconds(),
     wall_clock_seconds: timer.wallClockSeconds(),
   }});
-  location.reload();
+  if (res.ok) location.reload();
 }};
 document.getElementById("sign").onclick = async () => {{
   const res = await post(`/review/drafts/${{draftId}}/sign`);
   if (res.ok) location.href = "/ui/queue";
 }};
 document.getElementById("useless").onclick = async () => {{
-  const reason = prompt("What was wrong with it?") || null;
-  await post(`/review/drafts/${{draftId}}/usefulness`, {{ was_useless: true, reason }});
+  const reason = window.prompt("What was wrong with it?") || null;
+  const res = await post(`/review/drafts/${{draftId}}/usefulness`, {{ was_useless: true, reason }});
+  if (res.ok) statusLine.textContent = "Thanks — recorded.";
 }};
-</script>
-</main></body></html>""")
+</script>"""
+    return lab_page("Report review", body, user_name=name, user_role=reviewer.display_role, roles=roles, active="queue", eyebrow=f"Draft {str(draft_id)[:8]}", crumbs=(("Review queue", "/ui/queue"), (f"Draft {str(draft_id)[:8]}", None)), actions=f'<a class="btn ghost" href="/ui/queue">{icon("back")}Back to queue</a>')
 
 
 @router.get("/queue", response_class=HTMLResponse)
@@ -273,31 +279,32 @@ def queue_screen(session: DbSession, principal: CurrentPrincipal) -> HTMLRespons
         items = review_queue.build_queue(session, tenant_id=_tenant(principal), reviewer=reviewer)
     except PermissionDenied as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    name, roles = _who(session, principal)
 
     def _row(i) -> str:
         klass = "critical" if i.has_critical_alert else "flagged" if i.flagged_field_count else ""
-        alert_tag = '<span class="tag critical">critical finding</span>' if i.has_critical_alert else ""
-        flag_tag = f'<span class="tag flag">{i.flagged_field_count} flagged</span>' if i.flagged_field_count else ""
-        return f"""<div class="field {klass}">
-      <div class="field-head">
-        <a class="label" href="/ui/drafts/{i.draft_id}">{_esc(i.template_display_name)}</a>
-        <span class="section">{_esc(i.priority)}</span>
-        {alert_tag}{flag_tag}
-        <span class="tag ungrounded">{i.waiting_minutes} min</span>
+        alert_tag = badge("critical finding", "danger") if i.has_critical_alert else ""
+        flag_tag = badge(f"{i.flagged_field_count} flagged", "warn") if i.flagged_field_count else ""
+        radiologist = badge("radiologist only", "info", dot=False) if i.requires_radiologist else ""
+        glyph = icon("alert" if i.has_critical_alert else "flag" if i.flagged_field_count else "doc")
+        return f"""<div class="card queue-item {klass}" style="padding:16px 18px">
+      <span class="glyph">{glyph}</span>
+      <div style="min-width:0">
+        <a class="label" href="/ui/drafts/{i.draft_id}"><strong>{_esc(i.template_display_name)}</strong></a>
+        <div class="chips">{badge(i.priority, "brand", dot=False)}{alert_tag}{flag_tag}{radiologist}{badge(f"confidence {i.confidence:.2f}", "muted", dot=False)}</div>
       </div>
+      <div class="row" style="justify-content:flex-end"><span class="wait">{icon("clock")} {i.waiting_minutes} min</span><a class="btn sm primary" href="/ui/drafts/{i.draft_id}">Review {icon("arrow")}</a></div>
     </div>"""
 
+    criticals = sum(1 for i in items if i.has_critical_alert)
+    flagged = sum(1 for i in items if i.flagged_field_count)
+    oldest = max((i.waiting_minutes for i in items), default=0)
+    kpis = f"""<div class="grid cols-4" style="margin-bottom:18px">
+      {stat("Waiting", str(len(items)), hint="drafts you can complete", icon_name="queue")}
+      {stat("Critical findings", str(criticals), hint="acknowledge before signing", tone="danger" if criticals else "ok", icon_name="alert")}
+      {stat("With flags", str(flagged), hint="fields needing a closer look", tone="warn" if flagged else "", icon_name="flag")}
+      {stat("Oldest", f"{oldest} min", hint="time since the draft was ready", icon_name="clock")}
+    </div>"""
     rows = "".join(_row(i) for i in items)
-    empty = '<p class="meta">Nothing waiting.</p>' if not items else ""
-
-    return HTMLResponse(f"""<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Review queue</title><link rel="stylesheet" href="/ui/static/review.css">
-</head><body><main>
-  <h1>Review queue</h1>
-  <div class="meta">{_esc(reviewer.display_role)} · {len(items)} waiting ·
-    ordered by priority, then critical findings, then flagged fields ·
-    <form method="post" action="/ui/logout" style="display:inline"><button type="submit">Sign out</button></form></div>
-  {rows}{empty}
-</main></body></html>""")
+    listing = f'<div class="queue-list">{rows}</div>' if items else card(empty("New drafts appear here as soon as the pipeline finishes them.", title="Nothing waiting", icon_name="check"))
+    return lab_page("Review queue", kpis + listing, user_name=name, user_role=reviewer.display_role, roles=roles, active="queue", eyebrow="Reporting", subtitle="Ordered by priority, then critical findings, then flagged fields.")

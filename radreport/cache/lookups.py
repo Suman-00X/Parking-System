@@ -37,6 +37,7 @@ class UserRoles:
     tenant_id: uuid.UUID
     is_active: bool
     roles: tuple[str, ...]
+    display_name: str = ""
 
 
 def tenant_config(session: Session, tenant_id: uuid.UUID) -> TenantConfig | None:
@@ -58,7 +59,7 @@ def user_roles(session: Session, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Us
         user = session.get(AppUser, user_id)
         if user is None or user.tenant_id != tenant_id:
             return None
-        return UserRoles(user_id=user.id, tenant_id=user.tenant_id, is_active=user.is_active, roles=tuple(user.roles or ()))
+        return UserRoles(user_id=user.id, tenant_id=user.tenant_id, is_active=user.is_active, roles=tuple(user.roles or ()), display_name=user.display_name)
 
     return request.request_cached(key("user_roles", tenant_id, user_id), load)
 
