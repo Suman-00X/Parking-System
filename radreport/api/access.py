@@ -372,13 +372,10 @@ class Identity:
 
 
 def _admin_from_cookie(token: str | None) -> AuthenticatedAdmin | None:
-    """Resolve an admin session cookie against the database."""
+    """Resolve an admin session cookie, through the shared cache."""
     from radreport.db.session import system_session
 
-    if not token:
-        return None
-    with system_session() as session:
-        return auth.authenticate(session, token)
+    return auth.authenticate_cached(system_session, token)
 
 
 def _deny(status_code: int, detail: str, *, headers: dict[str, str] | None = None) -> Response:

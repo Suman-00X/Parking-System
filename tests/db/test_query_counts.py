@@ -18,6 +18,7 @@ pytestmark = pytest.mark.db
 
 
 def _count(client, path: str) -> int:
+    client.get(path)  # warm the session and lookup caches, so the steady state is what is compared
     response = client.get(path)
     assert response.status_code == 200, response.text[:300]
     return int(response.headers["x-query-count"])

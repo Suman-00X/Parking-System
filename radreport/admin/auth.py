@@ -10,13 +10,19 @@ import base64
 import datetime as dt
 import hashlib
 import hmac
+import json
 import secrets
 import uuid
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from radreport.cache import request, shared
+from radreport.cache.keys import GLOBAL, CacheKey
+from radreport.cache.keys import key as cache_key
 from radreport.core.logging import get_logger
 from radreport.core.types import ActorType, PlatformRole
 from radreport.db.models.orchestration import AuditLog
@@ -165,10 +171,41 @@ def authenticate(session: Session, token: str | None) -> AuthenticatedAdmin | No
     return AuthenticatedAdmin(platform_user_id=user.id, display_name=user.display_name, role=user.role, session_id=record.id)
 
 
+def _session_key(token: str) -> CacheKey:
+    return cache_key("admin_session", GLOBAL, _token_hash(token))
+
+
+def _generation_key(platform_user_id: uuid.UUID) -> str:
+    return f"radreport:admin_session_generation:{platform_user_id}"
+
+
+def authenticate_cached(session_factory: Callable[[], AbstractContextManager[Session]], token: str | None) -> AuthenticatedAdmin | None:
+    """`authenticate`, with a resolved session kept briefly in the shared cache; every admin request runs this."""
+    if not token:
+        return None
+    backend = shared.get_backend()
+    found = request.request_cached(_session_key(token), lambda: backend.get(_session_key(token).render()))
+    if found is not None:
+        entry = json.loads(found)
+        current = backend.get(_generation_key(uuid.UUID(entry["platform_user_id"])))
+        # Revoking a user's sessions advances their generation; anything cached before it is ignored.
+        if int(current or 0) == entry["generation"] and dt.datetime.fromisoformat(entry["expires_at"]) > dt.datetime.now(dt.UTC):
+            return AuthenticatedAdmin(platform_user_id=uuid.UUID(entry["platform_user_id"]), display_name=entry["display_name"], role=entry["role"], session_id=uuid.UUID(entry["session_id"]))
+    with session_factory() as session:
+        admin = authenticate(session, token)
+        expires = session.execute(select(AdminSession.expires_at).where(AdminSession.token_hash == _token_hash(token))).scalar_one_or_none() if admin else None
+    if admin is not None and expires is not None:
+        generation = int(backend.get(_generation_key(admin.platform_user_id)) or 0)
+        entry = {"platform_user_id": str(admin.platform_user_id), "display_name": admin.display_name, "role": admin.role, "session_id": str(admin.session_id), "generation": generation, "expires_at": (expires if expires.tzinfo else expires.replace(tzinfo=dt.UTC)).isoformat()}
+        backend.set(_session_key(token).render(), json.dumps(entry).encode(), shared.ttl(shared=60, local=5))
+    return admin
+
+
 def logout(session: Session, *, token: str | None) -> bool:
     """Revoke one session. Idempotent."""
     if not token:
         return False
+    shared.invalidate_after_commit(session, _session_key(token))
     record = session.execute(select(AdminSession).where(AdminSession.token_hash == _token_hash(token))).scalar_one_or_none()
     if record is None or record.revoked_at is not None:
         return False
@@ -182,6 +219,7 @@ def revoke_all_sessions(session: Session, *, platform_user_id: uuid.UUID) -> int
     """Revoke every live session for one admin. Returns how many."""
     now = dt.datetime.now(dt.UTC)
     records = list(session.execute(select(AdminSession).where(AdminSession.platform_user_id == platform_user_id, AdminSession.revoked_at.is_(None))).scalars().all())
+    shared.bump_after_commit(session, _generation_key(platform_user_id))
     for record in records:
         record.revoked_at = now
     session.flush()

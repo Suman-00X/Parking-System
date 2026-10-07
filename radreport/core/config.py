@@ -134,6 +134,9 @@ class Settings(BaseSettings):
     environment: str = "local"
     database_url: str = "postgresql+psycopg://radreport:radreport@localhost:5433/radreport"
     test_database_url: str | None = None
+    redis_url: str | None = None
+    """The shared cache (RADREPORT_REDIS_URL). Unset, each worker caches in its own memory with short TTLs."""
+
     db: DatabaseSettings = Field(default_factory=DatabaseSettings)
     events: EventSettings = Field(default_factory=EventSettings)
 

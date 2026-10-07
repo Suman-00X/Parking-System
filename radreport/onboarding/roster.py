@@ -130,7 +130,7 @@ def import_roster(session: Session, *, tenant_id: uuid.UUID, rows: list[RosterRo
             # admin granted after the first import.
             existing.roles = sorted(set(existing.roles) | set(row.roles))
             existing.is_active = True
-            forget_user(tenant_id, existing.id)
+            forget_user(tenant_id, existing.id, session)
             result.updated.append(existing)
             user = existing
         else:

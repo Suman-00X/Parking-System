@@ -122,7 +122,7 @@ def record_consent_event(session: Session, *, tenant_id: uuid.UUID, event: str, 
     else:
         raise ValueError(f"unknown consent event {event!r}")
 
-    forget_tenant(tenant_id)
+    forget_tenant(tenant_id, session)
     entry = TrainingConsentEventLog(tenant_id=tenant_id, event=event, ref=ref, actor_id=actor_id, occurred_at=when)
     session.add(entry)
     session.flush()

@@ -8,15 +8,15 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from radreport.adapters.llm.base import ResolvedModelRef
 from radreport.adapters.llm.pricing import derive_cache_prices
+from radreport.cache import shared
 from radreport.cache.keys import key as cache_key
-from radreport.cache.request import forget, request_cached
 from radreport.core.errors import ModelResolutionError, UngatedActivation
 from radreport.core.logging import get_logger
 from radreport.core.types import CONSEQUENTIAL_TASKS, AssignmentEvent, AssignmentStatus, ProviderKind, TaskKey
@@ -52,7 +52,7 @@ class TaskModelResolver:
         if key in self._cache:
             return self._cache[key]
 
-        resolved = request_cached(cache_key("model_assignment", tenant_id, task_key), lambda: self._load(task_key, tenant_id))
+        resolved = shared.cached(cache_key("model_assignment", tenant_id, task_key), lambda: self._load(task_key, tenant_id), ttl_seconds=shared.ttl(shared=300, local=30), encode=_encode, decode=_decode)
         self._cache[key] = resolved
         return resolved
 
@@ -71,6 +71,17 @@ class TaskModelResolver:
         else:
             for key in [k for k in self._cache if k[0] == tenant_id]:
                 del self._cache[key]
+
+
+def _encode(value: ResolvedModel) -> dict[str, object]:
+    ref = asdict(value.ref)
+    ref["model_definition_id"] = str(value.ref.model_definition_id)
+    return {"ref": ref, "task_key": value.task_key, "task_bucket": value.task_bucket, "assignment_id": str(value.assignment_id), "eval_run_id": str(value.eval_run_id) if value.eval_run_id else None}
+
+
+def _decode(raw: dict) -> ResolvedModel:
+    ref = ResolvedModelRef(**{**raw["ref"], "model_definition_id": uuid.UUID(raw["ref"]["model_definition_id"])})
+    return ResolvedModel(ref=ref, task_key=raw["task_key"], task_bucket=raw["task_bucket"], assignment_id=uuid.UUID(raw["assignment_id"]), eval_run_id=uuid.UUID(raw["eval_run_id"]) if raw["eval_run_id"] else None)
 
 
 def _to_ref(definition: ModelDefinition, provider: ModelProvider) -> ResolvedModelRef:
@@ -122,7 +133,7 @@ def activate_assignment(session: Session, *, assignment_id: uuid.UUID, tenant_id
         session.flush()
 
     assignment.status = AssignmentStatus.ACTIVE
-    forget(cache_key("model_assignment", tenant_id, assignment.task_key))
+    shared.invalidate_after_commit(session, cache_key("model_assignment", tenant_id, assignment.task_key))
     assignment.activated_at = now
     assignment.activated_by = actor_id
     session.add(TaskModelAssignmentLog(tenant_id=tenant_id, task_key=assignment.task_key, model_definition_id=assignment.model_definition_id, event=AssignmentEvent.ACTIVATED, eval_run_id=assignment.eval_run_id, actor_id=actor_id))
