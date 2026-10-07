@@ -25,6 +25,7 @@ from radreport.db.models.ingestion import Recording
 from radreport.db.models.knowledge import LexiconSet, LexiconTerm
 from radreport.db.models.onboarding import CorpusReport, ImportBatch
 from radreport.db.models.orchestration import AuditLog
+from radreport.knowledge.lexicon_versions import current_set
 from radreport.knowledge.phonetics import double_metaphone, phonetic_distance
 from radreport.onboarding.batches import open_batch, record_counts, transition
 from radreport.onboarding.lexicon import record_surface_variants_bulk
@@ -204,7 +205,7 @@ def mine_surface_variants(session: Session, *, tenant_id: uuid.UUID, min_occurre
 
     result = VariantMiningResult(batch=batch)
 
-    terms = list(session.execute(select(LexiconTerm).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where(LexiconSet.tenant_id == tenant_id, LexiconTerm.term_type.in_((TermType.ABBREVIATION, TermType.CODE_WORD, TermType.ANATOMY)))).scalars().all())
+    terms = list(session.execute(select(LexiconTerm).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where(LexiconSet.tenant_id == tenant_id, current_set(), LexiconTerm.term_type.in_((TermType.ABBREVIATION, TermType.CODE_WORD, TermType.ANATOMY)))).scalars().all())
     if not terms:
         log.warning("s4_no_terms_to_match", tenant_id=str(tenant_id))
         return result

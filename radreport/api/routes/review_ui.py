@@ -332,3 +332,68 @@ def queue_screen(session: DbSession, principal: CurrentPrincipal) -> HTMLRespons
     rows = "".join(_row(i) for i in items)
     listing = f'<div class="queue-list">{rows}</div>' if items else card(empty("New drafts appear here as soon as the pipeline finishes them.", title="Nothing waiting", icon_name="check"))
     return lab_page("Review queue", kpis + listing, user_name=name, user_role=reviewer.display_role, roles=roles, active="queue", eyebrow="Reporting", subtitle="Ordered by priority, then critical findings, then flagged fields.")
+
+
+def _highlight(sentence: str, term: str) -> str:
+    """The sentence, escaped, with the term marked."""
+    escaped = _esc(sentence)
+    pattern = re.compile(re.escape(_esc(term)), re.IGNORECASE)
+    return pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", escaped, count=1)
+
+
+@router.get("/lexicon", response_class=HTMLResponse)
+def lexicon_screen(session: DbSession, principal: CurrentPrincipal) -> HTMLResponse:
+    """Terms radiologists keep using that the lab's lexicon lacks; a radiologist approves them into a new version."""
+    from radreport.api.routes.ga import _require_lab_role
+    from radreport.core.types import UserRole
+    from radreport.onboarding import term_watch
+
+    _require_lab_role(session, principal, UserRole.RADIOLOGIST, UserRole.LAB_ADMIN)
+    name, roles = _who(session, principal)
+    can_decide = "radiologist" in roles
+    assert principal.tenant_id is not None
+    rows = list(session.execute(term_watch.pending(session, principal.tenant_id).limit(100)).scalars())
+    body_rows = "".join(
+        f"""<tr><td>{f'<input type="checkbox" name="id" value="{r.id}" aria-label="Select {_esc(r.surface_text)}">' if can_decide else ""}</td>
+        <td><strong>{_esc(r.surface_text)}</strong><div class="cell-sub">{_esc(r.term_type.replace("_", " "))}</div></td>
+        <td class="num"><strong>{r.frequency}</strong></td>
+        <td>{"".join(f'<div class="cell-sub">{_highlight(c, r.surface_text)}</div>' for c in (r.contexts or [])[:2]) or '<span class="muted">—</span>'}</td>
+        <td class="nowrap cell-sub">{_esc(r.last_seen_at.strftime("%d %b %Y"))}</td></tr>"""
+        for r in rows
+    )
+    controls = """<div class="row"><button type="button" class="primary" data-decide="approve">Approve selected</button><button type="button" data-decide="reject">Not a term</button><button type="button" class="ghost" id="scan">Scan new edits</button><span id="status" class="meta" role="status"></span></div>""" if can_decide else '<p class="meta">A radiologist approves new terms; you can see what is waiting.</p><button type="button" class="ghost" id="scan">Scan new edits</button> <span id="status" class="meta" role="status"></span>'
+    total = sum(r.frequency for r in rows)
+    kpis = f"""<div class="grid cols-3" style="margin-bottom:18px">
+      {stat("Waiting", str(len(rows)), hint="terms not in your lexicon yet", icon_name="lexicon")}
+      {stat("Uses", str(total), hint="times they were typed into reports", icon_name="doc")}
+      {stat("Most used", _esc(rows[0].surface_text) if rows else "—", hint=f"{rows[0].frequency} uses" if rows else "nothing waiting", icon_name="spark")}
+    </div>"""
+    listing = card(
+        f"""<div class="card-head" style="padding:0;margin-bottom:12px">{controls}</div>
+        <div class="table-wrap"><table><thead><tr><th></th><th>Term</th><th class="num">Uses</th><th>Where it appeared</th><th>Last seen</th></tr></thead>
+        <tbody>{body_rows or f'<tr><td colspan="5">{empty("Approved terms join your lexicon, so speech recognition and matching know them from then on.", title="No new terms", icon_name="check")}</td></tr>'}</tbody></table></div>""",
+        title="Terms your radiologists use that the lexicon does not know",
+        subtitle="Collected from report edits every night. Approving makes a new version of the lab's lexicon; earlier versions are kept.",
+        icon_name="lexicon",
+    )
+    script = """<script>
+const statusLine = document.getElementById("status");
+async function send(url, body) {
+  const res = await fetch(url, { method: "POST", headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  if (res.status === 401) { location.href = "/ui/refresh?next=" + encodeURIComponent(location.pathname); return null; }
+  if (!res.ok) { statusLine.textContent = (await res.text()).slice(0, 200); return null; }
+  return res.json();
+}
+document.querySelectorAll("[data-decide]").forEach((button) => button.addEventListener("click", async () => {
+  const ids = [...document.querySelectorAll("input[name=id]:checked")].map((box) => box.value);
+  if (!ids.length) { statusLine.textContent = "Select at least one term."; return; }
+  const done = await send(`/lexicon/candidates/${button.dataset.decide}`, { ids });
+  if (done) location.reload();
+}));
+document.getElementById("scan").addEventListener("click", async () => {
+  statusLine.textContent = "Scanning…";
+  const done = await send("/lexicon/scan");
+  if (done) { statusLine.textContent = `${done.unknown_terms} new term(s) in ${done.edit_events} edit(s).`; setTimeout(() => location.reload(), 900); }
+});
+</script>"""
+    return lab_page("New terms", kpis + listing + script, user_name=name, user_role="Radiologist" if can_decide else "Lab admin", roles=roles, active="lexicon", eyebrow="Lexicon", subtitle="Grow the lab's vocabulary from how its radiologists actually write.")

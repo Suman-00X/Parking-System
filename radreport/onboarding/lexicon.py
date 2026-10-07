@@ -23,6 +23,7 @@ from radreport.db.bulk import bulk_insert
 from radreport.db.models.knowledge import LexiconSet, LexiconSurfaceVariant, LexiconTerm, Template, TemplateVersion
 from radreport.db.models.onboarding import CollisionAuditFinding, CorpusReport, ImportBatch, LexiconMiningRun
 from radreport.db.models.orchestration import AuditLog
+from radreport.knowledge.lexicon_versions import current_set
 from radreport.knowledge.phonetics import CollisionCandidate, audit_collisions, double_metaphone
 from radreport.onboarding.batches import open_batch, transition
 
@@ -225,7 +226,7 @@ def collect_audit_candidates(session: Session, tenant_id: uuid.UUID) -> list[Col
     for spoken_code, template_code in rows:
         candidates.append(CollisionCandidate(label=spoken_code, maps_to=template_code))
 
-    terms = session.execute(select(LexiconTerm).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where(LexiconSet.tenant_id == tenant_id, LexiconTerm.term_type.in_((TermType.CODE_WORD, TermType.ABBREVIATION)))).scalars().all()
+    terms = session.execute(select(LexiconTerm).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where(LexiconSet.tenant_id == tenant_id, current_set(), LexiconTerm.term_type.in_((TermType.CODE_WORD, TermType.ABBREVIATION)))).scalars().all()
     for term in terms:
         candidates.append(
             CollisionCandidate(

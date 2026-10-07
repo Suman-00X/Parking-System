@@ -543,6 +543,22 @@
 
   <!-- ===================================== autonomy, export, drift -->
   <routes realm="lab">
+    <route id="lexicon.candidates" method="GET" path="/lexicon/candidates" roles="radiologist,lab_admin" rate-limit="lab-read" description="Terms radiologists use that the lexicon lacks, waiting for review.">
+      <param name="min_frequency" in="query" type="int" pattern="[1-9]\d{0,4}"/>
+      <param name="page" in="query" type="int" pattern="[1-9]\d{0,5}"/>
+      <param name="page_size" in="query" type="int" pattern="[1-9]\d{0,2}"/>
+    </route>
+    <route id="lexicon.scan" method="POST" path="/lexicon/scan" roles="radiologist,lab_admin" rate-limit="lab-write" max-body-bytes="1024" description="Scan the edits made since the last scan now."/>
+    <route id="lexicon.approve" method="POST" path="/lexicon/candidates/approve" roles="radiologist" rate-limit="lab-write" max-body-bytes="16384" description="Approve terms into a new lexicon version.">
+      <param name="ids" in="json" type="array" required="true" max-length="100"/>
+    </route>
+    <route id="lexicon.reject" method="POST" path="/lexicon/candidates/reject" roles="radiologist" rate-limit="lab-write" max-body-bytes="16384">
+      <param name="ids" in="json" type="array" required="true" max-length="100"/>
+    </route>
+    <route id="ui.lexicon" method="GET" path="/ui/lexicon" roles="radiologist,lab_admin" rate-limit="lab-read" description="The new-terms review page."/>
+  </routes>
+
+  <routes realm="lab">
     <route id="ga.autonomy.read" method="GET" path="/ga/autonomy/{class_code}" roles="lab_admin,radiologist,auditor" rate-limit="lab-read">
       <param name="class_code" in="path" type="string" required="true" pattern="[A-Za-z0-9_.\-]{1,64}"/>
     </route>

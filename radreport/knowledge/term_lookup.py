@@ -17,6 +17,7 @@ from radreport.cache import request
 from radreport.cache.filters import maybe_known_term
 from radreport.cache.keys import key
 from radreport.db.models.knowledge import LexiconSet, LexiconSurfaceVariant, LexiconTerm
+from radreport.knowledge.lexicon_versions import current_set
 from radreport.knowledge.synonyms import concept_of, normalise
 
 
@@ -42,7 +43,7 @@ def lab_terms(session: Session, tenant_id: uuid.UUID) -> LabTerms:
     def load() -> LabTerms:
         by_form: dict[str, tuple[uuid.UUID, str, str]] = {}
         by_concept: dict[str, tuple[uuid.UUID, str]] = {}
-        rows = session.execute(select(LexiconTerm.id, LexiconTerm.canonical_form, LexiconTerm.short_form).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where((LexiconSet.tenant_id == tenant_id) | LexiconSet.tenant_id.is_(None))).all()
+        rows = session.execute(select(LexiconTerm.id, LexiconTerm.canonical_form, LexiconTerm.short_form).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where((LexiconSet.tenant_id == tenant_id) | LexiconSet.tenant_id.is_(None), current_set())).all()
         for term_id, form, short in rows:
             by_form.setdefault(normalise(form), (term_id, form, "exact"))
             if short:

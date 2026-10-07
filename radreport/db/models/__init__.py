@@ -8,7 +8,7 @@ from radreport.db.models.events import ConsumedEvent, OutboxEvent
 from radreport.db.models.identity import AppUser, LabRefreshToken, Patient, RadiologistProfile, Study
 from radreport.db.models.ingestion import Recording
 from radreport.db.models.jobs import Job
-from radreport.db.models.knowledge import AutonomyClass, LexiconSet, LexiconSurfaceVariant, LexiconTerm, SpeakerTermBias, Template, TemplateField, TemplateVersion
+from radreport.db.models.knowledge import AutonomyClass, LexiconSet, LexiconSurfaceVariant, LexiconTerm, LexiconWatchState, PotentialLexiconTerm, SpeakerTermBias, Template, TemplateField, TemplateVersion
 from radreport.db.models.llm_cache import LLMResponseCache
 from radreport.db.models.modelconfig import ModelDefinition, ModelProvider, TaskModelAssignment, TaskModelAssignmentLog
 from radreport.db.models.onboarding import BoilerplateCandidate, CollisionAuditFinding, CorpusReport, CorpusReportTemplateMap, ImportArtifact, ImportBatch, LexiconMiningRun, OnboardingReadinessCheck, TemplateImportCandidate, TemplateMergeProposal
@@ -48,6 +48,8 @@ __all__ = [
     "TemplateVersion",
     "TemplateField",
     "SpeakerTermBias",
+    "PotentialLexiconTerm",
+    "LexiconWatchState",
     # reporting
     "RoutingDecision",
     "ReportDraft",

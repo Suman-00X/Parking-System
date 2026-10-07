@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from radreport.db.models.ingestion import Recording
 from radreport.db.models.knowledge import LexiconSet, LexiconSurfaceVariant, LexiconTerm
 from radreport.knowledge.bloom import BloomFilter
+from radreport.knowledge.lexicon_versions import current_set
 
 #: How long a lab's filter is trusted before it is rebuilt from the database.
 MAX_AGE_SECONDS = 600.0
@@ -62,8 +63,8 @@ def _recording_hashes(session: Session, tenant_id: uuid.UUID) -> list[str]:
 
 
 def _known_terms(session: Session, tenant_id: uuid.UUID) -> list[str]:
-    forms = session.execute(select(LexiconTerm.canonical_form).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where((LexiconSet.tenant_id == tenant_id) | LexiconSet.tenant_id.is_(None))).scalars().all()
-    shorts = session.execute(select(LexiconTerm.short_form).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where(LexiconSet.tenant_id == tenant_id, LexiconTerm.short_form.isnot(None))).scalars().all()
+    forms = session.execute(select(LexiconTerm.canonical_form).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where((LexiconSet.tenant_id == tenant_id) | LexiconSet.tenant_id.is_(None), current_set())).scalars().all()
+    shorts = session.execute(select(LexiconTerm.short_form).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where(LexiconSet.tenant_id == tenant_id, LexiconTerm.short_form.isnot(None), current_set())).scalars().all()
     variants = session.execute(select(LexiconSurfaceVariant.surface_text).where(LexiconSurfaceVariant.tenant_id == tenant_id)).scalars().all()
     from radreport.knowledge.synonyms import normalise
 

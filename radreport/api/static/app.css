@@ -408,3 +408,4 @@ dl.facts dd { margin: 0; font-weight: 560; }
   .crumbs .crumb-mid { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+mark { background: var(--warn-soft); color: var(--fg); padding: 0 3px; border-radius: 4px; font-weight: 600; }

@@ -16,7 +16,7 @@ from radreport.db.models.jobs import Job
 from radreport.workers.queue import enqueue
 
 #: kind -> seconds between runs.
-PERIODIC: dict[str, int] = {"reap_jobs": 600, "ensure_partitions": 6 * 3600, "cost_anomaly_scan": 6 * 3600, "refresh_eval_set": 24 * 3600}
+PERIODIC: dict[str, int] = {"reap_jobs": 600, "ensure_partitions": 6 * 3600, "cost_anomaly_scan": 6 * 3600, "refresh_eval_set": 24 * 3600, "watch_lexicon": 24 * 3600}
 
 
 def enqueue_due(session: Session, *, now: float | None = None) -> list[str]:

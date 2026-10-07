@@ -161,8 +161,11 @@ def admin_page(title: str, body: str, *, admin_name: str, admin_role: str, activ
 
 def lab_nav(roles: Iterable[str]) -> tuple[tuple[str, tuple[NavItem, ...]], ...]:
     """The lab-side navigation, showing only what the signed-in roles can open."""
-    del roles  # every lab role can open the queue, the only lab screen so far
-    return (("Reporting", (NavItem("queue", "Review queue", "/ui/queue", "queue"),)),)
+    held = set(roles)
+    work = [NavItem("queue", "Review queue", "/ui/queue", "queue")]
+    if held & {"radiologist", "lab_admin"}:
+        work.append(NavItem("lexicon", "New terms", "/ui/lexicon", "lexicon"))
+    return (("Reporting", tuple(work)),)
 
 
 def lab_page(title: str, body: str, *, user_name: str, user_role: str, roles: Iterable[str] = (), active: str = "", subtitle: str | None = None, eyebrow: str | None = None, actions: str = "", crumbs: Sequence[tuple[str, str | None]] = ()) -> HTMLResponse:

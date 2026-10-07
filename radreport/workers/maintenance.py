@@ -2,7 +2,7 @@
 
 Order: bury leases that ran out on their last attempt (reap_dead_jobs) -> keep monthly partitions
 created ahead and detach months past their retention (ensure_partitions) -> refresh the materialized
-canonical eval set (refresh_eval_set) -> announce cost spikes (cost_anomaly_scan).
+canonical eval set (refresh_eval_set) -> announce cost spikes (cost_anomaly_scan) -> look for new vocabulary in every lab's edits (watch_lexicon).
 """
 
 from __future__ import annotations
@@ -77,3 +77,21 @@ async def cost_anomaly_scan(session: Session, job: ClaimedJob) -> dict[str, Any]
     from radreport.monitoring.costs import scan_for_anomalies
 
     return {"announced": scan_for_anomalies(session)}
+
+
+@handler("watch_lexicon")
+async def watch_lexicon(session: Session, job: ClaimedJob) -> dict[str, Any]:
+    """Scan every lab's new edits for vocabulary its lexicon lacks; each lab in its own bound session."""
+    from sqlalchemy import select
+
+    from radreport.core.types import TenantStatus
+    from radreport.db.models.tenancy import Tenant
+    from radreport.db.session import tenant_session
+    from radreport.onboarding.term_watch import scan_edits
+
+    labs = list(session.execute(select(Tenant.id).where(Tenant.status.in_((TenantStatus.ONBOARDING, TenantStatus.PILOT, TenantStatus.LIVE)))).scalars())
+    found = 0
+    for lab in labs:
+        with tenant_session(lab) as lab_session:
+            found += scan_edits(lab_session, lab)["unknown_terms"]
+    return {"labs": len(labs), "unknown_terms": found}

@@ -18,6 +18,7 @@ from radreport.core.types import CollisionResolution, PatternType, TermType
 from radreport.db.models.knowledge import AutonomyClass, LexiconSet, LexiconSurfaceVariant, LexiconTerm, Template, TemplateField, TemplateVersion
 from radreport.db.models.onboarding import CollisionAuditFinding
 from radreport.db.models.reporting import CriticalFindingRule
+from radreport.knowledge.lexicon_versions import current_set
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,10 +99,10 @@ class StaticKnowledgeProvider:
 def load_tenant_knowledge(session: Session, tenant_id: uuid.UUID) -> TenantKnowledge:
     """Snapshot a lab's onboarding output for a pipeline run."""
     variants: dict[uuid.UUID, list[str]] = {}
-    for term_id, surface in session.execute(select(LexiconSurfaceVariant.lexicon_term_id, LexiconSurfaceVariant.surface_text).join(LexiconTerm, LexiconTerm.id == LexiconSurfaceVariant.lexicon_term_id).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where(LexiconSet.tenant_id == tenant_id).order_by(LexiconSurfaceVariant.observed_count.desc())).all():
+    for term_id, surface in session.execute(select(LexiconSurfaceVariant.lexicon_term_id, LexiconSurfaceVariant.surface_text).join(LexiconTerm, LexiconTerm.id == LexiconSurfaceVariant.lexicon_term_id).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where(LexiconSet.tenant_id == tenant_id, current_set()).order_by(LexiconSurfaceVariant.observed_count.desc())).all():
         variants.setdefault(term_id, []).append(surface)
 
-    lexicon = tuple(LexiconEntry(canonical_form=term.canonical_form, term_type=term.term_type, phonetic_key_primary=term.phonetic_key_primary, short_form=term.short_form, phonetic_key_secondary=term.phonetic_key_secondary, is_ambiguous=term.is_ambiguous, expansion_policy=term.expansion_policy, surface_variants=tuple(variants.get(term.id, ()))) for term in session.execute(select(LexiconTerm).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where(LexiconSet.tenant_id == tenant_id)).scalars().all())
+    lexicon = tuple(LexiconEntry(canonical_form=term.canonical_form, term_type=term.term_type, phonetic_key_primary=term.phonetic_key_primary, short_form=term.short_form, phonetic_key_secondary=term.phonetic_key_secondary, is_ambiguous=term.is_ambiguous, expansion_policy=term.expansion_policy, surface_variants=tuple(variants.get(term.id, ()))) for term in session.execute(select(LexiconTerm).join(LexiconSet, LexiconSet.id == LexiconTerm.lexicon_set_id).where(LexiconSet.tenant_id == tenant_id, current_set())).scalars().all())
 
     study_codes = tuple(StudyCodeEntry(template_version_id=version.id, template_code=code, spoken_study_code=version.spoken_study_code, phonetic_key=version.spoken_study_code_phonetic, variants=tuple(version.spoken_study_code_variants or ())) for version, code in session.execute(select(TemplateVersion, Template.code).join(Template, Template.id == TemplateVersion.template_id).where(TemplateVersion.tenant_id == tenant_id, TemplateVersion.is_current.is_(True), Template.is_active.is_(True))).all())
 

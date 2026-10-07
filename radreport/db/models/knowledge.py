@@ -228,3 +228,38 @@ class SpeakerTermBias(Base, TenantScoped, TimestampMixin):
     boost_weight: Mapped[float] = mapped_column(Numeric(4, 2), nullable=False)
     observed_error_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     last_observed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PotentialLexiconTerm(Base, TenantScoped):
+    """A phrase radiologists keep typing into reports that the lab's lexicon does not know, waiting for one of them to approve it."""
+
+    __tablename__ = "potential_lexicon_term"
+    __table_args__ = tenant_table_args(UniqueConstraint("tenant_id", "normalized_text"), tenant_fk("decided_by", "app_user", ondelete="SET NULL"), ForeignKeyConstraint(["lexicon_set_version_id"], ["lexicon_set.id"], ondelete="SET NULL"), enum_check("status", ("pending", "approved", "rejected")), Index("ix_potential_lexicon_term_review", "tenant_id", "status", "frequency"))
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    surface_text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_text: Mapped[str] = mapped_column(Text, nullable=False)
+    term_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    frequency: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    contexts: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    """Up to three sentences it appeared in, so the radiologist can judge it in place."""
+
+    first_seen_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    last_seen_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    approved: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    lexicon_set_version_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    """The lexicon version an approval created."""
+
+
+class LexiconWatchState(Base, TenantScoped):
+    """How far the term watcher has read a lab's edit events."""
+
+    __tablename__ = "lexicon_watch_state"
+    __table_args__ = (UniqueConstraint("tenant_id"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    last_edit_event_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
