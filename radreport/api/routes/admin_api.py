@@ -32,7 +32,7 @@ from radreport.autonomy.grant import GrantRefused
 from radreport.core.errors import ModelResolutionError, UngatedActivation
 from radreport.core.tenancy import TenantTransitionError
 from radreport.core.types import AdaptationTarget, ImportTrigger
-from radreport.db.models.identity import AppUser
+from radreport.db.models.identity import AppUser, RadiologistProfile
 from radreport.db.models.tenancy import PlatformUser, Tenant
 from radreport.db.session import read_session, system_session
 from radreport.onboarding import corpus
@@ -260,18 +260,21 @@ class LabUserOut(BaseModel):
     is_active: bool
     can_sign_in: bool
     last_login_at: str | None
+    radiologist_profile_id: uuid.UUID | None = None
+    """What the voice, consent and upload routes take as `radiologist_id`; set for radiologists only."""
 
 
-def lab_user_out(user: AppUser) -> LabUserOut:
-    return LabUserOut(id=user.id, employee_code=user.employee_code, display_name=user.display_name, email=user.email, roles=list(user.roles or ()), is_active=bool(user.is_active), can_sign_in=bool(user.password_hash and user.email and user.is_active), last_login_at=user.last_login_at.isoformat() if user.last_login_at else None)
+def lab_user_out(user: AppUser, profile_id: uuid.UUID | None = None) -> LabUserOut:
+    return LabUserOut(radiologist_profile_id=profile_id, id=user.id, employee_code=user.employee_code, display_name=user.display_name, email=user.email, roles=list(user.roles or ()), is_active=bool(user.is_active), can_sign_in=bool(user.password_hash and user.email and user.is_active), last_login_at=user.last_login_at.isoformat() if user.last_login_at else None)
 
 
 @router.get("/labs/{tenant_id}/users", response_model=list[LabUserOut])
 def list_lab_users(tenant_id: uuid.UUID, session: AdminLabDb, response: Response, page: int | None = None, page_size: int | None = None) -> list[LabUserOut]:
     """The lab's staff accounts and whether each can sign in, a page at a time."""
-    paged = paginate(session, select(AppUser).where(AppUser.tenant_id == tenant_id).order_by(AppUser.display_name, AppUser.id), Page.of(page, page_size))
+    query = select(AppUser, RadiologistProfile.id).outerjoin(RadiologistProfile, (RadiologistProfile.user_id == AppUser.id) & (RadiologistProfile.tenant_id == AppUser.tenant_id)).where(AppUser.tenant_id == tenant_id).order_by(AppUser.display_name, AppUser.id)
+    paged = paginate(session, query, Page.of(page, page_size), scalars=False)
     set_page_headers(response, paged, f"/admin/api/labs/{tenant_id}/users")
-    return [lab_user_out(u) for u in paged.rows]
+    return [lab_user_out(u, profile_id) for u, profile_id in paged.rows]
 
 
 class LabPasswordRequest(BaseModel):

@@ -169,6 +169,8 @@ def test_an_unacknowledged_critical_alert_refuses_the_signature(review_fixture) 
         with pytest.raises(SigningRefused, match="acknowledg"):
             signing.sign_report(session, tenant_id=f["tenant_id"], draft_id=f["draft_id"], reviewer=f["radiologist"])
 
+        with pytest.raises(ValueError, match="true_positive or false_positive"):
+            signing.acknowledge_alert(session, tenant_id=f["tenant_id"], alert_id=alert.id, reviewer=f["radiologist"], outcome="communicated")
         signing.acknowledge_alert(session, tenant_id=f["tenant_id"], alert_id=alert.id, reviewer=f["radiologist"], outcome=HumanVerdict.TRUE_POSITIVE)
         final = signing.sign_report(session, tenant_id=f["tenant_id"], draft_id=f["draft_id"], reviewer=f["radiologist"])
         assert final.content_hash

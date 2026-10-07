@@ -144,3 +144,16 @@ def synth_template_docx(paragraphs: Sequence[tuple[str, bool]] = SYNTH_CHEST_CT)
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr("word/document.xml", document)
     return buffer.getvalue()
+
+
+def with_spoken_text(wav: bytes, text: str) -> bytes:
+    """A WAV with `text` in its INFO comment, so the stub speech engine "hears" it. Real engines ignore the chunk."""
+    if wav[:4] != b"RIFF" or wav[8:12] != b"WAVE":
+        raise ValueError("with_spoken_text needs a WAV file")
+    comment = text.encode("utf-8") + b"\x00"
+    if len(comment) % 2:
+        comment += b"\x00"
+    info = b"INFO" + b"ICMT" + len(comment).to_bytes(4, "little") + comment
+    chunk = b"LIST" + len(info).to_bytes(4, "little") + info
+    body = wav[12:] + chunk
+    return b"RIFF" + (4 + len(body)).to_bytes(4, "little") + b"WAVE" + body

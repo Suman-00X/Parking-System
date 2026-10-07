@@ -119,7 +119,9 @@ def propose_template_merges(session: Session, tenant_id: uuid.UUID, batch_id: uu
     batch = session.get(ImportBatch, batch_id)
     if batch is None or batch.tenant_id != tenant_id:
         raise StepRefused(404, f"no import batch {batch_id}")
-    return {"proposals": len(templates.propose_merges(session, tenant_id=tenant_id, batch=batch))}
+    proposals = templates.propose_merges(session, tenant_id=tenant_id, batch=batch)
+    # The count, and each proposal's id: a radiologist decides them one by one.
+    return {"proposals": len(proposals), "items": [{"id": str(p.id), "template_a_id": str(p.template_a_id), "template_b_id": str(p.template_b_id), "similarity": float(p.similarity_score) if p.similarity_score is not None else None, "decision": p.decision} for p in proposals]}
 
 
 def _derive_map(session: Session, tenant_id: uuid.UUID, options: dict[str, Any]) -> dict[str, Any]:

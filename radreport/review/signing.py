@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from radreport.core.hashing import canonical_json, hash_text
 from radreport.core.logging import get_logger
-from radreport.core.types import ActorType, DraftStatus, ExportStatus, PathType, ReviewerRole, Severity
+from radreport.core.types import ActorType, DraftStatus, ExportStatus, HumanVerdict, PathType, ReviewerRole, Severity
 from radreport.db.models.ingestion import Recording
 from radreport.db.models.orchestration import AuditLog
 from radreport.db.models.reporting import CriticalFindingAlert, ReportDraft, ReportFieldValue, VerificationFinding
@@ -77,6 +77,8 @@ def acknowledge_alert(session: Session, *, tenant_id: uuid.UUID, alert_id: uuid.
     """Record that a human received an alert and what they made of it."""
     require(reviewer, Permission.ACKNOWLEDGE_ALERT)
 
+    if outcome not in (HumanVerdict.TRUE_POSITIVE, HumanVerdict.FALSE_POSITIVE):
+        raise ValueError(f"outcome must be true_positive or false_positive, not {outcome!r}")
     alert = session.get(CriticalFindingAlert, alert_id)
     if alert is None or alert.tenant_id != tenant_id:
         raise ValueError(f"no critical_finding_alert {alert_id} in this tenant")

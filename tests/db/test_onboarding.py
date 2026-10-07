@@ -472,3 +472,42 @@ def test_reverting_a_batch_marks_it_and_happens_once(migrated_db: str, lab) -> N
             templates.revert_applied_templates(session, tenant_id=tenant_id, batch=batch, actor_id=reviewer)
         with pytest.raises(BatchStateError):
             templates.revert_applied_templates(session, tenant_id=tenant_id, batch=unapplied, actor_id=reviewer)
+
+
+# ============================================== lists a radiologist works from
+def test_a_radiologist_can_list_what_needs_checking(migrated_db: str, lab) -> None:
+    """Collision findings and corpus mappings are listed over HTTP, so verify and resolve have ids to work on; lab users show their profile id."""
+    from fastapi.testclient import TestClient
+
+    from radreport.admin import onboarding_steps
+    from radreport.api.app import create_app
+    from tests.db.helpers import lab_headers, make_platform_user, signed_in
+
+    tenant_id, reviewer = lab["tenant_id"], lab["radiologist_user_id"]
+    with tenant_session(tenant_id, url=migrated_db) as session:
+        blocked = _submit_and_approve(session, tenant_id, reviewer, [("ct_chest.docx", CHEST_CT_DOC, "LMC"), ("usg_abdo.docx", USG_ABDO_DOC, "LMP")])
+        with pytest.raises(BatchBlocked):
+            templates.apply_templates(session, tenant_id=tenant_id, batch=blocked, approver_id=reviewer)
+        assert onboarding_steps.propose_template_merges(session, tenant_id, blocked.id)["items"] == [], "the merge proposals come back with ids, here none"
+    client = TestClient(create_app())
+    headers = lab_headers(migrated_db, tenant_id, "radiologist")
+    findings = client.get("/onboarding/collision-findings", headers=headers)
+    assert findings.status_code == 200 and (frozenset({"LMC", "LMP"}), "block") in {(frozenset({f["label_a"], f["label_b"]}), f["severity"]) for f in findings.json()}
+    finding_id = findings.json()[0]["finding_id"]
+    assert client.post(f"/onboarding/collision-findings/{finding_id}/resolve", json={"resolution": "renamed"}, headers=headers).status_code == 200
+    assert finding_id not in {f["finding_id"] for f in client.get("/onboarding/collision-findings", headers=headers).json()}
+
+    with tenant_session(tenant_id, url=migrated_db) as session:
+        batch = _submit_and_approve(session, tenant_id, reviewer, [("ct_chest.docx", CHEST_CT_DOC, "ct chest"), ("usg_abdo.docx", USG_ABDO_DOC, "ultrasound abdomen")])
+        templates.apply_templates(session, tenant_id=tenant_id, batch=batch, approver_id=reviewer)
+        corpus.load_corpus(session, tenant_id=tenant_id, records=[corpus.CorpusRecord(report_text=t, external_report_id=f"C{i}") for i, t in enumerate(CORPUS_TEXTS)])
+        corpus.derive_template_map(session, tenant_id=tenant_id)
+    mappings = client.get("/onboarding/corpus/mappings", headers=headers)
+    assert mappings.status_code == 200 and mappings.headers["x-total-count"] == "3" and {m["template_code"] for m in mappings.json()} == {"CT_CHEST", "US_ABDOMEN"}
+    first = mappings.json()[0]["mapping_id"]
+    assert client.post(f"/onboarding/corpus/mappings/{first}/verify", json={}, headers=headers).status_code == 200
+    assert client.get("/onboarding/corpus/mappings", params={"verified": "true"}, headers=headers).json()[0]["mapping_id"] == first
+
+    admin = signed_in(make_platform_user(migrated_db))
+    users = {u["employee_code"]: u for u in admin.get(f"/admin/api/labs/{tenant_id}/users").json()}
+    assert users["R1"]["radiologist_profile_id"] == str(lab["radiologist_profile_id"]) and users["T1"]["radiologist_profile_id"] is None

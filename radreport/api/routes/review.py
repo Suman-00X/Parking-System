@@ -232,7 +232,7 @@ def post_addendum(report_id: uuid.UUID, body: AmendIn, session: DbSession, princ
 
 
 class AcknowledgeIn(BaseModel):
-    outcome: str
+    outcome: str = Field(pattern="^(true_positive|false_positive)$")
     """`true_positive` / `false_positive`."""
 
 

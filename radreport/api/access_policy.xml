@@ -465,6 +465,16 @@
       <param name="mapping_id" in="path" type="uuid" required="true"/>
       <param name="correct_template_id" in="json" type="uuid"/>
     </route>
+    <route id="onboarding.corpus.mappings" method="GET" path="/onboarding/corpus/mappings" roles="lab_admin,radiologist" rate-limit="lab-read" description="Historical reports and their matched template, for verification.">
+      <param name="verified" in="query" type="bool"/>
+      <param name="page" in="query" type="int" pattern="[1-9]\d{0,5}"/>
+      <param name="page_size" in="query" type="int" pattern="[1-9]\d{0,2}"/>
+    </route>
+    <route id="onboarding.collision.findings" method="GET" path="/onboarding/collision-findings" roles="lab_admin,radiologist" rate-limit="lab-read" description="Sound-alike pairs from the collision audit.">
+      <param name="resolution" in="query" type="string" pattern="[a-z_]{1,32}"/>
+      <param name="page" in="query" type="int" pattern="[1-9]\d{0,5}"/>
+      <param name="page_size" in="query" type="int" pattern="[1-9]\d{0,2}"/>
+    </route>
     <route id="onboarding.histogram" method="GET" path="/onboarding/corpus/histogram" roles="lab_admin,radiologist" rate-limit="lab-read">
       <param name="verified_only" in="query" type="bool"/>
     </route>
@@ -532,7 +542,7 @@
     </route>
     <route id="review.alert.acknowledge" method="POST" path="/review/alerts/{alert_id}/acknowledge" roles="radiologist" rate-limit="lab-write" max-body-bytes="4096">
       <param name="alert_id" in="path" type="uuid" required="true"/>
-      <param name="outcome" in="json" type="string" required="true" max-length="500"/>
+      <param name="outcome" in="json" type="string" required="true" pattern="true_positive|false_positive"/>
     </route>
     <route id="review.report.grade" method="POST" path="/review/reports/{report_id}/grade" roles="radiologist" rate-limit="lab-write" max-body-bytes="4096">
       <param name="report_id" in="path" type="uuid" required="true"/>

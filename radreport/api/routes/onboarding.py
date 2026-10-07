@@ -1,8 +1,8 @@
 """The lab side of onboarding: the consents and clinical approvals only the lab's own staff can give.
 
 Order: voices (enroll_voice, training_consent) -> templates (list_candidates, review_candidate,
-decide_merge, apply_batch, revert_batch) -> historical reports (verify_mapping, histogram,
-referrer_prior) -> vocabulary (resolve_finding) -> verbatim transcripts (verbatim_queue,
+decide_merge, apply_batch, revert_batch) -> historical reports (list_mappings, verify_mapping,
+histogram, referrer_prior) -> vocabulary (list_findings, resolve_finding) -> verbatim transcripts (verbatim_queue,
 submit_verbatim) -> boilerplate (export_boilerplate, promote_boilerplate) -> critical-finding
 rules (author_rule, approve_rule). Uploads and mining steps are run from the admin panel.
 """
@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from radreport.api.deps import CurrentPrincipal, DbSession
 from radreport.api.pagination import Page, paginate, set_page_headers
@@ -21,7 +22,8 @@ from radreport.cache.lookups import user_roles
 from radreport.core.errors import ApprovalRequired, BatchBlocked, BatchStateError, ConsentRequired
 from radreport.core.tenancy import Principal
 from radreport.core.types import CandidateReviewStatus, UserRole
-from radreport.db.models.onboarding import ImportBatch
+from radreport.db.models.knowledge import Template
+from radreport.db.models.onboarding import CollisionAuditFinding, CorpusReport, CorpusReportTemplateMap, ImportBatch
 from radreport.onboarding import boilerplate, corpus, critical_rules, lexicon, paired_audio, roster, templates
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
@@ -211,6 +213,16 @@ def verify_mapping(mapping_id: uuid.UUID, body: VerifyMappingRequest, session: D
     return {"mapping_id": str(mapping.id), "match_method": mapping.match_method, "verified": verified, "verification_target": target}
 
 
+@router.get("/corpus/mappings")
+def list_mappings(session: DbSession, principal: CurrentPrincipal, response: Response, verified: bool = False, page: int | None = None, page_size: int | None = None) -> list[dict[str, Any]]:
+    """Historical reports and the template each was matched to, unverified first, for a radiologist to confirm or correct."""
+    tenant_id = _tenant_of(principal, session)
+    query = select(CorpusReportTemplateMap, Template.code, CorpusReport.report_text).join(Template, Template.id == CorpusReportTemplateMap.template_id).join(CorpusReport, CorpusReport.id == CorpusReportTemplateMap.corpus_report_id).where(CorpusReportTemplateMap.tenant_id == tenant_id, CorpusReportTemplateMap.is_verified.is_(verified)).order_by(CorpusReportTemplateMap.confidence.asc().nulls_first(), CorpusReportTemplateMap.id)
+    paged = paginate(session, query, Page.of(page, page_size), scalars=False)
+    set_page_headers(response, paged, "/onboarding/corpus/mappings", {"verified": str(verified).lower()})
+    return [{"mapping_id": str(m.id), "template_id": str(m.template_id), "template_code": code, "match_method": m.match_method, "confidence": float(m.confidence) if m.confidence is not None else None, "is_verified": m.is_verified, "report_excerpt": text[:280]} for m, code, text in paged.rows]
+
+
 @router.get("/corpus/histogram")
 def histogram(session: DbSession, principal: CurrentPrincipal, verified_only: bool = False) -> list[dict[str, Any]]:
     """Power-law head detection — which ~20 templates V1 ships."""
@@ -226,6 +238,16 @@ def referrer_prior(session: DbSession, principal: CurrentPrincipal) -> dict[str,
 
 
 # =========================================================== term mining =====
+@router.get("/collision-findings")
+def list_findings(session: DbSession, principal: CurrentPrincipal, response: Response, resolution: str | None = None, page: int | None = None, page_size: int | None = None) -> list[dict[str, Any]]:
+    """Sound-alike pairs the collision audit found, blocking ones first; pending by default."""
+    tenant_id = _tenant_of(principal, session)
+    query = select(CollisionAuditFinding).where(CollisionAuditFinding.tenant_id == tenant_id, CollisionAuditFinding.resolution == (resolution or "pending")).order_by((CollisionAuditFinding.severity == "block").desc(), CollisionAuditFinding.phonetic_distance.asc().nulls_last(), CollisionAuditFinding.id)
+    paged = paginate(session, query, Page.of(page, page_size))
+    set_page_headers(response, paged, "/onboarding/collision-findings", {"resolution": resolution} if resolution else None)
+    return [{"finding_id": str(f.id), "label_a": f.label_a, "label_b": f.label_b, "phonetic_distance": float(f.phonetic_distance) if f.phonetic_distance is not None else None, "collision_class": f.collision_class, "severity": f.severity, "resolution": f.resolution} for f in paged.rows]
+
+
 class ResolveFindingRequest(BaseModel):
     resolution: str
 
