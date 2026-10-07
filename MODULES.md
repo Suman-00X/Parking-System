@@ -1,11 +1,11 @@
 # Modules and submodules
 
-A map of `radreport/` for someone who has to change it. Eight broad modules; the
-19 Python packages sit inside them. Each module opens with a file table — line
+A map of `radreport/` for someone who has to change it. Nine broad modules; the
+22 Python packages sit inside them. Each module opens with a file table — line
 count, path, one line on what it is for — and then describes each submodule and,
 in pointers, the work it actually does.
 
-**154 Python files, 21,014 lines.** Counts taken from the filesystem on
+**226 Python files, 29,151 lines.** Counts taken from the filesystem on
 2026-10-07. Aggregate tables are at the bottom: [by module](#by-module),
 [by category](#by-category), [data](#data), [HTTP](#http-routes),
 [UI](#ui) and [tests](#tests).
@@ -13,62 +13,94 @@ in pointers, the work it actually does.
 Grouping is by **when the code runs** and **what it may depend on**, not by
 layer. Dependency direction is one-way: Foundation → everything; Engines → the
 Pipeline but never back; Governance reads from Onboarding, Pipeline and Review
-but is never called by them; Surfaces call down and are called by nothing.
+but is never called by them; Surfaces and the Background work loops call down
+and are called by nothing. The two exceptions are deliberate and narrow: any
+module may put a job on the queue (`workers/queue.py`) or write a domain event
+(`events/outbox.py`) inside its own transaction.
 
 | # | Module | Packages | Runs | Files | Lines |
 |---|---|---|---|---:|---:|
-| 1 | [Foundation](#1-foundation) | `core/`, `db/`, `devtools/` | always | 40 | 4,309 |
-| 2 | [Onboarding](#2-onboarding) | `onboarding/` | once per lab, before clinical traffic | 12 | 2,500 |
-| 3 | [Capture](#3-capture) | `ingest/`, `adapters/storage/` | per recording | 5 | 418 |
-| 4 | [Pipeline](#4-pipeline) | `pipeline/`, `knowledge/` | per report | 33 | 4,594 |
-| 5 | [Engines](#5-engines) | `adapters/llm/`, `adapters/asr/` | called by the pipeline | 14 | 1,304 |
-| 6 | [Review and export](#6-review-and-export) | `review/`, `export/` | per draft, then per signature | 10 | 1,294 |
-| 7 | [Governance](#7-governance) | `eval/`, `autonomy/`, `adaptation/`, `monitoring/` | out of band | 17 | 1,989 |
-| 8 | [Surfaces](#8-surfaces) | `api/`, `admin/`, `auth/` | per HTTP request | 23 | 4,606 |
+| 1 | [Foundation](#1-foundation) | `core/`, `db/`, `cache/`, `devtools/` | always | 78 | 8,082 |
+| 2 | [Onboarding](#2-onboarding) | `onboarding/` | once per lab, before clinical traffic | 15 | 3,214 |
+| 3 | [Capture](#3-capture) | `ingest/`, `adapters/storage/` | per recording | 5 | 437 |
+| 4 | [Pipeline](#4-pipeline) | `pipeline/`, `knowledge/` | per report | 41 | 5,575 |
+| 5 | [Engines](#5-engines) | `adapters/llm/`, `adapters/asr/` | called by the pipeline | 16 | 1,522 |
+| 6 | [Review and export](#6-review-and-export) | `review/`, `export/` | per draft, then per signature | 10 | 1,298 |
+| 7 | [Governance](#7-governance) | `eval/`, `autonomy/`, `adaptation/`, `monitoring/` | out of band | 18 | 2,196 |
+| 8 | [Surfaces](#8-surfaces) | `api/`, `admin/`, `auth/` | per HTTP request | 30 | 6,052 |
+| 9 | [Background work](#9-background-work) | `workers/`, `events/` | per job, per event | 13 | 775 |
 
 ---
 
 ## 1. Foundation
 
-The substrate. Tenancy, the schema, configuration, and the primitives the other
-seven modules are not allowed to re-invent. Depends on nothing in this
-repository.
+The substrate. Tenancy, the schema, configuration, caching, and the primitives
+the other eight modules are not allowed to re-invent. Depends on nothing in this
+repository, with two exceptions: `cache/filters.py` uses `knowledge/bloom.py`,
+and the `devtools/` entry points call into the modules they seed or measure.
 
-**40 files, 4,309 lines.** (4 package `__init__` stubs omitted below.)
+**78 files, 8,082 lines.** (5 package `__init__` stubs omitted below; the 23
+migration revisions are listed in their own table further down.)
 
 | Lines | File | Purpose |
 |---:|---|---|
-| 529 | `core/types.py` | Every enum and value set. The migration builds its CHECK constraints from these. |
-| 231 | `db/models/onboarding.py` | §6.10 S0–S7: import batches, artifacts, template candidates, merge proposals, corpus, collisions, readiness checks |
+| 541 | `core/types.py` | Every enum and value set. The migration builds its CHECK constraints from these. |
+| 233 | `db/models/onboarding.py` | §6.10 S0–S7: import batches, artifacts, template candidates, merge proposals, corpus, collisions, readiness checks |
 | 211 | `db/models/reporting.py` | §6.6 drafts, field values, provenance spans, verification findings, critical rules and alerts, autonomy observations |
-| 230 | `db/models/knowledge.py` | §6.5 templates, versions, fields, lexicon sets/terms/variants, autonomy classes, speaker bias |
-| 188 | `core/tenancy.py` | §11.3 exception lists, tenant scope, lifecycle transition gates |
+| 280 | `db/models/knowledge.py` | §6.5 templates, versions, fields, lexicon sets/terms/variants, potential terms and the watcher's watermark, autonomy classes, speaker bias |
+| 213 | `core/tenancy.py` | §11.3 exception lists, tenant scope, lifecycle transition gates |
 | 146 | `devtools/synthetic.py` | Synthetic audio, dictations, patients, `.docx` templates — no PHI on dev machines |
 | 121 | `db/models/modelconfig.py` | §6.14 providers, model definitions, per-(tenant, task) assignments + append-only log |
-| 137 | `db/models/review.py` | §6.7 revisions, edit events, final reports, draft-usefulness reports |
+| 148 | `db/models/review.py` | §6.7 revisions, edit events, final reports, draft-usefulness reports |
 | 141 | `db/models/asr.py` | §6.4 ASR runs, segments, transcripts, labelled utterances |
-| 129 | `db/models/tenancy.py` | `tenant`, `platform_user`, `admin_session`, training-consent event log, branding |
-| 114 | `db/models/evaluation.py` | §6.9 eval sets, items, runs, results |
+| 130 | `db/models/tenancy.py` | `tenant`, `platform_user`, `admin_session`, shared rate-limit counter, training-consent event log, branding |
+| 115 | `db/models/evaluation.py` | §6.9 eval sets, items, runs, results |
 | 111 | `db/models/adaptation.py` | §6.12 verbatim transcripts, training corpus snapshots, adaptation runs |
-| 139 | `db/models/identity.py` | §6.2 app users, radiologist profiles, patients, studies |
-| 95 | `db/session.py` | Engine, `tenant_session()`, `system_session()`, `bind_tenant()` — the RLS GUC binding |
-| 114 | `db/models/orchestration.py` | §6.8 pipeline runs, stage executions, audit log |
-| 152 | `devtools/seed.py` | Seeds the global model catalog, the first product admin, the demo logins and an optional demo lab |
+| 139 | `db/models/identity.py` | §6.2 app users, lab refresh tokens, radiologist profiles, patients, studies |
+| 237 | `db/session.py` | Engine, `tenant_session()`, `system_session()`, `read_session()` on the replica, `bind_tenant()` — the RLS GUC binding |
+| 124 | `db/models/orchestration.py` | §6.8 pipeline runs, stage executions, audit log |
+| 163 | `devtools/seed.py` | Seeds the global model catalog, the first product admin, the demo logins and an optional demo lab |
 | 126 | `db/introspect.py` | Derives the tenancy facts that migration 0002 and the tests both read |
 | 84 | `db/base.py` | Declarative base, `tenant_fk()` composite FKs, tenancy mixins, CHECK builders |
 | 122 | `core/errors.py` | Every domain error the system raises deliberately |
-| 79 | `db/models/ingestion.py` | §6.3 recordings, with every §9.8 quality measurement |
-| 90 | `db/models/__init__.py` | Imports every model so `Base.metadata` is complete for migrations and tests |
-| 129 | `core/config.py` | Settings from env and `.env`, `RADREPORT_`-prefixed |
+| 89 | `db/models/ingestion.py` | §6.3 recordings, with every §9.8 quality measurement |
+| 103 | `db/models/__init__.py` | Imports every model so `Base.metadata` is complete for migrations and tests |
+| 204 | `core/config.py` | Settings from env and `.env`, `RADREPORT_`-prefixed |
 | 56 | `core/text.py` | Sentence splitting that does not cut decimals ("3.2 cm") in half |
-| 65 | `db/bootstrap.py` | Creates the least-privileged app and audit roles (non-owner, so RLS is not bypassed) |
+| 67 | `db/bootstrap.py` | Creates the least-privileged app and audit roles (non-owner, so RLS is not bypassed) |
 | 50 | `db/migrations/env.py` | Alembic environment |
 | 48 | `core/hashing.py` | Content hashing — the idempotency backbone |
 | 38 | `core/logging.py` | structlog configuration |
+| 233 | `db/instrumentation.py` | Counts and times every SQL statement, per request and for the whole process, and logs the slow ones |
+| 217 | `db/sharding.py` | Places each lab on one of several databases, and keeps the lab's own row present on the database that holds its data |
+| 210 | `cache/shared.py` | A cache shared by every request and, with Redis, by every worker and instance; in memory when Redis is not configured |
+| 205 | `core/system_config.py` | Operational thresholds ops can change without a release: a typed registry and how a value is resolved |
+| 149 | `devtools/local_accounts.py` | Creates a working sign-in for every role on a developer machine, and writes them to a local file |
+| 148 | `devtools/query_report.py` | Finds the statements that cost the most and the indexes that are missing, from the database's own statistics |
+| 129 | `devtools/template_eval.py` | Measures how many of a template's fields the parser finds alone, and with the template model behind it |
+| 119 | `devtools/loadtest.py` | Puts a running server under concurrent load and reports throughput, latency, statements per request and connections |
+| 99 | `cache/request.py` | A cache that lives for one HTTP request, so a lookup repeated inside it reaches the database once |
+| 97 | `devtools/cost_history.py` | Writes a synthetic history of pipeline runs and stage costs for one lab, so the cost dashboard has something to show |
+| 96 | `db/async_session.py` | The async counterpart of `db/session.py`: the same lab binding and pool settings, on an asyncio driver |
+| 95 | `cache/filters.py` | Per-lab Bloom filters that let common lookups skip the database when the answer is a definite "no" |
+| 95 | `cache/lookups.py` | The lookups worth caching, returned as frozen snapshots rather than ORM rows |
+| 72 | `db/table_health.py` | Dead rows waiting for vacuum, when vacuum last ran, and how much space each table takes |
+| 65 | `db/shards.py` | Operating the shards: migrate every one, see where labs live, plan what adding a shard would move, pin a lab |
+| 52 | `db/models/events.py` | The outbox written alongside each change, and what each consumer has applied |
+| 51 | `db/models/jobs.py` | The job queue workers claim from |
+| 45 | `db/models/ops.py` | Tables ops change without a code release: `system_config` and `lab_shard` |
+| 40 | `devtools/training_export.py` | Exports radiologists' approvals from the labs given, for fine-tuning the template model |
+| 36 | `cache/keys.py` | Cache keys that always carry the lab they belong to, so a cached value cannot be served to another lab |
+| 35 | `devtools/storage_report.py` | Prints table health and what compression saves; run as the database owner so every row is counted |
+| 35 | `db/models/llm_cache.py` | Stored model responses, so a repeat of an identical request is answered without a call |
+| 31 | `db/bulk.py` | Writes many rows in a few statements, for imports where one INSERT per row is the bottleneck |
+
+`devtools/data/template_eval/` holds the fixtures `template_eval.py` scores: eight
+template documents as text and `gold.json` with the fields each should yield.
 
 ### `core/config.py` — settings
-Typed settings objects for storage, audio gates, LLM, ASR and observability,
-loaded once and cached.
+Typed settings objects for the database (pool, replica, shards), events, storage,
+audio gates, LLM, ASR, observability and lab sign-in, loaded once and cached.
 
 - Resolves environment into `Settings` with per-concern sub-objects
 - Holds the audio-gate thresholds ingest reads
@@ -137,9 +169,47 @@ B` — both rows pass their own RLS policy, and the leak is silent.
 tenant-scoped tables. It issues `SET LOCAL app.current_tenant_id` inside the
 transaction so the database refuses out-of-tenant rows on its own.
 
-- `tenant_session()` / `system_session()` and the engine/sessionmaker singletons
+- `tenant_session()` / `system_session()` and the engine/sessionmaker singletons;
+  `engine_options()` sizes the pool from settings and `connection_budget()` warns
+  when the pools outgrow the server's `max_connections`
+- The binding is lazy: `_bind_scope()` records the lab on the session, and an
+  `after_begin` listener (`_apply_scope()`) issues it as the first statement of
+  every transaction, so a session that commits and goes on reading is still bound
+- `read_session()` — read-only (`SET TRANSACTION READ ONLY`) and routed to the
+  replica when one is configured, has caught up (`replica_lag_seconds()`) and this
+  browser has not just written (`replica_url_for_reads()`); otherwise the primary
+- `side_session()` — a small separate pool for the access middleware's rate-limit and sign-in checks
 - `bind_tenant()` and `select_org()` for an admin acting on one lab — `select_org()` writes the `admin_org_selected` audit row
-- `SET LOCAL` scoping means a pooled connection cannot leak a binding
+- `set_config(..., true)` is transaction-local, so a pooled connection cannot leak a binding
+
+### `db/async_session.py` — the async sessions
+The same binding and pool settings on psycopg 3's asyncio driver. Endpoints move
+onto it one at a time; a route on it runs on the event loop, so a slow query no
+longer holds one of the threadpool's threads.
+
+- `get_async_engine()`; `async_tenant_session()`, `async_system_session()`, `async_read_session()`
+- The health probe and the recording list (`GET /ingest/recordings`) already use it
+
+### `db/instrumentation.py` — statement counting and timing
+- `install()` puts timing listeners on every engine; `query_scope()` / `current_stats()` per request or job
+- A slow statement (`slow_query_ms`) is logged without its parameters
+- `METRICS` — process-wide counts and percentiles, read by `GET /admin/api/ops/queries`;
+  `QueryMetricsMiddleware` opens one scope per request
+
+### `db/sharding.py` and `db/shards.py` — labs across databases
+Off until `RADREPORT_DB__SHARDS` names more than one database. Then the
+directory database holds the platform tables, the lab list and the pins, and each
+shard holds a full schema with its labs' rows.
+
+- `HashRing` — consistent hashing with 128 virtual nodes, so adding a shard moves about 1/N of labs
+- `pin_lab()` overrides the ring through `lab_shard`; `url_for()` picks the connection for a lab
+- `sync_tenant_rows()` copies a changed `tenant` row to the shard that holds the lab; `fan_out()` asks every shard and merges
+- `python -m radreport.db.shards migrate | where | plan --add <shard> | pin <lab> <shard>`
+
+### `db/bulk.py` and `db/table_health.py` — bulk writes, table health
+- `bulk_insert()` groups rows by the columns they set and sends batches of 1,000; used by the corpus and lexicon imports and by each new lexicon version
+- `table_stats()` reads the statistics views (dead rows, last vacuum, size); `BLOAT_RATIO` flags a table
+- `compression_ratio()` measures what compression saves on a column — owner only, since it must read every row
 
 ### `db/introspect.py` — tenancy facts, derived
 Computes the tenancy classification from `Base.metadata` rather than a
@@ -157,16 +227,16 @@ migration because passwords do not belong in version control.
 - `ensure_login_user()` + a `python -m radreport.db.bootstrap` entry point
 - Enforces that the app login is neither superuser nor table owner — both bypass RLS
 
-### `db/models/` — the §6 schema (13 files, 57 tables)
+### `db/models/` — the §6 schema (17 files, 68 tables)
 One file per §6 area; importing the package registers every table on
 `Base.metadata`. A model file not imported here is invisible to both Alembic and
 the RLS coverage test.
 
-- `tenancy.py` — tenant lifecycle, platform users, admin sessions, consent log
-- `identity.py` — app users, radiologist profiles, patients, studies
+- `tenancy.py` — tenant lifecycle, platform users, admin sessions, the shared rate-limit counter, consent log
+- `identity.py` — app users, lab refresh tokens, radiologist profiles, patients, studies
 - `ingestion.py` — `recording`: one audio file, one report
 - `asr.py` — ASR runs, segments, transcripts, utterances
-- `knowledge.py` — lexicon sets/terms/variants, templates, versions, fields, speaker bias
+- `knowledge.py` — lexicon sets/terms/variants, potential terms and the watch state, templates, versions, fields, speaker bias
 - `onboarding.py` — import batches, artifacts, candidates, merge proposals, audit findings
 - `reporting.py` — routing decisions, drafts, field values, provenance, verification, alerts
 - `review.py` — revisions, edit events, final reports, usefulness reports
@@ -174,27 +244,75 @@ the RLS coverage test.
 - `evaluation.py` — eval sets/items/runs/results, with the canonical vs. per-lab split
 - `modelconfig.py` — providers, model definitions, per-tenant task assignments and their log
 - `adaptation.py` — verbatim transcripts, training-corpus snapshots, adaptation runs
+- `jobs.py` — `job`, the queue `workers/` drains
+- `events.py` — `outbox_event` and `consumed_event`
+- `llm_cache.py` — `llm_response_cache`
+- `ops.py` — `system_config` and `lab_shard`
 
-### ⚠️ `db/migrations/versions/` — five revisions, 517 lines
+### ⚠️ `db/migrations/versions/` — 23 revisions, 1,683 lines
 **Append-only. Never edit an applied migration — add a new one.** Editing one
 changes what a deployed database is assumed to contain, which the schema itself
 cannot detect. `0001` is generated from `Base.metadata`; every revision after it
-is a hand-written diff.
+is a hand-written diff. Because `0001` builds from the live models, a fresh
+database may already hold a later revision's end state, so later revisions check
+the database before each step.
 
 `0002` and `0005` need the database **owner** connection (`make migrate-owner`),
 because they create roles and grant on new tables. Run as the app role they fail
-with a bare permissions error that does not say so.
+with a bare permissions error that does not say so. `0007`, `0008`, `0012`–`0015`
+and `0017`–`0020` also issue `GRANT`s, and `0013`, `0014` and `0017` hand
+functions to the `BYPASSRLS` view-owner role.
 
 | Rev | Lines | File | What it does |
 |---|---:|---|---|
-| 0001 | 45 | `0001_initial_schema.py` | The full §6 model, with `tenant_id` and composite FKs from day one. Short because it builds from the models rather than restating them. |
-| 0002 | 177 | `0002_rls_and_roles.py` | `FORCE ROW LEVEL SECURITY`, the app/audit role split, the three enumerated cross-tenant views. **Owner only.** |
-| 0003 | 86 | `0003_partitions.py` | Monthly partitions for `asr_segment`, `edit_event`, `audit_log`, plus a default partition |
-| 0004 | 64 | `0004_template_version_spoken_code.py` | Scopes spoken-study-code uniqueness to `is_current`. The plain `UNIQUE` made a second template version impossible. |
-| 0005 | 145 | `0005_admin_auth_and_model_config.py` | Admin passwords + `admin_session`, `api_key_env_var`, the two ASR task keys. **Owner only.** |
+| 0001 | 29 | `0001_initial_schema.py` | Creates the whole schema, generated from the model definitions rather than hand-written table by table. |
+| 0002 | 136 | `0002_rls_and_roles.py` | Turns on row-level security and splits the database roles, so one lab's rows are unreachable from another lab's connection. **Owner only.** |
+| 0003 | 67 | `0003_partitions.py` | Splits the three fastest-growing tables (`asr_segment`, `edit_event`, `audit_log`) into monthly partitions. |
+| 0004 | 53 | `0004_template_version_spoken_code.py` | Lets a template keep its spoken code across versions, by scoping the uniqueness rule to the current version only. |
+| 0005 | 98 | `0005_admin_auth_and_model_config.py` | Adds admin logins and makes the model configuration writable from the admin panel instead of seed scripts only. **Owner only.** |
+| 0006 | 89 | `0006_autonomous_release.py` | Adds the schema that lets an approved class of reports be filed without a human reviewer. |
+| 0007 | 79 | `0007_lab_user_auth.py` | Adds lab-user sign-in: a password on each staff account and a per-lab table of refresh tokens. |
+| 0008 | 39 | `0008_shared_rate_limits.py` | Adds a request counter every worker shares, for the rate limits that must hold across processes. |
+| 0009 | 40 | `0009_batch_platform_submitter.py` | Records which product admin submitted an import batch run from the admin panel. |
+| 0010 | 31 | `0010_unlogged_rate_limits.py` | Makes the shared rate-limit counter unlogged, now that every request counts against it. |
+| 0011 | 39 | `0011_lookup_indexes.py` | Adds the indexes the query report found missing: foreign keys the hot paths join on, and the cost and per-task metric reads. |
+| 0012 | 52 | `0012_system_config.py` | Adds `system_config`: operational thresholds ops can change without a release, platform-wide or per lab. |
+| 0013 | 123 | `0013_job_queue.py` | Adds the job queue: a `job` table under row-level security, and `claim_jobs()`, which hands out work with `FOR UPDATE SKIP LOCKED`. |
+| 0014 | 102 | `0014_outbox.py` | Adds the transactional outbox: domain events written with each change, relayed once, applied once per consumer. |
+| 0015 | 215 | `0015_partitions_v2.py` | Partitions `recording` by lab and `stage_execution` by month, keeps monthly partitions coming, and closes direct access to partitions. |
+| 0016 | 112 | `0016_vacuum_and_compression.py` | Tunes autovacuum on the high-churn tables and compresses the large text and JSON columns. |
+| 0017 | 93 | `0017_cost_reads_and_eval_view.py` | Adds the cross-lab cost reads behind the cost dashboard, and a materialized copy of the canonical eval set. |
+| 0018 | 64 | `0018_llm_response_cache.py` | Adds `llm_response_cache`: stored model replies keyed by lab and an exact request fingerprint. |
+| 0019 | 29 | `0019_lab_shard.py` | Adds `lab_shard`: labs pinned to a database shard regardless of the hash ring. |
+| 0020 | 73 | `0020_potential_lexicon_terms.py` | Adds `potential_lexicon_term` and `lexicon_watch_state`: phrases radiologists use that the lexicon lacks, and how far the watcher has read. |
+| 0021 | 48 | `0021_variant_review.py` | Adds confidence and review status to heard variants, so only confident matches are used unreviewed. |
+| 0022 | 44 | `0022_template_parse_task.py` | Allows the `template_parse` task in model assignments and evaluation runs. |
+| 0023 | 28 | `0023_template_source_text.py` | Keeps the text of each uploaded template on its import candidate, for training the template model. |
 
-`db/migrations/env.py` (74 lines) is the Alembic environment and is ordinary
+`db/migrations/env.py` (50 lines) is the Alembic environment and is ordinary
 code, not history — it is listed in the Foundation table above.
+
+### `core/system_config.py` — settings ops may change
+Thresholds that should not need a release to change, held in `system_config`.
+
+- `SETTINGS` declares each one once, with its type, bounds and environment variable
+- `resolve()` / `resolve_all()` — a lab's own row, then the platform row, then the environment variable, then the code default
+- `set_value()` / `reset_value()` write an audit entry; `SettingRefused` for a bad value
+- `adapter_thresholds()` gathers the five numbers the adaptation gates read
+
+### `cache/` — request and shared caches
+Lab config, user roles, model assignments and admin sessions are read on almost
+every request. Two layers keep that off the database, and every key carries its lab.
+
+- `keys.py` — `key()` is the only way to build a `CacheKey`, and it always takes a lab (or `GLOBAL`)
+- `request.py` — `request_cached()` loads once per request; `RequestCacheMiddleware` opens the scope
+- `shared.py` — `cached()` reads through the request layer, then `RedisBackend`
+  (when `RADREPORT_REDIS_URL` is set) or `MemoryBackend`; `invalidate_after_commit()`
+  drops a value only once the change is committed. Values are JSON, never pickles
+- `lookups.py` — `tenant_config()` and `user_roles()` as frozen snapshots; `forget_tenant()` / `forget_user()`
+- `filters.py` — per-lab Bloom filters (`knowledge/bloom.py`) for "is this audio
+  hash already stored" and "is this a term the lab knows". Only a "no" skips the
+  database; the unique constraint stays the final word
 
 ### `devtools/seed.py` — catalog and demo seed
 Seeds the global model catalog (`tenant_id IS NULL`, so a price change touches
@@ -215,6 +333,19 @@ real FLAC/WAV that passes the ingest gates, plus generated clinical text.
 - `synth_audio()` / `synth_lossy_audio()` — valid and deliberately-rejectable files
 - `synth_dictation()`, `synth_patient_fields()`, `synth_template_docx()`
 
+### `devtools/` — the other developer and ops tools
+Each is a `python -m radreport.devtools.<name>` entry point. `local_accounts`,
+`cost_history` and `loadtest` call `require_local()` first and refuse outside
+local, test and development.
+
+- `local_accounts.py` — a sign-in for every platform and lab role, written to a gitignored file (`make seed-local`)
+- `cost_history.py` — synthetic runs and stage costs for one lab, marked `trigger=backfill`, with one deliberate spike
+- `loadtest.py` — concurrent virtual users, each with its own lab account, against a read-heavy route mix
+- `query_report.py` — heaviest statements, unindexed foreign keys, sequential-scan-heavy tables, unused indexes, as markdown
+- `storage_report.py` — `db/table_health.py` printed for ops
+- `template_eval.py` — scores the template parser, alone and with the template model, against `data/template_eval/`
+- `training_export.py` — runs `knowledge/training_data.py` for the labs named, one lab-scoped session each
+
 ---
 
 ## 2. Onboarding
@@ -223,19 +354,22 @@ The S0–S7 onboarding stages: everything that turns a signed contract into a la
 pipeline can serve. Runs once per lab and must finish before `tenant.status` can
 move `onboarding → pilot`.
 
-**12 files, 2,500 lines.** (1 package `__init__` stub omitted below.)
+**15 files, 3,214 lines.** (1 package `__init__` stub omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
-| 390 | `onboarding/templates.py` | S1 — candidates, merge proposals, promotion under R18 |
-| 285 | `onboarding/lexicon.py` | S3 — term mining and the blocking collision audit |
-| 329 | `onboarding/corpus.py` | S2 — corpus load, derived template map, usage histogram, referrer prior |
+| 421 | `onboarding/templates.py` | S1 — candidates, merge proposals, promotion under R18 |
+| 302 | `onboarding/lexicon.py` | S3 — term mining and the blocking collision audit |
+| 333 | `onboarding/corpus.py` | S2 — corpus load, derived template map, usage histogram, referrer prior |
 | 243 | `onboarding/critical_rules.py` | S6 — seed candidates, author, approve critical-findings rules |
-| 252 | `onboarding/paired_audio.py` | S4 — verbatim queue, corpus hours, surface-variant mining |
+| 281 | `onboarding/paired_audio.py` | S4 — verbatim queue, corpus hours, surface-variant mining |
+| 227 | `onboarding/shorthand.py` | S3 — reads a lab's shorthand reference sheet into lexicon terms, so ASR is biased toward the abbreviations said |
+| 194 | `onboarding/template_llm.py` | S1 — a small model reads a template the parser was unsure of; only fields the document names are kept |
+| 187 | `onboarding/term_watch.py` | Watches what radiologists type for vocabulary the lexicon lacks; approvals become a new lexicon version |
 | 186 | `onboarding/boilerplate.py` | S5 — rank normals by corpus share, CSV export |
-| 163 | `onboarding/readiness.py` | S7 — the seven checks gating onboarding → pilot |
-| 181 | `onboarding/roster.py` | S0 — roster import, voice enrollment, the two separate consents |
-| 137 | `onboarding/registration.py` | Lab registration and the tenant lifecycle |
+| 165 | `onboarding/readiness.py` | S7 — the seven checks gating onboarding → pilot |
+| 190 | `onboarding/roster.py` | S0 — roster import, voice enrollment, the two separate consents |
+| 151 | `onboarding/registration.py` | Lab registration and the tenant lifecycle |
 | 219 | `onboarding/template_parse.py` | S1's `.docx` parser, stdlib only. PDF refused, not half-parsed. |
 | 114 | `onboarding/batches.py` | The import-batch lifecycle every stage shares |
 
@@ -282,6 +416,14 @@ level without a dependency.
 - `extract_paragraphs()`, `parse_template()`, `infer_structure()`
 - Refuses PDF explicitly rather than half-parsing it into mangled fields
 
+### `onboarding/template_llm.py` — S1's model fallback
+Runs only when the parser was unsure (`needs_fallback()`, against
+`templates.llm_fallback_below`) and the lab has a `template_parse` model assigned.
+
+- `fallback_for()` resolves the model; `apply_fallback()` asks it for the fields as JSON
+- `fields_from_reply()` drops every field whose label is not in the document (`_grounded()`), so nothing invented reaches a radiologist
+- `merge()` — the parser wins where both found a label; any failure leaves the parser's result, with a warning
+
 ### `onboarding/corpus.py` — S2, historical report corpus
 Signed reports are prose outcomes, not dictations, so nothing is trained here.
 What a corpus buys is configuration and measurement: which templates are
@@ -299,6 +441,24 @@ is designed rather than accidental.
 - `mine_terms()` / `run_mining()` over the corpus and declared shorthand
 - `get_or_create_tenant_lexicon()`, `record_surface_variants()`
 - `run_collision_audit()` + `resolve_finding()` — the phonetic clash gate
+
+### `onboarding/shorthand.py` — S3, shorthand reference sheets
+The sheet transcriptionists keep ("LLL = Left Lower Lobe") is the most direct
+source of the abbreviations radiologists say. Uploaded from the admin panel.
+
+- `extract_text()` from PDF, Word or text; `find_mappings()` with eight patterns, including two-column tables and slash groups
+- `acronym_fit()` scores how well the short form spells the formal one
+- `import_shorthand_reference()` writes lexicon terms, each with an audit entry naming the file and line;
+  `build_keyterms()` then biases ASR toward them
+
+### `onboarding/term_watch.py` — new vocabulary from live edits
+Runs after onboarding, on clinical traffic: the `watch_lexicon` job scans every
+lab's edit events once a day, from a per-lab watermark in `lexicon_watch_state`.
+
+- `added_text()` and `candidates()` — phrases, acronyms and long words an edit added, never filler
+- `scan_edits()` keeps those the lexicon and its synonyms do not cover, counted in `potential_lexicon_term`
+- `approve()` makes the next lexicon version (`knowledge/lexicon_versions.py`); `reject()` sets terms aside.
+  A radiologist decides, from `/lexicon` or the `/ui/lexicon` screen
 
 ### `onboarding/paired_audio.py` — S4, verbatim annotation
 The project's critical path. The ASR bake-off needs verbatim ground truth on the
@@ -342,13 +502,13 @@ The capture-only path. Ships before anything that interprets audio, so the
 `current` gold partition accumulates while the rest is being built — and must
 keep working when every other module is down.
 
-**5 files, 418 lines.** (2 package `__init__` stubs omitted below.)
+**5 files, 437 lines.** (2 package `__init__` stubs omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
 | 186 | `ingest/audio_gates.py` | §9.8 quality gates: format, SNR, silence, duration |
-| 113 | `ingest/service.py` | Capture-only ingest, idempotent by content hash |
-| 117 | `adapters/storage/object_store.py` | S3-compatible store (SSE-KMS) + in-memory double |
+| 128 | `ingest/service.py` | Capture-only ingest, idempotent by content hash |
+| 121 | `adapters/storage/object_store.py` | S3-compatible store (SSE-KMS) + in-memory double |
 
 ### `ingest/audio_gates.py` — §9.8 quality gates
 Two kinds of failure, kept apart deliberately. A reject is permanent data loss;
@@ -362,7 +522,9 @@ a warning is a recording worth keeping with a caveat attached.
 Record → validate → FLAC → object store → `recording` row → audit. No pipeline,
 no ASR, no UI, on purpose.
 
-- `ingest_recording()` — idempotent by `content_hash`, so a retried upload is a no-op
+- `ingest_recording()` — idempotent by `content_hash`, so a retried upload is a no-op;
+  the lab's Bloom filter (`cache/filters.py`) skips the duplicate lookup when the hash is definitely new
+- The service itself starts nothing; the upload route queues the `run_pipeline` job (see [Background work](#9-background-work))
 - Classifies `capture_device_class` (`legacy` / `current`), which decides gold-set partitioning
 - `force_legacy_device_class()` for backfilling historical uploads
 
@@ -385,12 +547,12 @@ deliberately the ones carrying the safety properties — replayable,
 bit-reproducible, testable with no model bound. The rest call a model or an ASR
 engine, and each degrades explicitly when none is bound.
 
-**33 files, 4,594 lines.** (3 package `__init__` stubs omitted below.)
+**41 files, 5,575 lines.** (3 package `__init__` stubs omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
 | 260 | `pipeline/stages/routing.py` | Stage 9 — the §8.3.4 cascade. Declines rather than picking the nearest of twenty. |
-| 223 | `pipeline/stages/normalise.py` | Stage 3 — phonetic resolution with the margin guard (stops LMC resolving to LMP) |
+| 245 | `pipeline/stages/normalise.py` | Stage 3 — phonetic resolution with the margin guard (stops LMC resolving to LMP) |
 | 216 | `pipeline/stages/extract.py` | Stage 10 — per-section extraction, k=3, provenance mandatory |
 | 172 | `pipeline/stages/verify/rules.py` | Stage 13 — the deterministic §8.3.8 contradiction checks |
 | 186 | `pipeline/stages/persist.py` | Stage 16 — the seam to the review surface; emits every domain row |
@@ -404,11 +566,19 @@ engine, and each degrades explicitly when none is bound.
 | 164 | `pipeline/stages/segment.py` | Stage 5 — segment and classify utterances. Labels only; nothing deleted. |
 | 167 | `pipeline/stages/critical.py` | Stage 7 — critical findings on the transcript; writes the alert row |
 | 178 | `pipeline/stages/preprocess.py` | Stage 1 — VAD, SNR, peak normalisation |
-| 161 | `pipeline/graph.py` | The orchestrator: `stage_execution` rows, commit discipline, shadow mode |
+| 164 | `pipeline/graph.py` | The orchestrator: `stage_execution` rows, commit discipline, shadow mode |
 | 252 | `pipeline/state.py` | `PipelineState` — the object every stage reads |
-| 118 | `pipeline/stages/providers.py` | Per-tenant knowledge snapshot, injected (stages get no DB session) |
+| 124 | `pipeline/stages/providers.py` | Per-tenant knowledge snapshot, injected (stages get no DB session) |
 | 152 | `pipeline/stages/post_correction.py` | Stage 2c — the only stage allowed to rewrite the transcript |
-| 140 | `knowledge/consent.py` | Derived training eligibility; `G6_legal_basis` |
+| 153 | `knowledge/consent.py` | Derived training eligibility; `G6_legal_basis` |
+| 220 | `knowledge/languages.py` | Radiology terms said or typed in Hindi (Devanagari or Latin script), French or Spanish, mapped to the English term |
+| 154 | `knowledge/synonyms.py` | Two different words for the same finding ("consolidation", "infiltrate"); optional RadLex lookups |
+| 122 | `knowledge/variant_review.py` | A heard phrase's match to a term: use it, ask a radiologist, or hide it |
+| 119 | `pipeline/runner.py` | Runs the pipeline for one recording from what the database holds, as the `run_pipeline` job |
+| 115 | `knowledge/training_data.py` | Radiologists' approvals as training examples for a lab-tuned template model, from labs that agreed |
+| 98 | `knowledge/term_lookup.py` | Which of a lab's lexicon terms a piece of text refers to: exact, short form, heard variant, synonym, or translated |
+| 64 | `knowledge/bloom.py` | A Bloom filter: "definitely not present" or "maybe present", no dependency |
+| 45 | `knowledge/lexicon_versions.py` | Which lexicon version is current, and making the next one |
 | 125 | `pipeline/stages/asr.py` | Stage 2 — single-engine ASR with keyterm biasing |
 | 130 | `pipeline/v1.py` | The 16-stage graph, plus release at GA. The only place edges are defined. |
 | 139 | `pipeline/stages/compose.py` | Stage 12 — deterministic render from `render_spec`, grounded atoms only |
@@ -419,6 +589,9 @@ engine, and each degrades explicitly when none is bound.
 | 77 | `pipeline/context.py` | `RunContext`: cost accounting, budget cap, model resolution |
 | 75 | `pipeline/contracts.py` | `Stage` / `StageResult` — no stage writes domain tables |
 | 5 | `pipeline/stages/verify/__init__.py` | Re-exports the verification stage |
+
+`knowledge/data/` holds the curated lists those modules load: `synonyms.csv`
+(44 lines) and `languages/hi.csv`, `fr.csv`, `es.csv` (52, 26 and 27 lines).
 
 ### Orchestration
 
@@ -453,6 +626,16 @@ restructuring.
 - `PipelineGraph` runs `StageSpec`s in declared order against `PipelineState`
 - One `stage_execution` row per stage, with cost, tokens and the resolved model id
 - `new_run()` opens the `pipeline_run`; failure handling and partial-run recording
+
+#### `pipeline/runner.py` — the `run_pipeline` job
+How a recording actually reaches the graph. An upload queues the job in the same
+transaction as the `recording` row; `python -m radreport.workers` claims it and
+calls this module with a session already bound to the job's lab.
+
+- `load_template_candidates()` reads the lab's routable templates
+- `default_graph_factory()` builds the graph with the configured engines; `set_graph_factory()` replaces it in tests
+- `run_recording()` creates the run, executes it, and emits `draft.ready` (and `report.signed` for a released report)
+- A failed stage is recorded on its `pipeline_run` and the job still completes: retrying the same input reproduces the same failure
 
 #### `pipeline/v1.py` — the edges
 The only place the stage order is defined. Adding or reordering a stage is a
@@ -655,6 +838,38 @@ conditions, re-derivable at any time.
 - `record_consent_event()` — the audit chain behind a withdrawal
 - `verify_g6_legal_basis()` — the adaptation gate reads this, not a boolean column
 
+#### `knowledge/term_lookup.py` — text to lexicon term
+Used by the term watcher to decide whether a phrase is already known.
+
+- `lab_terms()` builds the lab's lookup once per request
+- `find_term()` tries exact forms, then the curated synonym set, then the English for a term in one of the lab's languages
+- `is_unknown()` — the lab's Bloom filter answers first when it can say "definitely not"
+
+#### `knowledge/synonyms.py` and `knowledge/languages.py` — same finding, other words
+Sound-alike matching cannot tell that "consolidation" and "infiltrate" mean the
+same finding, or that a Hindi word is a known term.
+
+- `synonyms.py` — `concept_of()`, `semantic_similarity()` over `data/synonyms.csv`;
+  `RadLexClient` only with `BIOPORTAL_API_KEY`. The local set carries no external
+  codes: an invented SNOMED or RadLex id is worse than none
+- `languages.py` — a lab turns languages on in its settings; `glossary()` loads
+  `data/languages/{hi,fr,es}.csv`, `find_foreign()` takes the longest known phrase,
+  `translate()` returns spans with their English. An online translator, when
+  configured, gets one unknown Devanagari word at a time, never the sentence
+
+#### `knowledge/variant_review.py` — confident matches only
+- `match_confidence()` — the best of synonym similarity and a blend of sound-alike and spelling distance
+- `decide()` — `auto_approved` above the auto threshold, `pending` above the review threshold, hidden below
+- `threshold_arm()` places a lab in an experiment arm; `record_review()` counts an override when a radiologist reverses an automatic approval; `arm_stats()` compares arms
+
+#### `knowledge/lexicon_versions.py`, `bloom.py`, `training_data.py`
+- `current_set()` — the filter every reader uses: a set with no newer version of the same name;
+  `new_version()` copies terms and variants forward, in batched inserts
+- `BloomFilter.for_capacity()` — sized from item count and false-positive rate; double hashing over one blake2b digest
+- `training_data.export()` — approved templates with their source text, sound-alike answers and
+  new-term decisions as JSONL, split by a stable hash, only from labs with `training.share_approvals`
+  on. Nothing from a report or transcript leaves
+
 ---
 
 ## 5. Engines
@@ -662,12 +877,13 @@ conditions, re-derivable at any time.
 The only place a vendor is named. Everything above calls an interface; swapping
 a provider is configuration, not an engineering project.
 
-**14 files, 1,304 lines.** (3 package `__init__` stubs omitted below.)
+**16 files, 1,522 lines.** (3 package `__init__` stubs omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
 | 314 | `adapters/asr/rover.py` | ROVER multi-engine voting. NULL is a candidate, which suppresses single-engine insertions. |
-| 144 | `adapters/llm/registry.py` | Resolves "which model serves task T for tenant X"; refuses activation without a gold-set eval run |
+| 172 | `adapters/llm/response_cache.py` | Answers a repeat of an identical model request from a stored reply, so re-running a recording does not pay twice |
+| 161 | `adapters/llm/registry.py` | Resolves "which model serves task T for tenant X"; refuses activation without a gold-set eval run |
 | 136 | `adapters/llm/anthropic_client.py` | Anthropic client with cache-control blocks and usage accounting |
 | 113 | `adapters/llm/prompt.py` | `PromptBundle` — makes a cache-hostile prompt order unexpressible |
 | 97 | `adapters/llm/openai_compat.py` | OpenAI-compatible client, for locally hosted models |
@@ -677,6 +893,7 @@ a provider is configuration, not an engineering project.
 | 105 | `adapters/llm/concurrency.py` | Concurrency limiter and circuit breaker |
 | 57 | `adapters/llm/pricing.py` | Corrected Sonnet 5 pricing and cached-call cost accounting |
 | 61 | `adapters/asr/base.py` | `ASREngine` protocol, word timings, config hashing for idempotent reruns |
+| 29 | `adapters/llm/factory.py` | Builds the client for a resolved model: Anthropic SDK for Anthropic, the OpenAI-compatible client for everything else |
 
 ### `adapters/llm/base.py` — the LLM interface
 One interface over cloud and local providers. A local model is a row in
@@ -707,6 +924,16 @@ names a model. Skipping this hardcodes a model id in seven places.
 
 - `TaskModelResolver` → `ResolvedModel`, per tenant per task
 - `activate_assignment()` refuses activation without a gold-set `eval_run` — a rule Postgres `CHECK` cannot express
+- Resolutions are read through the shared cache (`cache/shared.py`), five minutes shared and 30 seconds local
+
+### `adapters/llm/response_cache.py` — repeat requests answered from storage
+- `request_fingerprint()` covers everything that changes the answer, including the model id
+- `cacheable()` — a sampled request with no seed is meant to vary, so it is never cached; k-sample sets stay distinct
+- `CachingLLMClient` over `PostgresResponseStore` (`llm_response_cache`, lab-isolated) or `SharedResponseStore`;
+  `with_response_cache()` wraps a client as configured. A hit costs nothing and reports what it saved
+
+### `adapters/llm/factory.py` — client construction
+- `client_for()` — `AnthropicClient` for an Anthropic model, `OpenAICompatibleClient` for everything else
 
 ### `adapters/llm/pricing.py` — cost accounting
 Makes the real per-stage number observable, which is the only way the
@@ -766,16 +993,16 @@ mistake, and where they agree the word is almost certainly right.
 The human loop and what leaves the building. The schema for this was designed in
 Phase 0; this module is the behaviour.
 
-**10 files, 1,294 lines.** (2 package `__init__` stubs omitted below.)
+**10 files, 1,298 lines.** (2 package `__init__` stubs omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
 | 343 | `review/session.py` | Open a draft, record revisions, `active_edit_seconds`, categorised edit events |
-| 187 | `review/signing.py` | The four refusals between a draft and a signed record; addenda |
+| 189 | `review/signing.py` | The four refusals between a draft and a signed record; addenda |
 | 160 | `export/hl7.py` | HL7 v2 ORU^R01, MLLP-framed |
 | 148 | `review/grading.py` | G0–G4, CSE rate, and the feed into autonomy accrual + CUSUM |
 | 131 | `export/fhir.py` | FHIR R4 DiagnosticReport + transaction bundle |
-| 139 | `review/queue.py` | Priority → alert → flagged count → oldest, filtered by role |
+| 141 | `review/queue.py` | Priority → alert → flagged count → oldest, filtered by role |
 | 80 | `review/feedback.py` | §9.6's "this draft was useless", actually recorded |
 | 104 | `review/rbac.py` | The four roles, genuinely different (an assistant may not sign) |
 | 1 | `review/__init__.py` | Package docstring |
@@ -849,7 +1076,7 @@ system its customer runs.
 Measurement, and the machinery that decides what the rest of the system is
 allowed to do unsupervised. Reads from everything; called by nothing.
 
-**17 files, 1,989 lines.** (4 package `__init__` stubs omitted below.)
+**18 files, 2,196 lines.** (4 package `__init__` stubs omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
@@ -857,8 +1084,9 @@ allowed to do unsupervised. Reads from everything; called by nothing.
 | 219 | `eval/goldset.py` | §5.3-stratified assembly, freeze, permanent training exclusion |
 | 262 | `eval/bakeoff.py` | ASR bake-off: per-partition, insertions tracked independently |
 | 189 | `monitoring/drift.py` | PSI against an explicit baseline window |
-| 172 | `autonomy/grant.py` | Bayesian sequential grant, mechanical CUSUM revocation |
-| 173 | `adaptation/gates.py` | §8.6.5's six gates; two unimplemented and failing closed |
+| 204 | `monitoring/costs.py` | What the pipeline costs, per lab and per stage, and the days that cost far more than usual |
+| 174 | `autonomy/grant.py` | Bayesian sequential grant, mechanical CUSUM revocation |
+| 174 | `adaptation/gates.py` | §8.6.5's six gates; two unimplemented and failing closed |
 | 176 | `eval/harness.py` | Eval runner, scopeable to one `task_key` |
 | 119 | `eval/gates.py` | Release-gate evaluation with per-stratum breakdowns |
 | 95 | `eval/metrics/asr_metrics.py` | WER, INS_RATE, CTER — all from one alignment |
@@ -964,6 +1192,15 @@ gate. This notices when something changed and nobody said so.
 - `categorical_drift()` for template and routing distributions
 - `evaluate_drift()` → `DriftReport`: silent model updates, a new microphone, a locum's accent
 
+### `monitoring/costs.py` — the cost dashboard
+Makes per-lab and per-stage spend visible across labs, which a lab-bound session
+cannot read on its own.
+
+- `daily_costs()` / `stage_costs()` call `tenant_daily_cost()` and `tenant_stage_cost()`,
+  functions owned by the view-owner role (migration 0017)
+- `detect_spikes()` against a trailing window; `platform_summary()` and `lab_summary()` for `/admin/costs`
+- `scan_for_anomalies()` — the `cost_anomaly_scan` job emits each new spike as a `cost.anomaly` event
+
 ---
 
 ## 8. Surfaces
@@ -971,36 +1208,66 @@ gate. This notices when something changed and nobody said so.
 HTTP and the admin panel. Thin by rule — access checks, permission checks and
 serialisation, no business logic.
 
-**23 files, 4,606 lines**, plus the access policy XML. (5 package `__init__` stubs
-stubs omitted below.) Line counts taken on 2026-10-06, after the admin panel
-and the access policy landed.
+**30 files, 6,052 lines**, plus the access policy XML and four static assets.
+(5 package `__init__` stubs omitted below.)
 
 | Lines | File | Purpose |
 |---:|---|---|
-| 818 | `api/routes/admin_panel.py` | Admin panel pages under `/admin`: sign-in, labs, lab page, readiness, onboarding, providers, users |
-| 489 | `api/access.py` | Access middleware: policy loading, coverage check, rate limits, caller identification |
-| 492 | `api/access_policy.xml` | Every route: realm, allowed roles, rate limit, body cap (XML, not Python) |
-| 420 | `api/routes/admin_api.py` | Admin panel JSON under `/admin/api`: labs, steps, onboarding, autonomy, adaptation, platform users |
-| 328 | `api/routes/onboarding.py` | 17 routes: lab-side onboarding — consents and clinical approvals |
-| 289 | `api/routes/review.py` | 12 routes: queue, draft, revisions, signing, grading, feedback, audio |
+| 794 | `api/routes/admin_panel.py` | 29 routes: admin panel pages under `/admin` — sign-in, labs, lab page, readiness, onboarding, providers, users, account |
+| 494 | `api/access.py` | Access middleware: policy loading, coverage check, rate limits, caller identification |
+| 594 | `api/access_policy.xml` | Every route: realm, allowed roles, rate limit, body cap (XML, not Python) |
+| 454 | `api/routes/admin_api.py` | 30 routes: admin panel JSON under `/admin/api` — labs, steps, onboarding, lab users, autonomy, adaptation, platform users |
+| 414 | `api/input_check.py` | Checks every request's parameters against the ones its route declares in the policy |
+| 336 | `api/routes/onboarding.py` | 17 routes: lab-side onboarding — consents and clinical approvals |
+| 298 | `api/routes/review.py` | 12 routes: queue, draft, revisions, signing, grading, feedback, audio |
+| 329 | `api/ui.py` | The page frames and components every server-rendered page is built from |
+| 282 | `auth/lab.py` | Lab users' sign-in: password check, access tokens, single-use refresh tokens |
 | 233 | `admin/modelconfig.py` | Providers, model definitions, per-lab per-step assignment |
-| 303 | `api/routes/review_ui.py` | Review screen + queue screen |
-| 185 | `admin/auth.py` | scrypt passwords, server-side sessions, revocation |
-| 154 | `api/routes/ga.py` | 6 routes: lab-side autonomy read/revoke, release coverage, HL7 + FHIR export, drift |
-| 161 | `admin/onboarding_steps.py` | The onboarding uploads and mining steps an admin runs, shared by the pages and the API |
-| 113 | `admin/users.py` | Add, deactivate, reactivate and reset product admin and support accounts |
-| 95 | `api/deps.py` | The caller the middleware identified, and one-lab session binding |
+| 425 | `api/routes/review_ui.py` | 8 routes: browser sign-in, review screen, queue screen, lexicon screen, static assets |
+| 226 | `admin/auth.py` | scrypt passwords, server-side sessions, revocation |
+| 203 | `api/routes/admin_ops_panel.py` | 4 routes: the cost dashboard and the operational-settings pages |
+| 170 | `api/routes/ga.py` | 6 routes: lab-side autonomy read/revoke, release coverage, HL7 + FHIR export, drift |
+| 226 | `admin/onboarding_steps.py` | The onboarding uploads and mining steps an admin runs, shared by the pages and the API |
+| 162 | `api/deps.py` | The caller the middleware identified, and one-lab session binding (primary or replica) |
+| 126 | `api/routes/health.py` | `/health`: liveness with per-check detail, and the instance id on every response |
+| 118 | `admin/users.py` | Add, deactivate, reactivate and reset product admin and support accounts |
+| 113 | `api/routes/ops.py` | 6 routes: query metrics, table health, costs and operational settings as JSON |
+| 112 | `api/routes/lexicon.py` | 7 routes: lab-side lexicon growth — new-term candidates and sound-alike variant review |
 | 88 | `admin/cli.py` | Create the first admin, reset a password, revoke sessions |
-| 95 | `api/app.py` | App factory, router wiring, access middleware, `/health` (liveness) and `/ready` (dependencies) |
-| 60 | `api/routes/ingest.py` | Capture-only upload: validate, store, audit |
+| 141 | `api/app.py` | App factory, router wiring, middleware stack, `/ready` (dependencies) |
+| 95 | `api/routes/ingest.py` | 2 routes: upload (validate, store, audit, queue the pipeline run) and the lab's recording list |
+| 85 | `api/pagination.py` | Pages for every list endpoint: bounded LIMIT/OFFSET, totals in response headers |
+| 79 | `api/routes/auth.py` | 4 routes: lab sign-in, refresh, sign-out, change password |
+| 44 | `api/read_your_writes.py` | Keeps a browser on the primary for a few seconds after it writes, so replica lag never hides its own change |
 
 ### `api/app.py` — the FastAPI application
 Assembles the routers and puts the access check in front of all of them.
 
 - `create_app()` mounts every router, runs `verify_coverage()` and `verify_params()`
   against the policy — the app refuses to start on a mismatch — and installs
-  `AccessMiddleware` in front of `InputValidationMiddleware`
+  `AccessMiddleware` in front of `InputValidationMiddleware`, inside
+  `RequestCacheMiddleware`, `ReadYourWritesMiddleware`, `QueryMetricsMiddleware`
+  and `InstanceIdMiddleware`
+- `/ready` — database connection and schema revision, on every shard when sharding
+  is on; the shared cache and, when configured, the replica register their own checks
 - `current_revision()` / `head_revision()` so a schema drift is visible at boot
+
+### `api/routes/health.py` — liveness
+- `health()` runs every registered check (database, pool, memory, plus any `register_check()` adds)
+  and reports each one, but never fails the probe on a dependency blip
+- `InstanceIdMiddleware` stamps every response with `instance_id()`, so an operator can tell which instance answered
+
+### `api/pagination.py` and `api/read_your_writes.py`
+- `Page.of()`, `paginate()` / `paginate_async()`, `set_page_headers()` — `X-Total-Count`, `X-Page`,
+  `X-Page-Size`, `Link`. Bodies stay plain JSON arrays, so existing callers read page 1
+- `ReadYourWritesMiddleware` — a write sets a marker cookie; a request carrying it, or
+  `X-Read-Primary`, reads from the primary. Only active when a replica is configured
+
+### `api/ui.py` — the shared page components
+One design system for the admin panel and the lab screens.
+
+- `esc()`, `icon()`; page frames `admin_page()`, `lab_page()`, `auth_page()`
+- Components: `flash`, `card`, `stat`, `badge`, `table`, `empty`, `progress`, `steps`, `facts`, `line_chart`, `bar_list`
 
 ### `api/access_policy.xml` — who may call what
 The single list of every route the app serves. Adding a role or a permission is
@@ -1057,16 +1324,20 @@ touches a tenant-scoped table, and a product admin binding to a lab writes an
 audit row. Authentication itself happens in `api/access.py`.
 
 - `current_admin()` / `current_principal()` — read the caller the middleware identified
-- `get_db()` — a session bound to the lab user's own tenant
+- `get_db()` — a session bound to the lab user's own tenant; `get_read_db()` — the
+  same, read-only and on the replica when one is usable
 - `admin_lab_session()` / `get_admin_lab_db()` — a session bound to the
   `{tenant_id}` in the path, with `select_org()` writing `admin_org_selected`
 - `client_ip()` for audit rows
 
 ### `api/routes/ingest.py` — capture-only ingest
-Upload → validate → store → `recording` row → audit. No pipeline kicked off
-here, deliberately.
+Upload → validate → store → `recording` row → audit, then a `run_pipeline` job
+and a `recording.ingested` event in the same transaction. Nothing is transcribed
+in the request; a worker does that, so the upload returns at once.
 
-- `POST` upload returning `IngestResponse`, idempotent on re-upload
+- `upload_recording()` returns `IngestResponse` with the queued job, idempotent on re-upload
+  (the job's dedupe key is the recording id)
+- `list_recordings()` pages through what the lab has captured, on the async read session
 
 ### `api/routes/onboarding.py` — lab-side onboarding
 Only what the lab's own staff can do: the consents and the clinical approvals.
@@ -1091,14 +1362,20 @@ Permissions loaded from the caller's `app_user` roles and built into a
 Server-rendered. A JavaScript build chain in the path of every clinical review,
 for a screen that is a form with a timer, is a dependency nobody needs.
 
+- Browser sign-in for lab users: `login_page()`, `login_submit()` (httponly token
+  cookies), `refresh_session()`, `logout_submit()`
 - `review_screen()` and `queue_screen()`; `render_field()`, `render_retractions()`
-- `static_file()` serves the two ES modules with no build step
+- The lexicon screen at `/ui/lexicon` — new-term candidates and variant review
+- `static_file()` serves the four assets with no build step; a request carrying the
+  current `?v=` may be cached for a year
 
-### `api/static/` — the two client-side pieces
-The only things the client genuinely must do.
+### `api/static/` — the client-side pieces
+The only things the client genuinely must do, plus the shared stylesheet.
 
+- `app.css` — the design system: tokens, the app shell and the components, light and dark
+- `app.js` — the theme switch, the mobile navigation drawer, dismissable notices
 - `review.js` — focus-time timer and per-field click-to-listen
-- `review.css` — the review screen's styles, also used by the admin panel
+- `review.css` — the review screen's own components, on top of `app.css`'s tokens
 
 ### `api/routes/admin_panel.py` — the admin panel's pages
 Server-rendered, for the same reason as the review screen. Every action is a
@@ -1109,10 +1386,24 @@ form POST that redirects back with a URL-encoded `?error=` or `?notice=`.
   server-side slug validation and `training_consent_ref` required when pooling
   consent is ticked
 - Lab page: status-change form offering only legal targets, per-step model
-  proposal and *activate* buttons; readiness page, bound to the lab's session
-- Onboarding page: overview, roster and template uploads, a button per mining step, merge proposals
-- Providers and models; platform users
+  proposal and *activate* buttons, a password reset per lab user; readiness page, bound to the lab's session
+- Onboarding page: overview, roster, template, shorthand and corpus uploads, a button per mining step, merge proposals
+- Providers and models; platform users; the signed-in admin's own account and password
 - Controls a `support` account cannot use are hidden, by asking the access policy
+
+### `api/routes/admin_ops_panel.py` — the admin panel's operations pages
+- `costs_page()` — spend across labs, or one lab's by stage, with spikes marked (`monitoring/costs.py`)
+- `config_page()` — operational settings, platform-wide or for one lab; `set_config_value()` / `reset_config_value()`
+
+### `api/routes/ops.py` — the operations JSON
+- `GET /admin/api/ops/queries` (`db/instrumentation.py`), `GET /admin/api/ops/tables` (`db/table_health.py`)
+- `GET /admin/api/costs` (`monitoring/costs.py`)
+- `GET /admin/api/ops/config`, `POST .../config/{key}` and `.../config/{key}/reset` (`core/system_config.py`)
+
+### `api/routes/lexicon.py` — lab-side lexicon growth
+- `list_candidates()`, `scan_now()`, `approve_candidates()`, `reject_candidates()` over `onboarding/term_watch.py`
+- `list_variants()`, `decide_variant()`, `variant_stats()` over `knowledge/variant_review.py`
+- Approval is a radiologist's call; lab admins can see the queues
 
 ### `api/routes/admin_api.py` — the admin panel's JSON API
 The same operations as the pages, for scripts and tests, under `/admin/api`.
@@ -1120,9 +1411,10 @@ Every lab-scoped route takes the lab from its `{tenant_id}` path segment.
 
 - Labs: list, register, readiness, status change
 - Models per step: steps view, propose, activate (gated on a gold-set eval run)
-- Onboarding: status, roster, templates, corpus, merge proposals, `steps/{step}`
+- Onboarding: status, batch list and batch status, roster, templates, shorthand, corpus, merge proposals, `steps/{step}`
+- Lab users: list, set password
 - Autonomy read, open accrual, grant, revoke; adaptation gates and require-gates
-- Platform users: list, create, deactivate, reactivate, reset password
+- Platform users: list, create, deactivate, reactivate, reset password; the admin's own password
 
 ### `api/routes/ga.py` — autonomy, export, drift
 The lab side of the later-stage features. Opening accrual, granting and the
@@ -1138,6 +1430,7 @@ Replaces the header placeholder that made anyone with a UUID a product admin.
 
 - scrypt password hashing: `hash_password()`, `verify_password()`, `set_password()`
 - `login()` / `authenticate()` / `logout()` over `admin_session`
+- `authenticate_cached()` — the access middleware's check, through the shared cache
 - `revoke_all_sessions()` for a compromised account
 
 ### `admin/users.py` — platform users
@@ -1151,10 +1444,13 @@ Lets a product admin manage who signs in to the panel without a shell.
 One implementation behind both the onboarding page and the admin API.
 
 - `onboarding_overview()` — corpus verification, gold progress, active rules, recent batches, readiness
-- `import_roster_file()`, `submit_template_files()`, `load_corpus_records()`, `propose_template_merges()`
+- `import_roster_file()`, `submit_template_files()`, `submit_shorthand_files()`,
+  `load_corpus_records()` / `load_corpus_file()`, `propose_template_merges()`
+- `batches_query()` and `batch_status()` for the batch list and one batch's contents
 - `STEPS` — `derive-map`, `lexicon-mine`, `collision-audit`, `mine-variants`,
-  `boilerplate-mine`, `critical-rules-seed`, and `acceptance-assemble` / `acceptance-freeze`
-  (fill and freeze the lab's acceptance set, which the pilot gate needs); `run_step()` runs one by name
+  `boilerplate-mine`, `critical-rules-seed`, `acceptance-assemble` / `acceptance-freeze`
+  (fill and freeze the lab's acceptance set, which the pilot gate needs), and
+  `radlex-annotate` (needs `BIOPORTAL_API_KEY`); `run_step()` runs one by name
 - `StepRefused` carries the HTTP status the API answers with
 
 ### `admin/modelconfig.py` — per-lab model configuration
@@ -1175,14 +1471,82 @@ database. Every later account is added from the panel's Users page.
 
 ---
 
+## 9. Background work
+
+Work that runs outside a request: the job queue and its workers, and the domain
+events relayed after a commit. The loops are entry points, like Surfaces — they
+call down and are called by nothing. What other modules use is the write side:
+`enqueue()` and `emit()`, each inside the caller's own transaction, so a
+rolled-back change neither queues work nor announces itself.
+
+**13 files, 775 lines.** (2 package `__init__` stubs omitted below.)
+
+| Lines | File | Purpose |
+|---:|---|---|
+| 138 | `workers/worker.py` | The worker loop: claim jobs, run each in a session bound to its own lab, and record what happened |
+| 109 | `events/consumers.py` | Consumers of domain events, each applying an event at most once however often it is delivered |
+| 97 | `workers/maintenance.py` | Platform jobs that keep the database healthy, run by the same workers as everything else |
+| 95 | `events/bus.py` | Where relayed events go: one `EventBus` interface, with a Postgres and a Kafka implementation chosen by config |
+| 93 | `workers/queue.py` | The job queue's operations, on top of the `job` table and its `claim_jobs()` function |
+| 52 | `events/relay.py` | Moves committed outbox events onto the bus, then marks them sent |
+| 51 | `workers/handlers.py` | What each kind of job does; a handler gets a session already bound to the job's lab |
+| 38 | `workers/__main__.py` | `python -m radreport.workers [--kinds run_pipeline,ensure_partitions] [--concurrency 2]` |
+| 37 | `events/__main__.py` | `python -m radreport.events relay`, or `consume analytics` to drain one Kafka consumer |
+| 32 | `workers/schedule.py` | Periodic platform jobs, queued once per period however many workers are running |
+| 31 | `events/outbox.py` | Writing a domain event: one outbox row, in the same transaction as the change it reports |
+
+### `workers/queue.py` — the job queue
+A Postgres table, not a broker: a job commits or rolls back with the change that
+queued it.
+
+- `enqueue()` — inside the caller's transaction; a `dedupe_key` makes a repeat a no-op
+- `claim()` calls `claim_jobs()` (migration 0013), which leases ready work across every lab with `FOR UPDATE SKIP LOCKED`
+- `extend_lease()`, `complete()`, `fail()` — `fail()` retries with backoff until the attempts run out, then the job is dead
+- `reap()` buries leases that ran out on their last attempt
+
+### `workers/worker.py`, `handlers.py`, `__main__.py` — running jobs
+- `Worker.run_once()` claims; `_Heartbeat` keeps the lease alive while a job runs
+- `job_session()` binds the session to the job's lab; the handler's writes and the
+  job's completion commit together. On an error the writes roll back and the failure
+  is recorded in a fresh session
+- `Worker.run_forever()` polls with backoff when the queue is empty and calls `schedule.enqueue_due()` about once a minute
+- `handler(kind)` registers a handler; `load_all()` imports the modules that register the shipped kinds
+
+| Kind | Registered in | Does |
+|---|---|---|
+| `run_pipeline` | `pipeline/runner.py` | One recording through the graph; queued by `POST /ingest/recordings` |
+| `reap_jobs` | `workers/maintenance.py` | Every 10 minutes: bury expired leases on their last attempt |
+| `ensure_partitions` | `workers/maintenance.py` | Every 6 hours: create monthly partitions ahead, detach months past retention |
+| `cost_anomaly_scan` | `workers/maintenance.py` | Every 6 hours: emit new cost spikes as `cost.anomaly` events |
+| `refresh_eval_set` | `workers/maintenance.py` | Daily: refresh the materialized canonical eval set |
+| `watch_lexicon` | `workers/maintenance.py` | Daily: scan every lab's edits for new vocabulary (`onboarding/term_watch.py`) |
+
+The periods are `PERIODIC` in `workers/schedule.py`; the period number in the
+dedupe key keeps it to one job per period across workers.
+
+### `events/` — the transactional outbox
+- `outbox.py` — `emit()` writes one `outbox_event` row. Topics: `recording.ingested`,
+  `draft.ready`, `report.signed`, `autonomy.revoked`, `cost.anomaly`
+- `relay.py` — `Relay.run_once()` locks a batch of unsent events in commit order
+  (`claim_outbox`, `FOR UPDATE SKIP LOCKED`), publishes them, and marks them sent in
+  the same transaction. A crash between publishing and marking resends the batch
+- `bus.py` — `PostgresEventBus` delivers to the in-process consumers; `KafkaEventBus`
+  produces to topics keyed by lab; `get_bus()` picks one from settings
+- `consumers.py` — `deliver()` applies an event to each subscriber in its own
+  transaction bound to the event's lab, recording it in `consumed_event` in that
+  same transaction, so each consumer applies an event once. Shipped consumers:
+  `analytics` (one structured line per event) and `critical_alerts` (a notification
+  for each draft that carries an urgent finding)
+
+---
+
 ## Placeholders
 
-Five directories exist in the tree and contain no code. They imply capability
+Four directories exist in the tree and contain no code. They imply capability
 that is not there; fill them or delete them.
 
 | Path | Intended for |
 |---|---|
-| `radreport/workers/` | background job runners — the pipeline currently runs inline |
 | `radreport/prompts/` | prompt text as data — prompts are built in `adapters/llm/prompt.py` and the stages |
 | `radreport/adapters/dicom/` | DICOM metadata lookup |
 | `radreport/adapters/hl7/` | inbound HL7 (orders); outbound lives in `export/hl7.py` |
@@ -1192,7 +1556,7 @@ that is not there; fill them or delete them.
 
 # Summary tables
 
-Counts from the filesystem on 2026-10-05. Package `__init__.py` stubs of three
+Counts from the filesystem on 2026-10-07. Package `__init__.py` stubs of three
 lines or fewer are included in the totals but omitted from the per-module tables
 above; the stub count is noted under each module heading.
 
@@ -1202,59 +1566,64 @@ Grouped by **when the code runs**, which is how the sections above are ordered.
 
 | # | Module | Files | Lines | Share | Runs |
 |---|---|---:|---:|---:|---|
-| 1 | [Foundation](#1-foundation) | 40 | 4,309 | 20.5% | always |
-| 2 | [Onboarding](#2-onboarding) | 12 | 2,500 | 11.9% | once per lab |
-| 3 | [Capture](#3-capture) | 5 | 418 | 2.0% | per recording |
-| 4 | [Pipeline](#4-pipeline) | 33 | 4,594 | 21.9% | per report |
-| 5 | [Engines](#5-engines) | 14 | 1,304 | 6.2% | called by the pipeline |
-| 6 | [Review and export](#6-review-and-export) | 10 | 1,294 | 6.2% | per draft, then per signature |
-| 7 | [Governance](#7-governance) | 17 | 1,989 | 9.5% | out of band |
-| 8 | [Surfaces](#8-surfaces) | 23 | 4,606 | 21.9% | per HTTP request |
-| | **Total** | **154** | **21,014** | | |
+| 1 | [Foundation](#1-foundation) | 78 | 8,082 | 27.7% | always |
+| 2 | [Onboarding](#2-onboarding) | 15 | 3,214 | 11.0% | once per lab |
+| 3 | [Capture](#3-capture) | 5 | 437 | 1.5% | per recording |
+| 4 | [Pipeline](#4-pipeline) | 41 | 5,575 | 19.1% | per report |
+| 5 | [Engines](#5-engines) | 16 | 1,522 | 5.2% | called by the pipeline |
+| 6 | [Review and export](#6-review-and-export) | 10 | 1,298 | 4.5% | per draft, then per signature |
+| 7 | [Governance](#7-governance) | 18 | 2,196 | 7.5% | out of band |
+| 8 | [Surfaces](#8-surfaces) | 30 | 6,052 | 20.8% | per HTTP request |
+| 9 | [Background work](#9-background-work) | 13 | 775 | 2.7% | per job, per event |
+| | **Total** | **226** | **29,151** | | |
 
-The three largest are close: the Pipeline is sixteen stages, the Surfaces are two
-realms of routes plus the access layer that checks every request, and the
-Foundation carries the 60-table schema plus every shared primitive. Capture is
-the smallest at 2.0% and does the least on purpose — it validates, stores and
-audits, and kicks off nothing.
+Foundation is now the largest: the 68-table schema and its 23 migrations, the
+session, replica, sharding and instrumentation layers, the caches, and the
+developer tools. The Surfaces follow — three realms of routes plus the access
+layer that checks every request — then the Pipeline, its sixteen stages and the
+lexicon knowledge they read. Capture is the smallest at 1.5% and does the least
+on purpose — it validates, stores and audits; the upload route queues the
+pipeline run, and nothing in Capture waits on it.
 
 ## By category
 
-The same 154 files cut by **what a file is**, which is the cut that matters when
+The same 226 files cut by **what a file is**, which is the cut that matters when
 you are deciding where a change belongs rather than when it runs. The rule: `db/` is
-DB / schema, `api/` is HTTP, `adapters/` is external I/O, `core/` and `devtools/`
-are shared helpers, and everything else is domain logic.
+DB / schema, `api/` is HTTP, `adapters/` is external I/O, `core/`, `cache/` and
+`devtools/` are shared helpers, and everything else is domain logic.
 
 | Category | Files | Lines | Share |
 |---|---:|---:|---:|
-| Domain logic | 83 | 11,741 | 55.9% |
-| DB / schema | 28 | 2,898 | 13.8% |
-| Controllers (HTTP) | 15 | 3,542 | 16.9% |
-| Adapters (external I/O) | 16 | 1,422 | 6.8% |
-| Helpers / shared | 12 | 1,411 | 6.7% |
-| **Total** | **154** | **21,014** | |
+| Domain logic | 108 | 14,548 | 49.9% |
+| DB / schema | 52 | 5,090 | 17.5% |
+| Controllers (HTTP) | 22 | 4,877 | 16.7% |
+| Adapters (external I/O) | 18 | 1,644 | 5.6% |
+| Helpers / shared | 26 | 2,992 | 10.3% |
+| **Total** | **226** | **29,151** | |
 
-Adapters are listed apart from domain logic because they are the only code that
-talks to Postgres, S3, an LLM or an ASR engine. Counted as logic instead, that is
-**99 files and 13,163 lines**.
+Adapters are listed apart from domain logic because they talk to S3, an LLM or
+an ASR engine. Counted as logic instead, that is **126 files and 16,192 lines**.
+Two files outside `adapters/` also talk to an outside service:
+`events/bus.py` (Kafka, counted as domain logic) and `cache/shared.py` (Redis,
+counted as a helper).
 
 `DB / schema` splits three ways, and the middle one is not editable code:
 
 | Kind | Files | Lines | Editing rule |
 |---|---:|---:|---|
-| ORM models | 13 | 1,847 | Declare the 60 tables. Edit freely — but **any change here needs a new migration.** |
-| Migrations | 9 | 630 | **Append-only history, not code.** See the table under [Foundation](#1-foundation). |
-| Infrastructure | 6 | 421 | The machinery both rely on: `session.py`, `introspect.py`, `base.py`, `bootstrap.py`, `env.py`. |
+| ORM models | 17 | 2,128 | Declare the 68 tables. Edit freely — but **any change here needs a new migration.** |
+| Migrations | 23 | 1,683 | **Append-only history, not code.** See the table under [Foundation](#1-foundation). |
+| Infrastructure | 12 | 1,279 | The machinery both rely on: `session.py`, `async_session.py`, `instrumentation.py`, `sharding.py`, `shards.py`, `introspect.py`, `base.py`, `bootstrap.py`, `bulk.py`, `table_health.py`, `env.py`. |
 
 ## Data
 
-**60 tables, 752 columns.**
+**68 tables, 844 columns.**
 
 | Tenancy class | Tables | Meaning |
 |---|---:|---|
-| Tenant-scoped | 43 | `tenant_id NOT NULL`, RLS policy with `FORCE`, composite FKs to other scoped tables |
-| Tenant-NULLable | 12 | NULL = global: model catalog, global lexicon, canonical eval sets, audit log |
-| No tenant | 3 | The platform realm: `tenant`, `platform_user`, `admin_session` |
+| Tenant-scoped | 47 | `tenant_id NOT NULL`, RLS policy with `FORCE`, composite FKs to other scoped tables |
+| Tenant-NULLable | 15 | NULL = global: model catalog, global lexicon, canonical eval sets, audit log, platform jobs and events, platform-wide settings |
+| No tenant | 6 | The platform realm: `tenant`, `platform_user`, `admin_session`, `rate_limit_counter`, `lab_shard`, `consumed_event` |
 
 A new table on neither exception list and with no `tenant_id` **fails the
 build** — `core/tenancy.py` declares the lists and
@@ -1263,17 +1632,21 @@ build** — `core/tenancy.py` declares the lists and
 | Area | Tables | Declared in |
 |---|---:|---|
 | Onboarding | 10 | `db/models/onboarding.py` |
-| Knowledge | 8 | `db/models/knowledge.py` |
+| Knowledge | 10 | `db/models/knowledge.py` |
 | Reports | 8 | `db/models/reporting.py` |
-| Tenancy | 5 | `db/models/tenancy.py` |
-| Identity | 4 | `db/models/identity.py` |
+| Tenancy | 6 | `db/models/tenancy.py` |
+| Identity | 5 | `db/models/identity.py` |
 | ASR | 4 | `db/models/asr.py` |
 | Review | 4 | `db/models/review.py` |
 | Eval | 4 | `db/models/evaluation.py` |
 | Model config | 4 | `db/models/modelconfig.py` |
 | Orchestration | 3 | `db/models/orchestration.py` |
 | Adaptation | 3 | `db/models/adaptation.py` |
+| Events | 2 | `db/models/events.py` |
+| Ops | 2 | `db/models/ops.py` |
 | Ingestion | 1 | `db/models/ingestion.py` |
+| Jobs | 1 | `db/models/jobs.py` |
+| LLM cache | 1 | `db/models/llm_cache.py` |
 
 Widest tables, which is where the detail lives: `recording` 27 columns (every
 §9.8 quality measurement plus the §10.4 consent-derivation inputs),
@@ -1281,73 +1654,88 @@ Widest tables, which is where the detail lives: `recording` 27 columns (every
 `study` 19, `autonomy_class` 19, `model_adaptation_run` 18,
 `template_version` 18.
 
-Three tables are partitioned by month because they grow per-event rather than
-per-report: `asr_segment`, `edit_event`, `audit_log`.
+Five tables are partitioned. Four by month because they grow per-event rather
+than per-report: `asr_segment`, `edit_event`, `audit_log` (migration 0003) and
+`stage_execution` (0015). `recording` is split into eight hash partitions on
+`tenant_id` (0015). The `ensure_partitions` job keeps the monthly ones ahead of
+the calendar, and the app role cannot read a partition directly.
 
 ## HTTP routes
 
-**93 routes: 89 across 8 files, plus FastAPI's four documentation routes.**
-Every one of them lives in [Surfaces](#8-surfaces) — it is the only module that
-speaks HTTP — and every one is listed in `api/access_policy.xml`, which
-`create_app()` checks at startup. [API.md](API.md#appendix-a--index-by-prefix)
-has the roles, rate limit and body cap of each.
+**131 routes: 125 across 12 route files, `/health` and `/ready`, plus FastAPI's
+four documentation routes.** Every one of them lives in [Surfaces](#8-surfaces) —
+it is the only module that speaks HTTP — and every one is listed in
+`api/access_policy.xml`, which `create_app()` checks at startup.
+[API.md](API.md#appendix-a--index-by-prefix) has the roles, rate limit and body
+cap of each.
 
 | Routes | File | Surface |
 |---:|---|---|
-| 818 | `api/routes/admin_panel.py` | Admin panel pages and form handlers (**renders HTML**) |
-| 420 | `api/routes/admin_api.py` | Admin panel JSON: labs, steps, onboarding, autonomy, adaptation, platform users |
-| 328 | `api/routes/onboarding.py` | Lab-side onboarding: consents and clinical approvals |
-| 289 | `api/routes/review.py` | Queue, draft, revisions, signing, grading, feedback, audio |
-| 154 | `api/routes/ga.py` | Lab-side autonomy read/revoke, release coverage, HL7 + FHIR export, drift |
-| 303 | `api/routes/review_ui.py` | Review screen, queue screen, static assets (**renders HTML**) |
-| 95 | `api/app.py` | `/health` (liveness) and `/ready` (connection + schema revision) |
-| 60 | `api/routes/ingest.py` | Capture-only upload: validate, store, audit |
+| 30 | `api/routes/admin_api.py` | Admin panel JSON: labs, steps, onboarding, lab users, autonomy, adaptation, platform users |
+| 29 | `api/routes/admin_panel.py` | Admin panel pages and form handlers (**renders HTML**) |
+| 17 | `api/routes/onboarding.py` | Lab-side onboarding: consents and clinical approvals |
+| 12 | `api/routes/review.py` | Queue, draft, revisions, signing, grading, feedback, audio |
+| 8 | `api/routes/review_ui.py` | Browser sign-in, review screen, queue screen, lexicon screen, static assets (**renders HTML**) |
+| 7 | `api/routes/lexicon.py` | Lab-side lexicon growth: new-term candidates, variant review |
+| 6 | `api/routes/ga.py` | Lab-side autonomy read/revoke, release coverage, HL7 + FHIR export, drift |
+| 6 | `api/routes/ops.py` | Operations JSON: query metrics, table health, costs, operational settings |
+| 4 | `api/routes/admin_ops_panel.py` | Cost dashboard and operational-settings pages (**renders HTML**) |
+| 4 | `api/routes/auth.py` | Lab sign-in, refresh, sign-out, change password |
+| 2 | `api/routes/ingest.py` | Upload (queues the pipeline run) and the lab's recording list |
+| 1 | `api/routes/health.py` | `/health` (liveness, with each dependency's state) |
+| 1 | `api/app.py` | `/ready` (connection + schema revision) |
 | 4 | FastAPI | `/openapi.json`, `/docs`, `/docs/oauth2-redirect`, `/redoc` — local, test and development only |
 
-`/health` returning 200 against an unreachable database was a real bug; `/ready`
+`/health` returning 200 against an unreachable database was a real bug; `/health`
+now reports each dependency's state without failing the probe, and `/ready`
 checks the connection **and** that the schema revision matches the code's head,
-and `make run` waits on it.
+answering 503 otherwise. `make run` waits on `/ready`.
 
 ### By the module behind them
 
-The same 89 routes, attributed to the module whose behaviour each one calls down
-into rather than to the file it sits in. This is the view to read when tracing a
-request. Most admin operations are served twice — a page and a JSON route — and
-both are counted.
+The same 127 application routes, attributed to the module whose behaviour each
+one calls down into rather than to the file it sits in. This is the view to read
+when tracing a request. Most admin operations are served twice — a page and a
+JSON route — and both are counted.
 
 | Module | Routes | Prefix | File |
 |---|---:|---|---|
+| [1 Foundation](#1-foundation) — query metrics, table health, operational settings | 8 | `/admin/config`, `/admin/api/ops` | `routes/admin_ops_panel.py`, `routes/ops.py` |
 | [2 Onboarding](#2-onboarding) — lab registration and lifecycle | 7 | `/admin`, `/admin/api` | `routes/admin_panel.py`, `routes/admin_api.py` |
-| [2 Onboarding](#2-onboarding) — uploads, mining steps, overview, readiness | 13 | `/admin/.../onboarding`, `/admin/api/.../onboarding` | `routes/admin_panel.py`, `routes/admin_api.py` |
+| [2 Onboarding](#2-onboarding) — uploads, batches, mining steps, overview, readiness | 18 | `/admin/.../onboarding`, `/admin/api/.../onboarding` | `routes/admin_panel.py`, `routes/admin_api.py` |
 | [2 Onboarding](#2-onboarding) — lab-side approvals | 17 | `/onboarding` | `routes/onboarding.py` |
-| [3 Capture](#3-capture) | 1 | `/ingest` | `routes/ingest.py` |
-| [4 Pipeline](#4-pipeline) | **0** | — | **no HTTP trigger exists** |
+| [2 Onboarding](#2-onboarding) — lexicon growth and variant review, lab side | 8 | `/lexicon`, `/ui/lexicon` | `routes/lexicon.py`, `routes/review_ui.py` |
+| [3 Capture](#3-capture) | 2 | `/ingest` | `routes/ingest.py` |
+| [4 Pipeline](#4-pipeline) | **0** | — | queued by `POST /ingest/recordings`, run by a worker |
 | [5 Engines](#5-engines) — providers, models, per-step assignment | 8 | `/admin`, `/admin/api` | `routes/admin_panel.py`, `routes/admin_api.py` |
 | [6 Review](#6-review-and-export) — API | 12 | `/review` | `routes/review.py` |
-| [6 Review](#6-review-and-export) — screens | 3 | `/ui` | `routes/review_ui.py` |
+| [6 Review](#6-review-and-export) — screens and assets | 3 | `/ui` | `routes/review_ui.py` |
 | [6 Export](#6-review-and-export) — HL7 + FHIR | 2 | `/ga/export` | `routes/ga.py` |
 | [7 Governance](#7-governance) — autonomy and drift, lab side | 4 | `/ga` | `routes/ga.py` |
 | [7 Governance](#7-governance) — autonomy and adaptation, admin side | 6 | `/admin/api/labs/{tenant_id}` | `routes/admin_api.py` |
-| [8 Surfaces](#8-surfaces) — sign-in and platform users | 14 | `/admin`, `/admin/api` | `routes/admin_panel.py`, `routes/admin_api.py` |
-| [8 Surfaces](#8-surfaces) — ops | 2 | — | `app.py` |
+| [7 Governance](#7-governance) — costs | 2 | `/admin/costs`, `/admin/api/costs` | `routes/admin_ops_panel.py`, `routes/ops.py` |
+| [8 Surfaces](#8-surfaces) — admin sign-in, platform users, lab user passwords, own account | 20 | `/admin`, `/admin/api` | `routes/admin_panel.py`, `routes/admin_api.py` |
+| [8 Surfaces](#8-surfaces) — lab sign-in | 8 | `/auth`, `/ui` | `routes/auth.py`, `routes/review_ui.py` |
+| [8 Surfaces](#8-surfaces) — ops | 2 | — | `routes/health.py`, `app.py` |
 
-**The pipeline has no route.** Nothing under `api/` imports `pipeline/`, and the
-only callers of `build_v1_graph()` and `new_run()` are in
-`tests/db/test_pipeline_v1.py`. The largest module here — and the product
-itself — is unreachable over HTTP. That is the same fact as the empty
-`workers/` directory below: nothing exists to enqueue a run. Trace the pipeline
-from that test file, not from a request.
+**The pipeline has no route of its own.** `POST /ingest/recordings` queues a
+`run_pipeline` job in the same transaction as the `recording` row, and
+`python -m radreport.workers` claims it and calls `pipeline/runner.py`, which
+builds the graph with `build_v1_graph()` and opens the run with `new_run()`. Trace
+the pipeline from `tests/db/test_job_queue.py` (ingest → worker → pipeline) or
+`tests/db/test_pipeline_v1.py`, not from a request handler.
 
-**26 of the 89 render HTML or redirect** rather than return JSON: the admin
-panel's pages and form handlers (24, three of them public sign-in routes) and
-the two `/ui` screens. They are listed again under [UI](#ui).
+**40 of the 127 render HTML or redirect** rather than return JSON: the admin
+panel's pages and form handlers (33, three of them public sign-in routes) and
+the seven `/ui` screens and browser sign-in routes (four of them public). They
+are listed again under [UI](#ui).
 
 ### Every route
 
 Grouped by prefix, in source order within each file. Who may call each one is
 in [API.md](API.md#appendix-a--index-by-prefix).
 
-#### `/admin` — 24, the admin panel's pages (**HTML**)
+#### `/admin` — 29, the admin panel's pages (**HTML**)
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -1357,7 +1745,8 @@ in [API.md](API.md#appendix-a--index-by-prefix).
 | GET | `/admin` | Redirect to the lab list |
 | GET | `/admin/labs` | Lab list and the onboard-a-lab form; `?show=all` includes offboarded labs |
 | POST | `/admin/labs` | Register a lab |
-| GET | `/admin/labs/{tenant_id}` | One lab: status, all pipeline steps and what serves each |
+| GET | `/admin/labs/{tenant_id}` | One lab: status, all pipeline steps and what serves each, its users |
+| POST | `/admin/labs/{tenant_id}/users/{user_id}/password` | Set a lab user's password |
 | POST | `/admin/labs/{tenant_id}/status` | Lifecycle transition, through the readiness gate |
 | GET | `/admin/labs/{tenant_id}/readiness` | The seven checks gating onboarding → pilot |
 | POST | `/admin/labs/{tenant_id}/assign` | Propose a model for one step |
@@ -1368,6 +1757,8 @@ in [API.md](API.md#appendix-a--index-by-prefix).
 | GET | `/admin/labs/{tenant_id}/onboarding` | Onboarding overview, uploads, step buttons |
 | POST | `/admin/labs/{tenant_id}/onboarding/roster` | Import the roster CSV |
 | POST | `/admin/labs/{tenant_id}/onboarding/templates` | Submit template documents |
+| POST | `/admin/labs/{tenant_id}/onboarding/shorthand` | Shorthand reference sheets into the lab's lexicon |
+| POST | `/admin/labs/{tenant_id}/onboarding/corpus` | Load the historical report corpus from a CSV or JSON file |
 | POST | `/admin/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals` | Propose near-duplicate merges |
 | POST | `/admin/labs/{tenant_id}/onboarding/steps/{step}` | Run one mining or seeding step |
 | GET | `/admin/users` | Platform users, with add, deactivate, reactivate and password forms |
@@ -1375,8 +1766,19 @@ in [API.md](API.md#appendix-a--index-by-prefix).
 | POST | `/admin/users/{user_id}/deactivate` | Switch an account off and end its sessions |
 | POST | `/admin/users/{user_id}/reactivate` | Switch an account back on |
 | POST | `/admin/users/{user_id}/password` | Set a password and end the account's sessions |
+| GET | `/admin/account` | The signed-in admin's own account |
+| POST | `/admin/account/password` | Change your own password; needs the current one |
 
-#### `/admin/api` — 24, the admin panel's JSON
+#### `/admin` — 4, the operations pages (**HTML**)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/admin/costs` | Spend per lab and per stage, with spikes marked |
+| GET | `/admin/config` | Operational settings and where each value comes from |
+| POST | `/admin/config/{key}` | Set one, platform-wide or for one lab |
+| POST | `/admin/config/{key}/reset` | Remove a stored value so the next level applies |
+
+#### `/admin/api` — 30, the admin panel's JSON
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -1388,11 +1790,16 @@ in [API.md](API.md#appendix-a--index-by-prefix).
 | POST | `/admin/api/labs/{tenant_id}/assignments` | Propose a model for one step |
 | POST | `/admin/api/labs/{tenant_id}/assignments/{assignment_id}/activate` | Activate a proposal — refused without a gold-set eval run |
 | GET | `/admin/api/labs/{tenant_id}/onboarding` | Onboarding status across every stage |
+| GET | `/admin/api/labs/{tenant_id}/onboarding/batches` | A lab's import batches, newest first, paged |
+| GET | `/admin/api/labs/{tenant_id}/onboarding/batches/{batch_id}` | One import batch's status and contents |
 | POST | `/admin/api/labs/{tenant_id}/onboarding/roster` | Import the roster CSV |
 | POST | `/admin/api/labs/{tenant_id}/onboarding/templates` | Submit template documents |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/shorthand` | Shorthand reference sheets into the lab's lexicon |
 | POST | `/admin/api/labs/{tenant_id}/onboarding/corpus` | Load the historical report corpus |
 | POST | `/admin/api/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals` | Propose near-duplicate merges |
-| POST | `/admin/api/labs/{tenant_id}/onboarding/steps/{step}` | Run `derive-map`, `lexicon-mine`, `collision-audit`, `mine-variants`, `boilerplate-mine`, `critical-rules-seed`, `acceptance-assemble` or `acceptance-freeze` |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/steps/{step}` | Run `derive-map`, `lexicon-mine`, `collision-audit`, `mine-variants`, `boilerplate-mine`, `critical-rules-seed`, `acceptance-assemble`, `acceptance-freeze` or `radlex-annotate` |
+| GET | `/admin/api/labs/{tenant_id}/users` | The lab's users |
+| POST | `/admin/api/labs/{tenant_id}/users/{user_id}/password` | Set a lab user's password |
 | GET | `/admin/api/labs/{tenant_id}/autonomy/{class_code}` | Accrual state and the Beta-Binomial posterior |
 | POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/open-accrual` | Start observing a class |
 | POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/grant` | The Bayesian sequential grant |
@@ -1404,6 +1811,27 @@ in [API.md](API.md#appendix-a--index-by-prefix).
 | POST | `/admin/api/users/{user_id}/deactivate` | Switch an account off and end its sessions |
 | POST | `/admin/api/users/{user_id}/reactivate` | Switch an account back on |
 | POST | `/admin/api/users/{user_id}/password` | Set a password and end the account's sessions |
+| POST | `/admin/api/account/password` | Change your own password; needs the current one |
+
+#### `/admin/api/ops` and `/admin/api/costs` — 6, operations JSON
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/admin/api/ops/queries` | Statement timings and statements per request, for this worker |
+| GET | `/admin/api/ops/tables` | Per-table dead rows, vacuum history and size, with bloat flagged |
+| GET | `/admin/api/costs` | Spend over 7, 30 or 90 days, across labs or for one lab by stage |
+| GET | `/admin/api/ops/config` | Operational settings, effective values and their source |
+| POST | `/admin/api/ops/config/{key}` | Set an operational setting, platform-wide or for one lab |
+| POST | `/admin/api/ops/config/{key}/reset` | Remove a stored setting so the next level applies |
+
+#### `/auth` — 4, lab sign-in
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/auth/login` | Lab user sign-in; returns an access token and a refresh token (public) |
+| POST | `/auth/refresh` | Trade a refresh token for a new pair (public) |
+| POST | `/auth/logout` | End the sign-in a refresh token belongs to (public) |
+| POST | `/auth/password` | Replace your own password; ends every sign-in |
 
 #### `/onboarding` — 17, lab-side onboarding
 
@@ -1431,11 +1859,12 @@ The roster, template and corpus uploads, merge proposals, the mining and
 seeding steps and the onboarding status used to be here; they are now admin
 routes under `/admin/api/labs/{tenant_id}/onboarding`.
 
-#### `/ingest` — 1, capture
+#### `/ingest` — 2, capture
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/ingest/recordings` | Upload: §9.8 gates, store, audit. Idempotent by content hash. |
+| POST | `/ingest/recordings` | Upload: §9.8 gates, store, audit, queue the `run_pipeline` job. Idempotent by content hash. |
+| GET | `/ingest/recordings` | The lab's recordings, newest first, paged |
 
 #### `/review` — 12, the human loop
 
@@ -1454,13 +1883,30 @@ routes under `/admin/api/labs/{tenant_id}/onboarding`.
 | POST | `/review/drafts/{draft_id}/usefulness` | §9.6's "this draft was useless" |
 | GET | `/review/metrics/usefulness` | Usefulness rollup |
 
-#### `/ui` — 3, the review screens (**HTML**)
+#### `/ui` — 8, browser sign-in and the lab screens (**HTML**)
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/ui/queue` | Queue screen |
+| GET | `/ui/login` | Lab user browser sign-in form (public) |
+| POST | `/ui/login` | Browser sign-in; sets httponly token cookies (public) |
+| GET | `/ui/refresh` | Renew the browser's token cookies from its refresh cookie (public) |
+| POST | `/ui/logout` | End the browser's sign-in (public) |
+| GET | `/ui/static/{name}` | `app.css`, `app.js`, `review.css`, `review.js` (public) |
 | GET | `/ui/drafts/{draft_id}` | Review screen |
-| GET | `/ui/static/{name}` | `review.js` and `review.css` (public) |
+| GET | `/ui/queue` | Queue screen |
+| GET | `/ui/lexicon` | New-terms and sound-alike review screen |
+
+#### `/lexicon` — 7, lab-side lexicon growth
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/lexicon/candidates` | Terms radiologists use that the lexicon lacks, waiting for review |
+| POST | `/lexicon/scan` | Scan the edits made since the last scan now |
+| POST | `/lexicon/candidates/approve` | Approve terms into a new lexicon version |
+| POST | `/lexicon/candidates/reject` | Set terms aside |
+| GET | `/lexicon/variants` | Sound-alike matches waiting for an answer, or automatic approvals to spot-check |
+| POST | `/lexicon/variants/{variant_id}/decide` | Answer whether a heard phrase means the term |
+| GET | `/lexicon/variants/stats` | Automatic approvals and overrides per threshold arm |
 
 #### `/ga` — 6, lab-side governance and export
 
@@ -1479,48 +1925,85 @@ Opening accrual, granting and the adaptation gates moved to `/admin/api`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | Liveness only |
-| GET | `/ready` | Connection **and** schema revision matches the code's head |
+| GET | `/health` | Liveness, with each dependency's state and this instance's id |
+| GET | `/ready` | Connection **and** schema revision matches the code's head; 503 routes traffic away |
 
 ## UI
 
-**1,116 lines, 4 files.** Server-rendered HTML with no build step: no
+**2,421 lines, 8 files.** Server-rendered HTML with no build step: no
 `package.json`, no bundler, no `node_modules`.
 
 | Lines | File | Purpose |
 |---:|---|---|
-| 818 | `api/routes/admin_panel.py` | Admin panel: 7 pages, plus 17 form handlers, sign-in routes and the `/admin` redirect |
-| 303 | `api/routes/review_ui.py` | Review screen + queue screen |
+| 794 | `api/routes/admin_panel.py` | Admin panel: 8 pages (sign-in included), 20 form handlers and the `/admin` redirect |
+| 425 | `api/routes/review_ui.py` | Lab screens: browser sign-in, review screen, queue screen, lexicon screen |
+| 329 | `api/ui.py` | Page frames and components shared by every page |
+| 203 | `api/routes/admin_ops_panel.py` | Admin panel: the cost dashboard and the operational-settings page, with 2 form handlers |
+| 429 | `api/static/app.css` | The design system: tokens, app shell, components, light and dark |
 | 102 | `api/static/review.js` | Focus timer (`active_edit_seconds`), click-to-listen, edit collection |
-| 60 | `api/static/review.css` | The entire stylesheet, light and dark; the admin panel uses it too |
+| 84 | `api/static/app.js` | Theme switch, mobile navigation drawer, dismissable notices |
+| 55 | `api/static/review.css` | The review screen's own components, on `app.css`'s tokens |
 
-The two Python files are also counted under Surfaces above — they are Python
+The four Python files are also counted under Surfaces above — they are Python
 that emits HTML, not a separate tree.
 
 | Route | Screen |
 |---|---|
 | `GET /admin/login` | Sign in, with a test-credentials tab when demo accounts are configured |
 | `GET /admin/labs` | Lab list + onboard-a-lab form |
-| `GET /admin/labs/{tenant_id}` | One lab: status change, all pipeline steps, propose and activate a model for each |
+| `GET /admin/labs/{tenant_id}` | One lab: status change, all pipeline steps, propose and activate a model for each, lab user passwords |
 | `GET /admin/labs/{tenant_id}/readiness` | The readiness checks, blocking first |
-| `GET /admin/labs/{tenant_id}/onboarding` | Onboarding overview, roster and template uploads, step buttons |
+| `GET /admin/labs/{tenant_id}/onboarding` | Onboarding overview, roster, template, shorthand and corpus uploads, step buttons |
 | `GET /admin/providers` | Providers and models, with add forms |
 | `GET /admin/users` | Platform users, with add, deactivate, reactivate and password forms |
+| `GET /admin/account` | Your own account and password |
+| `GET /admin/costs` | Spend per lab and per stage, with spikes marked |
+| `GET /admin/config` | Operational settings, platform-wide or per lab |
+| `GET /ui/login` | Lab user sign-in |
 | `GET /ui/queue` | Review queue |
 | `GET /ui/drafts/{draft_id}` | Review a draft |
+| `GET /ui/lexicon` | New terms and sound-alike matches waiting for a radiologist |
 
 Plus the admin panel's form POST handlers, each of which redirects back to a
-page, and the `/ui/static/{name}` asset route.
+page, the browser sign-in POST and refresh routes, and the `/ui/static/{name}`
+asset route.
 
 The browser JavaScript exists for the two things a server cannot do: measure
 **focus time** (blur/focus events plus a 20-second idle timeout — §15.2's
 commercial argument rests on that number) and **play a cited audio span** from
-`provenance_span.audio_start_ms`. Everything else is a form POST and a redirect.
+`provenance_span.audio_start_ms`. `app.js` only handles the theme, the mobile
+drawer and notices. Everything else is a form POST and a redirect.
 
 ## Tests
 
-**51 files, 7,886 lines, 696 tests.** That is 27% of the repository's lines
-against 73% application code.
+**96 files, 10,907 lines, 755 test functions** (counted as `def test_`, so a
+parametrized test counts once). That is 27% of the repository's lines against
+73% application code.
+
+| Directory | Files | Lines | Tests | What runs there |
+|---|---:|---:|---:|---|
+| `tests/unit/` | 46 | 5,135 | 481 | No database; runs anywhere |
+| `tests/db/` | 45 | 5,512 | 266 | Against a real Postgres, as the app role |
+| `tests/integration/` | 1 | 118 | 8 | The ingest API end to end |
+| `tests/fixtures/` | 2 | 23 | 0 | A minimal text-PDF writer for the shorthand tests |
+| `tests/` | 2 | 119 | 0 | `conftest.py` and package marker |
+
+Files added since the last count, by the module they cover:
+
+| Module | Files (tests) |
+|---|---|
+| [1 Foundation](#1-foundation) — sessions, pool, replica, sharding | `db/test_async_session.py` (5), `unit/test_db_pool.py` (3), `db/test_pgbouncer.py` (1), `db/test_overload.py` (1), `db/test_read_replica.py` (6), `db/test_sharding.py` (3), `unit/test_hash_ring.py` (4) |
+| [1 Foundation](#1-foundation) — instrumentation, query and table health | `db/test_query_instrumentation.py` (3), `unit/test_query_instrumentation.py` (4), `db/test_query_counts.py` (5), `db/test_query_report.py` (2), `db/test_vacuum_and_compression.py` (5), `db/test_partition_maintenance.py` (7), `db/test_bulk_import.py` (4) |
+| [1 Foundation](#1-foundation) — caches, settings, devtools | `unit/test_request_cache.py` (7), `db/test_shared_cache.py` (5), `unit/test_shared_cache.py` (4), `db/test_bloom_filters.py` (4), `unit/test_bloom.py` (4), `db/test_system_config.py` (7), `unit/test_local_accounts.py` (3) |
+| [2 Onboarding](#2-onboarding) | `db/test_shorthand_import.py` (3), `unit/test_shorthand.py` (6), `db/test_template_fallback.py` (2), `unit/test_template_llm.py` (3), `db/test_term_watch.py` (2), `unit/test_term_watch.py` (3) |
+| [4 Pipeline](#4-pipeline) — pipeline and knowledge | `db/test_pipeline_write_batching.py` (1), `db/test_term_lookup.py` (1), `unit/test_synonyms.py` (5), `db/test_languages.py` (1), `unit/test_languages.py` (6), `db/test_variant_review.py` (3), `unit/test_variant_review.py` (2), `db/test_training_export.py` (1) |
+| [5 Engines](#5-engines) | `db/test_llm_response_cache.py` (7) |
+| [7 Governance](#7-governance) | `db/test_cost_dashboard.py` (7), `unit/test_cost_spikes.py` (5) |
+| [8 Surfaces](#8-surfaces) | `db/test_pagination.py` (5), `db/test_caching_headers.py` (4) |
+| [9 Background work](#9-background-work) | `db/test_job_queue.py` (8), `db/test_outbox.py` (7) |
+
+Plus three helpers with no tests: `db/helpers.py` (a platform account and a
+signed-in panel client), `fixtures/__init__.py` and `fixtures/pdf.py`.
 
 DB-backed tests skip unless `RADREPORT_TEST_DATABASE_URL` is set, so the unit
 suite runs anywhere. They must connect as the **non-owner** `radreport_app_login`

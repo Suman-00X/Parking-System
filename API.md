@@ -18,9 +18,12 @@ realm, roles, rate limit and body cap of every route.
 | [3](#phase-3--runtime-one-report-end-to-end) | A dictation becomes a signed report, and the lexicon learns from it | 20 | `/ingest`, `/review`, `/ui`, `/lexicon` |
 | [4](#phase-4--operate-it) | Measure it, export it, automate it, watch its cost | 26 | `/review`, `/ga`, `/admin/api` |
 
-**114 routes** — every one listed in
-[`api/access_policy.xml`](radreport/api/access_policy.xml): 108 on routers,
-`/health` and `/ready` on the app, and FastAPI's four documentation routes.
+**131 routes** — every one listed in
+[`api/access_policy.xml`](radreport/api/access_policy.xml): 126 on routers
+(including `/health`), `/ready` on the app, and FastAPI's four documentation
+routes. The phase table counts the 114 routes walked through in the phases; the
+sign-in routes (`/auth/*`, `/ui/login`, `/ui/logout`) and a few admin reads and
+uploads are described in Part I and in prose rather than in a phase table.
 Most return JSON; the admin panel's pages under `/admin` (but not `/admin/api`)
 and `/ui` serve HTML and `303` redirects, and three return neither (audio,
 HL7).
