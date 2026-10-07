@@ -9,6 +9,7 @@ from radreport.db.models.ingestion import Recording
 from radreport.db.models.knowledge import AutonomyClass, LexiconSet, LexiconSurfaceVariant, LexiconTerm, SpeakerTermBias, Template, TemplateField, TemplateVersion
 from radreport.db.models.modelconfig import ModelDefinition, ModelProvider, TaskModelAssignment, TaskModelAssignmentLog
 from radreport.db.models.onboarding import BoilerplateCandidate, CollisionAuditFinding, CorpusReport, CorpusReportTemplateMap, ImportArtifact, ImportBatch, LexiconMiningRun, OnboardingReadinessCheck, TemplateImportCandidate, TemplateMergeProposal
+from radreport.db.models.ops import SystemConfig
 from radreport.db.models.orchestration import AuditLog, PipelineRun, StageExecution
 from radreport.db.models.reporting import AutonomyObservation, CriticalFindingAlert, CriticalFindingRule, ProvenanceSpan, ReportDraft, ReportFieldValue, RoutingDecision, VerificationFinding
 from radreport.db.models.review import DraftUsefulnessReport, EditEvent, FinalReport, ReportRevision
@@ -87,4 +88,6 @@ __all__ = [
     "ModelDefinition",
     "TaskModelAssignment",
     "TaskModelAssignmentLog",
+    # operations
+    "SystemConfig",
 ]

@@ -17,6 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from radreport.core.logging import get_logger
+from radreport.core.system_config import AdapterThresholds, adapter_thresholds
+from radreport.core.tenancy import current_tenant_id_or_none
 from radreport.core.types import AdaptationTarget, CaptureDeviceClass
 from radreport.db.models.adaptation import VerbatimTranscript
 from radreport.db.models.ingestion import Recording
@@ -24,15 +26,13 @@ from radreport.knowledge.consent import verify_g6_legal_basis
 
 log = get_logger(__name__)
 
-GLOBAL_ADAPTER_HOURS = 20.0
-SPEAKER_ADAPTER_HOURS = 5.0
-
-#: G3: ≥5 distinct dictating radiologists, none above 40% of corpus hours.
-MIN_SPEAKERS = 5
-MAX_SPEAKER_SHARE = 0.40
-
-#: G4: the corpus must not mix capture hardware.
-MIN_DEVICE_CLASS_SHARE = 0.90
+#: The code defaults. Ops override them per platform or per lab, or by environment variable; see core/system_config.py.
+DEFAULTS = AdapterThresholds()
+GLOBAL_ADAPTER_HOURS = DEFAULTS.global_hours
+SPEAKER_ADAPTER_HOURS = DEFAULTS.speaker_hours
+MIN_SPEAKERS = DEFAULTS.min_speakers
+MAX_SPEAKER_SHARE = DEFAULTS.max_speaker_share
+MIN_DEVICE_CLASS_SHARE = DEFAULTS.min_device_class_share
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,11 +76,11 @@ def _load_corpus(session: Session, recording_ids: list[uuid.UUID]) -> list[_Corp
     return [_CorpusItem(recording_id=recording.id, radiologist_id=recording.radiologist_id, hours=float(transcript.audio_duration_seconds or 0.0) / 3600.0, capture_device_class=transcript.capture_device_class, includes_disfluencies=transcript.includes_disfluencies, is_eval_set_member=transcript.is_eval_set_member) for transcript, recording in rows]
 
 
-def gate_g1_volume(corpus: list[_CorpusItem], *, target: str) -> GateResult:
-    """≥20 h for a global adapter, ≥5 h per speaker for a per-speaker one."""
+def gate_g1_volume(corpus: list[_CorpusItem], *, target: str, thresholds: AdapterThresholds = DEFAULTS) -> GateResult:
+    """Enough usable hours: 20 h for a global adapter and 5 h per speaker by default."""
     usable = [c for c in corpus if c.includes_disfluencies and not c.is_eval_set_member]
     hours = round(sum(c.hours for c in usable), 3)
-    required = SPEAKER_ADAPTER_HOURS if target == AdaptationTarget.ASR_SPEAKER else GLOBAL_ADAPTER_HOURS
+    required = thresholds.speaker_hours if target == AdaptationTarget.ASR_SPEAKER else thresholds.global_hours
     excluded = len(corpus) - len(usable)
     return GateResult(gate_id="G1_volume", passed=hours >= required, reason=(f"{hours:.2f} h of usable verbatim against {required:.0f} h required" + (f"; {excluded} item(s) excluded as cleaned or eval-set" if excluded else "")), measured={"hours": hours, "required_hours": required, "excluded_items": excluded})
 
@@ -90,8 +90,8 @@ def gate_g2_unknown() -> GateResult:
     return GateResult(gate_id="G2_not_implemented", passed=False, reason=("The second gate is not implemented: its condition is not stated in PLAN.md and was not recoverable from the design PDF. Transcribe it and implement the check before adapting."), measured={"status": "unimplemented"})
 
 
-def gate_g3_speaker_balance(corpus: list[_CorpusItem], *, target: str) -> GateResult:
-    """≥5 speakers, none above 40% of corpus hours. **Global adapter only.**"""
+def gate_g3_speaker_balance(corpus: list[_CorpusItem], *, target: str, thresholds: AdapterThresholds = DEFAULTS) -> GateResult:
+    """Enough speakers, none holding too much of the hours (5 and 40% by default). **Global adapter only.**"""
     if target == AdaptationTarget.ASR_SPEAKER:
         return GateResult(gate_id="G3_speaker_balance", passed=True, reason="not applicable to a per-speaker adapter", measured={"applicable": False})
 
@@ -104,11 +104,11 @@ def gate_g3_speaker_balance(corpus: list[_CorpusItem], *, target: str) -> GateRe
     speakers = len(by_speaker)
     max_share = (max(by_speaker.values()) / total) if total > 0 else 1.0
 
-    passed = speakers >= MIN_SPEAKERS and max_share <= MAX_SPEAKER_SHARE
-    return GateResult(gate_id="G3_speaker_balance", passed=passed, reason=(f"{speakers} speaker(s) against {MIN_SPEAKERS} required; largest holds {max_share:.1%} of hours against a {MAX_SPEAKER_SHARE:.0%} ceiling"), measured={"speakers": speakers, "max_speaker_share": round(max_share, 4), "required_speakers": MIN_SPEAKERS})
+    passed = speakers >= thresholds.min_speakers and max_share <= thresholds.max_speaker_share
+    return GateResult(gate_id="G3_speaker_balance", passed=passed, reason=(f"{speakers} speaker(s) against {thresholds.min_speakers} required; largest holds {max_share:.1%} of hours against a {thresholds.max_speaker_share:.0%} ceiling"), measured={"speakers": speakers, "max_speaker_share": round(max_share, 4), "required_speakers": thresholds.min_speakers, "max_allowed_share": thresholds.max_speaker_share})
 
 
-def gate_g4_hardware_homogeneous(corpus: list[_CorpusItem]) -> GateResult:
+def gate_g4_hardware_homogeneous(corpus: list[_CorpusItem], *, thresholds: AdapterThresholds = DEFAULTS) -> GateResult:
     """The corpus must not mix capture hardware."""
     usable = [c for c in corpus if c.includes_disfluencies and not c.is_eval_set_member]
     by_class: dict[str, float] = defaultdict(float)
@@ -123,8 +123,8 @@ def gate_g4_hardware_homogeneous(corpus: list[_CorpusItem]) -> GateResult:
     share = dominant_hours / total
     return GateResult(
         gate_id="G4_hardware_homogeneous",
-        passed=share >= MIN_DEVICE_CLASS_SHARE,
-        reason=(f"{share:.1%} of hours are {dominant_class!r} against a {MIN_DEVICE_CLASS_SHARE:.0%} floor"),
+        passed=share >= thresholds.min_device_class_share,
+        reason=(f"{share:.1%} of hours are {dominant_class!r} against a {thresholds.min_device_class_share:.0%} floor"),
         measured={
             "dominant_class": dominant_class,
             "share": round(share, 4),
@@ -147,11 +147,12 @@ def gate_g6_legal_basis(session: Session, recording_ids: list[uuid.UUID]) -> Gat
     return GateResult(gate_id="G6_legal_basis", passed=passed, reason=("tenant consent live at upload, speaker consent present, PHI scrub complete for every item" if passed else f"{sum(len(v) for v in problems.values())} item(s) lack a legal basis"), measured={k: v[:5] for k, v in problems.items()})
 
 
-def evaluate_gates(session: Session, *, recording_ids: list[uuid.UUID], target: str = AdaptationTarget.ASR_GLOBAL) -> GateReport:
-    """Run all six gates. Adaptation proceeds only if every one passes."""
+def evaluate_gates(session: Session, *, recording_ids: list[uuid.UUID], target: str = AdaptationTarget.ASR_GLOBAL, tenant_id: uuid.UUID | None = None) -> GateReport:
+    """Run all six gates against the lab's configured thresholds. Adaptation proceeds only if every one passes."""
     corpus = _load_corpus(session, recording_ids)
+    thresholds = adapter_thresholds(session, tenant_id=tenant_id or current_tenant_id_or_none())
     report = GateReport(target=target)
-    report.results = [gate_g1_volume(corpus, target=target), gate_g2_unknown(), gate_g3_speaker_balance(corpus, target=target), gate_g4_hardware_homogeneous(corpus), gate_g5_unknown(), gate_g6_legal_basis(session, recording_ids)]
+    report.results = [gate_g1_volume(corpus, target=target, thresholds=thresholds), gate_g2_unknown(), gate_g3_speaker_balance(corpus, target=target, thresholds=thresholds), gate_g4_hardware_homogeneous(corpus, thresholds=thresholds), gate_g5_unknown(), gate_g6_legal_basis(session, recording_ids)]
 
     log.info("adaptation_gates_evaluated", target=target, items=len(corpus), passed=report.passed, failures=[r.gate_id for r in report.failures])
     return report
@@ -165,9 +166,9 @@ class AdaptationBlocked(Exception):
         self.report = report
 
 
-def require_gates(session: Session, *, recording_ids: list[uuid.UUID], target: str = AdaptationTarget.ASR_GLOBAL) -> GateReport:
+def require_gates(session: Session, *, recording_ids: list[uuid.UUID], target: str = AdaptationTarget.ASR_GLOBAL, tenant_id: uuid.UUID | None = None) -> GateReport:
     """Evaluate and raise unless all six pass."""
-    report = evaluate_gates(session, recording_ids=recording_ids, target=target)
+    report = evaluate_gates(session, recording_ids=recording_ids, target=target, tenant_id=tenant_id)
     if not report.passed:
         raise AdaptationBlocked(report)
     return report

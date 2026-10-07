@@ -202,6 +202,20 @@
       <param name="user_id" in="path" type="uuid" required="true"/>
       <param name="password" in="form" type="string" required="true" max-length="1024"/>
     </route>
+    <route id="admin.config.page" method="GET" path="/admin/config" roles="product_admin,support" rate-limit="admin-read" description="Operational settings and where each value comes from.">
+      <param name="lab" in="query" type="uuid"/>
+      <param name="error" in="query" type="string" max-length="500"/>
+      <param name="notice" in="query" type="string" max-length="500"/>
+    </route>
+    <route id="admin.config.set" method="POST" path="/admin/config/{key}" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="key" in="path" type="string" required="true" pattern="[a-z_]+\.[a-z_]+" max-length="64"/>
+      <param name="value" in="form" type="number" required="true"/>
+      <param name="lab" in="form" type="uuid"/>
+    </route>
+    <route id="admin.config.reset" method="POST" path="/admin/config/{key}/reset" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
+      <param name="key" in="path" type="string" required="true" pattern="[a-z_]+\.[a-z_]+" max-length="64"/>
+      <param name="lab" in="form" type="uuid"/>
+    </route>
     <route id="admin.account.page" method="GET" path="/admin/account" roles="product_admin,support" rate-limit="admin-read">
       <param name="error" in="query" type="string" max-length="500"/>
     </route>
@@ -330,6 +344,18 @@
       <param name="page_size" in="query" type="int" pattern="[1-9]\d{0,2}"/>
     </route>
     <route id="admin.api.ops.queries" method="GET" path="/admin/api/ops/queries" roles="product_admin,support" rate-limit="admin-read" description="Statement timings and statements per request, for this worker."/>
+    <route id="admin.api.ops.config" method="GET" path="/admin/api/ops/config" roles="product_admin,support" rate-limit="admin-read" description="Operational settings, effective values and their source.">
+      <param name="tenant_id" in="query" type="uuid"/>
+    </route>
+    <route id="admin.api.ops.config.set" method="POST" path="/admin/api/ops/config/{key}" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096" description="Set an operational setting, platform-wide or for one lab.">
+      <param name="key" in="path" type="string" required="true" pattern="[a-z_]+\.[a-z_]+" max-length="64"/>
+      <param name="value" in="json" type="number" required="true"/>
+      <param name="tenant_id" in="json" type="uuid"/>
+    </route>
+    <route id="admin.api.ops.config.reset" method="POST" path="/admin/api/ops/config/{key}/reset" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096" description="Remove a stored setting so the next level applies.">
+      <param name="key" in="path" type="string" required="true" pattern="[a-z_]+\.[a-z_]+" max-length="64"/>
+      <param name="tenant_id" in="json" type="uuid"/>
+    </route>
     <route id="admin.api.users.create" method="POST" path="/admin/api/users" roles="product_admin" rate-limit="admin-write" max-body-bytes="4096">
       <param name="display_name" in="json" type="string" required="true" max-length="200"/>
       <param name="email" in="json" type="string" required="true" pattern="[^@\s]{1,64}@[^@\s]{1,255}" max-length="320"/>

@@ -18,7 +18,7 @@ from sqlalchemy import text
 
 from radreport.api.access import AccessMiddleware, RateLimiter, load_policy, verify_coverage
 from radreport.api.input_check import InputValidationMiddleware, verify_params
-from radreport.api.routes import admin_api, admin_panel, auth, ga, ingest, onboarding, ops, review, review_ui
+from radreport.api.routes import admin_api, admin_ops_panel, admin_panel, auth, ga, ingest, onboarding, ops, review, review_ui
 from radreport.auth.lab import require_token_secret
 from radreport.cache.request import RequestCacheMiddleware
 from radreport.core.config import get_settings
@@ -52,6 +52,7 @@ def create_app() -> FastAPI:
     app.include_router(review_ui.router)
     app.include_router(ga.router)
     app.include_router(admin_panel.router)
+    app.include_router(admin_ops_panel.router)
 
     @app.get("/health", tags=["ops"])
     def health() -> dict[str, str]:

@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from radreport.core.logging import get_logger
+from radreport.core.system_config import adapter_thresholds
 from radreport.core.types import ActorType, CaptureDeviceClass, ImportBatchType, ImportStatus, ImportTrigger, TermType, VariantSource, VerbatimSource
 from radreport.db.models.adaptation import VerbatimTranscript
 from radreport.db.models.identity import Study
@@ -143,13 +144,16 @@ class CorpusHours:
     legacy_hours: float
     training_eligible_hours: float
     per_speaker_hours: dict[str, float]
+    global_floor_hours: float = GLOBAL_ADAPTER_HOURS
+    speaker_floor_hours: float = SPEAKER_ADAPTER_HOURS
+    """Both floors as configured for the lab when counted, so this agrees with the gates."""
 
     @property
     def meets_global_adapter_floor(self) -> bool:
-        return self.training_eligible_hours >= GLOBAL_ADAPTER_HOURS
+        return self.training_eligible_hours >= self.global_floor_hours
 
     def speakers_meeting_floor(self) -> list[str]:
-        return [s for s, h in self.per_speaker_hours.items() if h >= SPEAKER_ADAPTER_HOURS]
+        return [s for s, h in self.per_speaker_hours.items() if h >= self.speaker_floor_hours]
 
 
 def corpus_hours(session: Session, *, tenant_id: uuid.UUID) -> CorpusHours:
@@ -169,7 +173,8 @@ def corpus_hours(session: Session, *, tenant_id: uuid.UUID) -> CorpusHours:
             eligible += hours
             per_speaker[str(radiologist_id)] += hours
 
-    return CorpusHours(current_hours=round(current, 3), legacy_hours=round(legacy, 3), training_eligible_hours=round(eligible, 3), per_speaker_hours={k: round(v, 3) for k, v in per_speaker.items()})
+    floors = adapter_thresholds(session, tenant_id=tenant_id)
+    return CorpusHours(current_hours=round(current, 3), legacy_hours=round(legacy, 3), training_eligible_hours=round(eligible, 3), per_speaker_hours={k: round(v, 3) for k, v in per_speaker.items()}, global_floor_hours=floors.global_hours, speaker_floor_hours=floors.speaker_hours)
 
 
 def gold_partition_progress(session: Session, *, tenant_id: uuid.UUID) -> dict[str, tuple[int, int]]:

@@ -138,6 +138,8 @@ NULLABLE_TENANT_TABLES: Final[frozenset[str]] = frozenset(
         # and an adaptation run over one inherits that.
         "training_corpus_snapshot",
         "model_adaptation_run",
+        # Operational thresholds: NULL is the platform-wide value, a lab id overrides it for that lab.
+        "system_config",
         # System actions have no tenant.
         "audit_log",
     }
