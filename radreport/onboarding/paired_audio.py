@@ -26,7 +26,7 @@ from radreport.db.models.onboarding import CorpusReport, ImportBatch
 from radreport.db.models.orchestration import AuditLog
 from radreport.knowledge.phonetics import double_metaphone, phonetic_distance
 from radreport.onboarding.batches import open_batch, record_counts, transition
-from radreport.onboarding.lexicon import record_surface_variants
+from radreport.onboarding.lexicon import record_surface_variants_bulk
 
 log = get_logger(__name__)
 
@@ -241,8 +241,7 @@ def mine_surface_variants(session: Session, *, tenant_id: uuid.UUID, min_occurre
                 continue
             per_term[term.id][surface] = count
 
-    for term_id, variants in per_term.items():
-        result.variants_written += record_surface_variants(session, tenant_id=tenant_id, term_id=term_id, variants=variants, source=VariantSource.MINED)
+    result.variants_written += record_surface_variants_bulk(session, tenant_id=tenant_id, per_term=dict(per_term), source=VariantSource.MINED)
     result.terms_touched = len(per_term)
     result.unmatched_frequent.sort(key=lambda pair: -pair[1])
     result.unmatched_frequent = result.unmatched_frequent[:50]

@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from radreport.core.logging import get_logger
 from radreport.core.types import ActorType, ImportBatchType, ImportStatus, ImportTrigger, MatchMethod
+from radreport.db.bulk import bulk_insert
 from radreport.db.models.identity import RadiologistProfile
 from radreport.db.models.knowledge import Template, TemplateVersion
 from radreport.db.models.onboarding import CorpusReport, CorpusReportTemplateMap, ImportBatch
@@ -122,6 +123,7 @@ def load_corpus(session: Session, *, tenant_id: uuid.UUID, records: list[CorpusR
 
     existing_ids = {row for row in session.execute(select(CorpusReport.external_report_id).where(CorpusReport.tenant_id == tenant_id, CorpusReport.external_report_id.isnot(None))).scalars().all()}
 
+    rows: list[dict[str, object]] = []
     for record in records:
         if not record.report_text.strip():
             result.rejected.append((record.external_report_id or "<no id>", "empty report text"))
@@ -130,13 +132,15 @@ def load_corpus(session: Session, *, tenant_id: uuid.UUID, records: list[CorpusR
             result.duplicates += 1
             continue
 
-        session.add(CorpusReport(tenant_id=tenant_id, import_batch_id=batch.id, external_report_id=record.external_report_id, report_text=record.report_text, report_date=_as_datetime(record.report_date), radiologist_id=by_employee_code.get(record.radiologist_employee_code or ""), referring_doctor=record.referring_doctor, patient_sex=record.patient_sex, patient_age_years=record.patient_age_years, is_deidentified=record.is_deidentified))
+        rows.append({"tenant_id": tenant_id, "import_batch_id": batch.id, "external_report_id": record.external_report_id, "report_text": record.report_text, "report_date": _as_datetime(record.report_date), "radiologist_id": by_employee_code.get(record.radiologist_employee_code or ""), "referring_doctor": record.referring_doctor, "patient_sex": record.patient_sex, "patient_age_years": record.patient_age_years, "is_deidentified": record.is_deidentified})
         result.loaded += 1
         if record.external_report_id:
             existing_ids.add(record.external_report_id)
 
     batch.item_count += len(records)
     session.flush()
+    # Thousands of reports at a time: batched INSERTs rather than one statement, and one read-back, per row.
+    bulk_insert(session, CorpusReport, rows)
     record_counts(session, batch, accepted=result.loaded, rejected=len(result.rejected))
 
     log.info("s2_corpus_loaded", tenant_id=str(tenant_id), batch_id=str(batch.id), loaded=result.loaded, duplicates=result.duplicates, rejected=len(result.rejected))

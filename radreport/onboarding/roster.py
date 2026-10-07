@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from radreport.cache.lookups import forget_user
 from radreport.core.errors import ConsentRequired
 from radreport.core.logging import get_logger
 from radreport.core.types import ActorType, ImportBatchType, ImportStatus, ImportTrigger, UserRole
@@ -112,8 +113,14 @@ def import_roster(session: Session, *, tenant_id: uuid.UUID, rows: list[RosterRo
     result = RosterImportResult(batch=batch)
     batch.item_count += len(rows)
 
+    # Everyone and every profile this import could touch, read once rather than per row.
+    codes = [row.employee_code for row in rows]
+    users_by_code = {u.employee_code: u for u in session.execute(select(AppUser).where(AppUser.tenant_id == tenant_id, AppUser.employee_code.in_(codes))).scalars().all()} if codes else {}
+    profiles_by_user = {p.user_id: p for p in session.execute(select(RadiologistProfile).where(RadiologistProfile.tenant_id == tenant_id, RadiologistProfile.user_id.in_([u.id for u in users_by_code.values()]))).scalars().all()} if users_by_code else {}
+    now = dt.datetime.now(dt.UTC)
+
     for row in rows:
-        existing = session.execute(select(AppUser).where(AppUser.tenant_id == tenant_id, AppUser.employee_code == row.employee_code)).scalar_one_or_none()
+        existing = users_by_code.get(row.employee_code)
 
         if existing is not None:
             existing.display_name = row.display_name
@@ -123,20 +130,22 @@ def import_roster(session: Session, *, tenant_id: uuid.UUID, rows: list[RosterRo
             # admin granted after the first import.
             existing.roles = sorted(set(existing.roles) | set(row.roles))
             existing.is_active = True
+            forget_user(tenant_id, existing.id)
             result.updated.append(existing)
             user = existing
         else:
-            user = AppUser(tenant_id=tenant_id, employee_code=row.employee_code, display_name=row.display_name, email=row.email, roles=list(row.roles))
+            # Every server-defaulted column set here, so the new rows go out as one batched INSERT with nothing to read back.
+            user = AppUser(id=uuid.uuid4(), tenant_id=tenant_id, employee_code=row.employee_code, display_name=row.display_name, email=row.email, roles=list(row.roles), is_active=True, created_at=now, updated_at=now)
             session.add(user)
-            session.flush()
+            users_by_code[row.employee_code] = user
             result.created.append(user)
 
         if UserRole.RADIOLOGIST in row.roles:
-            profile = session.execute(select(RadiologistProfile).where(RadiologistProfile.tenant_id == tenant_id, RadiologistProfile.user_id == user.id)).scalar_one_or_none()
+            profile = profiles_by_user.get(user.id)
             if profile is None:
-                profile = RadiologistProfile(tenant_id=tenant_id, user_id=user.id, default_language=row.default_language, subspecialty=list(row.subspecialty) or None)
+                profile = RadiologistProfile(id=uuid.uuid4(), tenant_id=tenant_id, user_id=user.id, default_language=row.default_language, subspecialty=list(row.subspecialty) or None, autonomy_enabled=False, created_at=now, updated_at=now)
                 session.add(profile)
-                session.flush()
+                profiles_by_user[user.id] = profile
                 result.profiles_created.append(profile)
             elif row.subspecialty:
                 profile.subspecialty = list(row.subspecialty)

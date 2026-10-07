@@ -76,7 +76,7 @@ def build_queue(session: Session, *, tenant_id: uuid.UUID, reviewer: Reviewer, l
     if include_signed:
         autonomous_draft_ids = frozenset(session.execute(select(FinalReport.report_draft_id).where(FinalReport.tenant_id == tenant_id, FinalReport.path_type == PathType.AUTONOMOUS)).scalars().all())
 
-    alerts = _alerts_by_recording(session, tenant_id)
+    alerts = _alerts_by_recording(session, tenant_id, [recording.id for _, recording, _, _ in rows])
     now = dt.datetime.now(dt.UTC)
     items: list[QueueItem] = []
 
@@ -99,9 +99,11 @@ def build_queue(session: Session, *, tenant_id: uuid.UUID, reviewer: Reviewer, l
     return sorted(items, key=sort_key)[:limit]
 
 
-def _alerts_by_recording(session: Session, tenant_id: uuid.UUID) -> dict[uuid.UUID, str]:
-    """`recording_id -> worst severity`. Red outranks orange."""
-    rows = session.execute(select(CriticalFindingAlert.recording_id, CriticalFindingRule.severity).join(CriticalFindingRule, CriticalFindingRule.id == CriticalFindingAlert.rule_id).where(CriticalFindingAlert.tenant_id == tenant_id)).all()
+def _alerts_by_recording(session: Session, tenant_id: uuid.UUID, recording_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+    """`recording_id -> worst severity` for the queued recordings only. Red outranks orange."""
+    if not recording_ids:
+        return {}
+    rows = session.execute(select(CriticalFindingAlert.recording_id, CriticalFindingRule.severity).join(CriticalFindingRule, CriticalFindingRule.id == CriticalFindingAlert.rule_id).where(CriticalFindingAlert.tenant_id == tenant_id, CriticalFindingAlert.recording_id.in_(recording_ids))).all()
     worst: dict[uuid.UUID, str] = {}
     for recording_id, severity in rows:
         if worst.get(recording_id) != AlertSeverity.RED:

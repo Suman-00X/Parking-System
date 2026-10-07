@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from radreport.core.logging import get_logger
 from radreport.core.text import split_sentences
 from radreport.core.types import ActorType, CollisionResolution, CollisionSeverity, ImportBatchType, ImportStatus, ImportTrigger, LexiconScope, TermType, VariantSource
+from radreport.db.bulk import bulk_insert
 from radreport.db.models.knowledge import LexiconSet, LexiconSurfaceVariant, LexiconTerm, Template, TemplateVersion
 from radreport.db.models.onboarding import CollisionAuditFinding, CorpusReport, ImportBatch, LexiconMiningRun
 from radreport.db.models.orchestration import AuditLog
@@ -136,8 +137,11 @@ def run_mining(session: Session, *, tenant_id: uuid.UUID, lexicon_set: LexiconSe
 
     result = MiningResult(run=LexiconMiningRun(tenant_id=tenant_id, import_batch_id=batch.id, corpus_size=len(texts), terms_extracted=len(mined), pass_number=pass_number), lexicon_set=lexicon_set, terms_extracted=len(mined))
 
+    # The set's current terms, read once; new ones go out in batched INSERTs.
+    current = {t.canonical_form: t for t in session.execute(select(LexiconTerm).where(LexiconTerm.lexicon_set_id == lexicon_set.id)).scalars().all()}
+    new_rows: list[dict[str, object]] = []
     for term in mined:
-        existing = session.execute(select(LexiconTerm).where(LexiconTerm.lexicon_set_id == lexicon_set.id, LexiconTerm.canonical_form == term.canonical_form)).scalar_one_or_none()
+        existing = current.get(term.canonical_form)
         if existing is not None:
             # Re-running term mining refreshes the ranking and leaves curation alone.
             existing.frequency_rank = term.frequency
@@ -145,10 +149,12 @@ def run_mining(session: Session, *, tenant_id: uuid.UUID, lexicon_set: LexiconSe
 
         primary, secondary = double_metaphone(term.canonical_form)
         ambiguous = _is_polysemous(term)
-        session.add(LexiconTerm(tenant_id=tenant_id, lexicon_set_id=lexicon_set.id, canonical_form=term.canonical_form, term_type=term.term_type, phonetic_key_primary=primary, phonetic_key_secondary=secondary, frequency_rank=term.frequency, is_ambiguous=ambiguous))
+        new_rows.append({"tenant_id": tenant_id, "lexicon_set_id": lexicon_set.id, "canonical_form": term.canonical_form, "term_type": term.term_type, "phonetic_key_primary": primary, "phonetic_key_secondary": secondary, "frequency_rank": term.frequency, "is_ambiguous": ambiguous})
         result.terms_new += 1
         if ambiguous:
             result.ambiguous.append(term.canonical_form)
+    session.flush()
+    bulk_insert(session, LexiconTerm, new_rows)
 
     # Every new term is pending review: the term mining stage's human gate is polysemy review, and auto-accepting on frequency alone is what puts PA into the bias list with one meaning attached.
     result.terms_pending_review = result.terms_new
@@ -184,20 +190,30 @@ def get_or_create_tenant_lexicon(session: Session, tenant_id: uuid.UUID) -> Lexi
 
 def record_surface_variants(session: Session, *, tenant_id: uuid.UUID, term_id: uuid.UUID, variants: dict[str, int], source: str = VariantSource.MINED) -> int:
     """Record how a term actually comes back from ASR."""
-    written = 0
-    for raw_surface, count in variants.items():
-        surface = raw_surface.strip()
-        if not surface:
-            continue
-        existing = session.execute(select(LexiconSurfaceVariant).where(LexiconSurfaceVariant.lexicon_term_id == term_id, LexiconSurfaceVariant.surface_text == surface)).scalar_one_or_none()
-        if existing is not None:
-            existing.observed_count += count
-            continue
-        primary, _ = double_metaphone(surface)
-        session.add(LexiconSurfaceVariant(tenant_id=tenant_id, lexicon_term_id=term_id, surface_text=surface, phonetic_key=primary, observed_count=count, source=source))
-        written += 1
+    return record_surface_variants_bulk(session, tenant_id=tenant_id, per_term={term_id: variants}, source=source)
+
+
+def record_surface_variants_bulk(session: Session, *, tenant_id: uuid.UUID, per_term: dict[uuid.UUID, dict[str, int]], source: str = VariantSource.MINED) -> int:
+    """Record surface variants for many terms: one read of what exists, one batched insert of what is new."""
+    if not per_term:
+        return 0
+    existing = {(v.lexicon_term_id, v.surface_text): v for v in session.execute(select(LexiconSurfaceVariant).where(LexiconSurfaceVariant.lexicon_term_id.in_(list(per_term)))).scalars().all()}
+    new_rows: list[dict[str, object]] = []
+    added: set[tuple[uuid.UUID, str]] = set()
+    for term_id, variants in per_term.items():
+        for raw_surface, count in variants.items():
+            surface = raw_surface.strip()
+            if not surface or (term_id, surface) in added:
+                continue
+            seen = existing.get((term_id, surface))
+            if seen is not None:
+                seen.observed_count += count
+                continue
+            primary, _ = double_metaphone(surface)
+            new_rows.append({"tenant_id": tenant_id, "lexicon_term_id": term_id, "surface_text": surface, "phonetic_key": primary, "observed_count": count, "source": source})
+            added.add((term_id, surface))
     session.flush()
-    return written
+    return bulk_insert(session, LexiconSurfaceVariant, new_rows)
 
 
 # ------------------------------------------------------- collision audit ----
