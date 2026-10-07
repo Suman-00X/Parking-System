@@ -66,26 +66,32 @@ class PipelineGraph:
         run.started_at = dt.datetime.now(dt.UTC)
         session.flush()
 
+        # Stage rows and domain writes are buffered and flushed once at the end, so each table gets one batched INSERT.
+        # Nothing reads them mid-run: stages never touch the session, and every id is assigned before the row is added.
+        buffer: list[object] = []
         try:
             for spec in self.specs:
-                state = await self._run_one(spec, state, ctx, session)
+                state = await self._run_one(spec, state, ctx, buffer)
         except BudgetExceeded as exc:
-            self._finish(session, run, ctx, RunStatus.FAILED, {"budget": str(exc)})
+            self._finish(session, run, ctx, RunStatus.FAILED, {"budget": str(exc)}, buffer)
             raise
         except StageFailed as exc:
-            self._finish(session, run, ctx, RunStatus.FAILED, {"stage": exc.stage_name, "detail": exc.detail})
+            self._finish(session, run, ctx, RunStatus.FAILED, {"stage": exc.stage_name, "detail": exc.detail}, buffer)
             raise
 
-        self._finish(session, run, ctx, RunStatus.SUCCEEDED, None)
+        self._finish(session, run, ctx, RunStatus.SUCCEEDED, None, buffer)
         state.total_cost_usd = ctx.spent_usd
         return state
 
     # ------------------------------------------------------------ internals --
-    async def _run_one(self, spec: StageSpec, state: PipelineState, ctx: RunContext, session: Session) -> PipelineState:
+    async def _run_one(self, spec: StageSpec, state: PipelineState, ctx: RunContext, buffer: list[object]) -> PipelineState:
         stage = spec.stage
         timing = ctx.enter_stage(stage.name)
 
         execution = StageExecution(
+            # Both set here rather than by the server, so the batched INSERT needs no RETURNING; created_at is then the stage's real start.
+            id=uuid.uuid4(),
+            created_at=dt.datetime.now(dt.UTC),
             tenant_id=ctx.tenant_id,
             pipeline_run_id=ctx.pipeline_run_id,
             stage_name=stage.name,
@@ -98,8 +104,7 @@ class PipelineGraph:
             radiologist_id=ctx.radiologist_id,
             status=RunStatus.RUNNING,
         )
-        session.add(execution)
-        session.flush()
+        buffer.append(execution)
 
         try:
             result: StageResult = await stage.run(state, ctx)
@@ -107,7 +112,6 @@ class PipelineGraph:
             execution.status = RunStatus.FAILED
             execution.duration_ms = timing.elapsed_ms()
             execution.output_ref = {"error": type(exc).__name__, "detail": str(exc)[:500]}
-            session.flush()
             if spec.optional:
                 log.warning("optional_stage_failed", stage=stage.name, error=str(exc)[:200], **ctx.as_log_context())
                 return state
@@ -129,19 +133,18 @@ class PipelineGraph:
         execution.cache_write_tokens = result.cache_write_tokens
         execution.cost_usd = result.cost_usd
         execution.output_ref = {"warnings": result.warnings} if result.warnings else {}
-        session.flush()
 
         # Domain writes belong to the orchestrator, never to the stage.
         if result.pending_writes:
             if ctx.is_shadow:
                 log.info("shadow_writes_discarded", stage=stage.name, count=len(result.pending_writes), **ctx.as_log_context())
             else:
-                session.add_all(result.pending_writes)
-                session.flush()
+                buffer.extend(result.pending_writes)
 
         return result.output if isinstance(result.output, PipelineState) else state
 
-    def _finish(self, session: Session, run: PipelineRun, ctx: RunContext, status: str, error: dict[str, object] | None) -> None:
+    def _finish(self, session: Session, run: PipelineRun, ctx: RunContext, status: str, error: dict[str, object] | None, buffer: list[object]) -> None:
+        session.add_all(buffer)
         run.status = status
         run.completed_at = dt.datetime.now(dt.UTC)
         run.total_cost_usd = round(ctx.spent_usd, 4)
