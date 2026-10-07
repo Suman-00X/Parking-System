@@ -303,10 +303,64 @@ Redpanda (`docker compose --profile kafka up`), keyed by lab.
 
 Measured numbers are in PERFORMANCE_BASELINE.md. Query counts, statement
 percentiles, table sizes and bloat are at `/admin/api/ops/queries` and
-`/admin/api/ops/tables`; spend per lab and stage at **Cost & usage** in the
+`/admin/api/ops/tables`; PgBouncer's pools at **Connection pools**
+(`/admin/pools`); spend per lab and stage at **Cost & usage** in the
 admin panel. Platform and per-lab thresholds (adapter gates, lexicon matching,
 template import, languages, partition retention) are edited at **System
 settings**; each has an environment-variable fallback named on that page.
+
+### Observability
+
+Everything here is free and stays off until it is configured, so a fresh checkout behaves exactly
+as before.
+
+| What | How it turns on | Where it goes |
+|---|---|---|
+| **Metrics** | always; `/metrics` answers in local/test/development, elsewhere only with `Authorization: Bearer $RADREPORT_OBSERVABILITY__METRICS_TOKEN` | Prometheus, or Grafana Cloud's free tier scraping the URL |
+| **Traces** | `OTEL_EXPORTER_OTLP_ENDPOINT` (+ `OTEL_EXPORTER_OTLP_HEADERS` for Grafana Cloud) | Jaeger locally, Grafana Tempo in the cloud |
+| **Errors** | `RADREPORT_OBSERVABILITY__SENTRY_DSN` | Sentry free tier |
+
+```bash
+make run && make worker                               # app on :8000, worker metrics on :9101
+docker compose --profile observability up -d          # Prometheus :9090, Grafana :3000, Jaeger :16686
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 make run   # with traces into Jaeger
+k6 run ops/k6/synthetic.js -e BASE_URL=http://127.0.0.1:8000  # light synthetic traffic (brew install k6)
+```
+
+Grafana loads `ops/observability/grafana/dashboards/radreport.json` on start: request rate and
+p95 per route, 5xx share, 429s per limit, p95 per pipeline stage, model spend per hour, prompt-cache
+share, job queue depth and age, outbox backlog and cache hit ratio. Import the same file into
+Grafana Cloud. `.github/workflows/synthetic-load.yml` runs the k6 script every 15 minutes against
+the hosted demo, which also keeps a free host awake.
+
+Three rules hold the design together:
+
+- **Labels are bounded.** A route is its access-policy id (`review.queue`), never its raw path,
+  and nothing is labelled per lab: a label per lab grows without limit and names customers.
+- **Nothing clinical leaves the machine.** SQL spans carry statements with placeholders, never
+  parameters. Sentry events lose the request body, cookies, query string, auth headers,
+  exception messages, local variables and breadcrumbs before they are sent.
+- **Every worker is counted.** `make run` sets `PROMETHEUS_MULTIPROC_DIR`, so a scrape that lands
+  on one uvicorn worker reports all of them. The job and outbox backlog are counted live at scrape
+  time by `work_backlog()` (migration 0024), which sees every lab's rows and returns counts only.
+
+### Crash test and screen recordings
+
+```bash
+RADREPORT_TEST_DATABASE_URL=<test db> make crash-test   # breaks the system on purpose; writes docs/CRASH_TEST.md
+make gifs                                               # records docs/media/*.gif and *.mp4 from the running app
+```
+
+The crash test refuses any database whose name does not end in `_test`. It kills a real worker
+with SIGKILL mid-job, crashes the outbox relay between publishing and marking, races eight
+workers over 200 jobs, fires 20 identical enqueues at once, runs a job that always throws, fails
+an AI provider until its circuit opens, starts real servers against a missing database and a
+missing Redis, and floods one route from one address. Each scenario records what it measured;
+the features page's Crash test tab renders the last report.
+
+`make gifs` drives Chromium through the features page, the lab sign-in and the admin panel with
+the demo accounts, then writes a GIF (for the README) and an MP4 (for the page, a quarter of the
+size) per flow. A `<!-- media: name | caption -->` line in FEATURES.md places a recording.
 
 ### Demo data and the public pages
 
@@ -328,11 +382,12 @@ storage: on a machine without S3, set `RADREPORT_STORAGE__BACKEND=local` (audio 
 words a demo WAV carries in its comment chunk, so the drafts differ by dictation. Drafts have
 no field values until an extraction model is wired in; see "What is deliberately not done yet".
 
-`/features`, `/api-docs` and `/recruiter` need no sign-in and are linked from both sign-in
-pages. The first two render FEATURES.md and API.md; the recruiter page counts its numbers from
-the code. Demo sign-ins come from `RADREPORT_DEMO_ACCOUNTS`
-(`[{"label", "email", "password", "role", "lab"}]`) and are shown on the sign-in pages' Test
-credentials tab and on `/recruiter`, but only for read-only roles: `support` (admin panel) and
+`/features`, `/demo`, `/api-docs` and `/recruiter` need no sign-in and are linked from both
+sign-in pages. `/features` renders the features tab of FEATURES.md and `/api-docs` renders API.md.
+`/recruiter` is the recruiter tour: numbers counted from the code, then tabs for the demo sign-ins,
+the screen recordings, the system design and the crash test (the other FEATURES.md tabs). Demo
+sign-ins come from `RADREPORT_DEMO_ACCOUNTS` (`[{"label", "email", "password", "role", "lab"}]`)
+and are shown on the sign-in pages' Test credentials tab, on `/demo` and on `/recruiter`, but only for read-only roles: `support` (admin panel) and
 `auditor` (a lab, with `lab` set to its slug). Any other role in that list is never shown.
 
 ### Lexicon growth, template model and languages

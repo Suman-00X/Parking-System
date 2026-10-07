@@ -127,8 +127,8 @@ Expected optimization potential: **40-60% cost reduction** with app-level fixes.
 
 ### Priority: HIGH
 
-- [ ] **Deploy PgBouncer** (4 hours)
-  - **Status: Partly done.** Transaction-mode config in `ops/pgbouncer/`, `make pgbouncer`, a docker-compose service, and `RADREPORT_DB__PGBOUNCER=true` turns off prepared statements. `tests/db/test_pgbouncer.py` shows 200 clients sharing ≤ 25 server connections and that lab binding never leaks between them. Failover was not tested, and pool numbers are read with `SHOW POOLS` rather than shown on a dashboard.
+- [x] **Deploy PgBouncer** (4 hours)
+  - **Status: Partly done.** Transaction-mode config in `ops/pgbouncer/`, `make pgbouncer`, a docker-compose service, and `RADREPORT_DB__PGBOUNCER=true` turns off prepared statements. `tests/db/test_pgbouncer.py` shows 200 clients sharing ≤ 25 server connections and that lab binding never leaks between them. Pool numbers are on a dashboard: `/admin/pools` (and `/admin/api/ops/pgbouncer`) reads `SHOW POOLS` and `SHOW CONFIG` from the admin console, with clients waiting and pools at 80% or more of `default_pool_size` flagged. Failover is tested: `tests/db/test_pgbouncer_failover.py` starts its own PgBouncer, SIGKILLs it mid-run and restarts it — requests in between answer `503` with `Retry-After: 5` within the connect timeout (`api/unavailable.py`, the access check included), and both the async and the sync engine recover without an app restart (`pool_pre_ping`). A managed pooler's own failover (two PgBouncers behind a load balancer) is a deployment concern, not tested here.
   - Set up connection pooler in front of Postgres
   - Config: `pool_mode = transaction`
   - Expected: 10x more app connections, same DB load
@@ -173,8 +173,8 @@ Expected optimization potential: **40-60% cost reduction** with app-level fixes.
 
 ### Priority: MEDIUM
 
-- [ ] **Async Database Driver** (1-2 weeks)
-  - **Status: Partly done.** An async session layer (`db/async_session.py`, psycopg 3) exists and `/health` and the recording list run on it; every other route is still synchronous, and the requests-per-second gain was not measured.
+- [x] **Async Database Driver** (1-2 weeks)
+  - **Status: Done.** Every sync route now runs **bridged** (`db/bridge.py`, `api/routing.py`): on the event loop inside a SQLAlchemy greenlet — the mechanism `AsyncSession` is built on — so its queries go through psycopg's asyncio driver and a request waiting on the database holds no worker thread. The route bodies and domain modules stay synchronous; inside the bridge every session factory hands out the async engine. Blocking work that touches no session (S3, local disk, Redis, RadLex, Google Translate, scrypt, audio decoding) is offloaded to a thread. The access middleware's lookups are bridged too. Deliberately kept on worker threads (`@threaded`, the sync engine): the onboarding uploads, steps and merge proposals, which run seconds of CPU between queries and would stall every other request on the loop. Pinned by `tests/db/test_bridge.py`. Measured (PERFORMANCE_BASELINE.md): the mechanism gives 4.3x the requests per second on a 20 ms query (`async_bench`); on the real app on one laptop, CPU-bound, throughput is unchanged with a local database and about 5% higher with no errors (sync: 2% errors) through a 2 ms-latency proxy. The gain grows with database latency; a like-for-like production measurement is still to do.
   - Migrate to `sqlalchemy[asyncio]` or `asyncpg`
   - Change: sync Session → async AsyncSession
   - Expected: 20-30% more req/sec capacity
@@ -244,7 +244,7 @@ Expected optimization potential: **40-60% cost reduction** with app-level fixes.
 - [x] Query instrumentation working: check slow query log for entries — **Done:** slow statements are logged and counted (`tests/db/test_query_instrumentation.py`).
 - [x] Connection pool increased: verify `SHOW max_connections` and actual conn count — **Done:** pool size from settings; the app reads `SHOW max_connections` at start-up and warns when the pools could exceed it.
 - [x] Request caching working: profile request handler, cache hit rate > 80% — **Done:** hit rate above 80% on steady admin traffic (`tests/db/test_shared_cache.py`).
-- [ ] N+1 queries fixed: query count per request < 10 (was > 50 before) — **Partly done:** no page grows with the number of rows; most are 3–10 statements, but the lab readiness page is 13 and the onboarding overview 17.
+- [x] N+1 queries fixed: query count per request < 10 (was > 50 before) — **Done:** no page grows with the number of rows, and every page is under 10. The seven readiness checks now judge facts read in one statement (`readiness.load_facts`), so the lab readiness page is 5 statements (was 13) and the onboarding overview 7 (was 17); pinned in `tests/db/test_query_counts.py`.
 - [x] Batch operations fast: 5000-row import < 5 seconds (was ~50s) — **Done:** 5,000 rows in 0.18 s.
 - [x] PgBouncer working: app handles 2x connections with same DB load — **Done:** 200 clients on ≤ 25 server connections.
 - [ ] Read replicas working: 90% read queries hit replica (via query tagging) — **Blocked:** reads are tagged by target (`reads_by_target` at `/admin/api/ops/queries`), but there is no replica to measure the share against.
@@ -488,7 +488,7 @@ CREATE TABLE potential_lexicon_term (
 - [x] Create potential_lexicon_term table — **Done:** migration 0020.
 - [x] Add background job: aggregate edit_events → find new terms — **Done:** `watch_lexicon`, daily, with a per-lab watermark (`onboarding/term_watch.py`).
 - [x] Build a lab-side radiologist approval UI (the approvals stay out of the admin panel) — **Done:** `/ui/lexicon` ("New terms"), radiologists approve and lab admins can see it.
-- [x] Auto-create lexicon_set version on approval — **Done:** 
+- [x] Auto-create lexicon_set version on approval — **Done:** `term_watch.approve` (behind `POST /lexicon/candidates/approve`) adds the approved terms to the lab's lexicon as its next version (`new_version`), links each term to that version and audits it as `lexicon_terms_approved`; `tests/db/test_term_watch.py`.
 - [ ] Test workflow with Lab A (1 month of live data) — **Blocked:** needs a live pilot lab.
 
 ---
@@ -749,7 +749,7 @@ queue and outbox come first because the crash test depends on them.
 ## Doable with caveats
 
 - [ ] **Kafka event streaming** (1–2 days)
-  - **Status: Partly done.** Redpanda in docker-compose (profile `kafka`), the `EventBus` with Postgres and Kafka implementations chosen by config, topics keyed by lab id. Tested with stand-in producers and consumers; not yet run against a live broker.
+  - **Status: Partly done.** Redpanda in docker-compose (profile `kafka`), the `EventBus` with Postgres and Kafka implementations chosen by config, topics keyed by lab id. Tested with stand-in producers and consumers. Hosted brokers are supported: `kafka_client_config()` in `events/bus.py` gives the producer and every consumer TLS and SASL (`RADREPORT_EVENTS__KAFKA_SECURITY_PROTOCOL`, `_SASL_MECHANISM`, `_USERNAME`, `_PASSWORD`, `_CA_LOCATION`; `tests/unit/test_kafka_config.py`). Not yet run against a live broker, local or hosted.
   - Redpanda (Kafka-compatible, lighter) in `docker-compose.yml`
   - Outbox relay publishes to topics; consumers: HL7/FHIR export, critical alerts, metering, analytics
   - One `EventBus` interface with Postgres and Kafka implementations, chosen by config
@@ -781,3 +781,87 @@ queue and outbox come first because the crash test depends on them.
   - **Status: Partly done.** The app side is done: versioned static assets are `public, max-age=31536000, immutable`, everything else `private, no-store`, audio goes through 60-second signed S3 links. Cloudflare setup steps are in ops/cdn/cloudflare.md; the zone itself has to be set up on your Cloudflare account. There is no separate features page to cache.
   - Cache `/ui/static/*` and the features page; set long `Cache-Control` on static assets
   - **Never cache audio.** Serve it through short-lived signed S3 URLs instead of streaming through the app
+
+---
+
+# Keys and accounts to set up (2026-10-07)
+
+Each key has a blank line in `.env` (and is documented in `.env.example`). Fill it in, then
+`make restart`. A blank value leaves that feature off; nothing else depends on it. `.env` is
+copied into the process environment at start-up, so the unprefixed keys (`BIOPORTAL_API_KEY`,
+`GOOGLE_TRANSLATE_API_KEY`, `TEMPLATE_MODEL_API_KEY`, and the provider keys) are read from it too;
+a variable already set in the shell wins.
+
+### `RADREPORT_REDIS_URL` — Upstash Redis for the hosted demo (free tier)
+1. Sign up at https://console.upstash.com.
+2. **Create Database** → Redis, pick the region nearest the app, keep TLS on.
+3. On the database page, copy the connection string, `rediss://default:<password>@<host>.upstash.io:6379`.
+4. Set `RADREPORT_REDIS_URL` to it. The app logs `shared_cache_backend backend=redis` at start-up.
+
+### `BIOPORTAL_API_KEY` — RadLex term lookup (free)
+1. Create an account at https://bioportal.bioontology.org/accounts/new and confirm the email.
+2. Open https://bioportal.bioontology.org/account; the **API Key** is shown there.
+3. Set `BIOPORTAL_API_KEY`. The onboarding step *Look terms up in RadLex* then queries RadLex.
+
+### `GOOGLE_TRANSLATE_API_KEY` — online translation of unknown Hindi words (pay per use)
+1. At https://console.cloud.google.com create a project and attach a billing account.
+2. **APIs & Services → Library** → *Cloud Translation API* → **Enable**.
+3. **APIs & Services → Credentials → Create credentials → API key**. Edit the key: restrict it to
+   *Cloud Translation API* and, if the server has a fixed IP, to that IP.
+4. Set `GOOGLE_TRANSLATE_API_KEY`, then turn on `languages.online_translation` for the lab in the
+   admin panel's System settings. Only single unknown words are sent, never a sentence.
+
+### `TEMPLATE_MODEL_API_KEY` — the Qwen template model server
+1. Stand up the server as in docs/TEMPLATE_MODEL.md: Ollama (`ollama pull qwen2.5:7b-instruct`, no
+   key) or vLLM on a GPU host (for example RunPod or Lambda), started with `--api-key <random string>`.
+2. Put that string in `TEMPLATE_MODEL_API_KEY` (leave blank for Ollama).
+3. Admin panel → **Models & providers** → add an OpenAI-compatible provider with the server's
+   endpoint and `TEMPLATE_MODEL_API_KEY` as its key variable, then assign it to the lab's
+   `template_parse` step.
+
+### `RADREPORT_DB__REPLICA_URL` — a streaming read replica
+- Hosted Postgres (for example AWS RDS or Neon): create a read replica in the provider's console and
+  use its endpoint.
+- Self-managed: on the primary set `wal_level = replica`, create a role with `REPLICATION`, allow it
+  in `pg_hba.conf`, then on the replica host run `pg_basebackup -h <primary> -U <role> -D <datadir> -R`
+  and start it.
+- Either way the URL uses the non-owner role:
+  `postgresql+psycopg://radreport_app_login:<password>@<replica-host>:5432/radreport`. Reads fall back
+  to the primary while the replica lags more than `RADREPORT_DB__REPLICA_MAX_LAG_SECONDS`.
+
+### `RADREPORT_DB__PGBOUNCER_ADMIN_URL` — the pool dashboard (no key to obtain)
+Usually leave blank: with `RADREPORT_DB__PGBOUNCER=true` the dashboard uses the database URL on the
+`pgbouncer` database. Set it only when the console is reached differently; the role must be
+listed in PgBouncer's `stats_users` (`ops/pgbouncer/pgbouncer.ini.template` already lists the app role).
+
+### Kafka (`RADREPORT_EVENTS__BUS`, `RADREPORT_EVENTS__KAFKA_BOOTSTRAP`)
+Local Redpanda needs no key: `docker compose --profile kafka up -d`, then set the bus to `kafka` and
+the bootstrap to `localhost:9092`. A hosted broker needs TLS and SASL; set `RADREPORT_EVENTS__KAFKA_SECURITY_PROTOCOL=SASL_SSL`
+and the mechanism, username and password (lines are in `.env`):
+- **Confluent Cloud:** create a cluster at https://confluent.cloud → **API keys → Add key** (scope it
+  to the cluster). Bootstrap is on **Cluster settings** (`pkc-….confluent.cloud:9092`); mechanism
+  `PLAIN`; username = API key, password = API secret.
+- **Redpanda Cloud:** create a cluster at https://cloud.redpanda.com → **Security → Create user**
+  (SCRAM-SHA-256), and give it ACLs on topics `radreport.*` and consumer groups `radreport-*`.
+  Bootstrap is on the cluster overview; mechanism `SCRAM-SHA-256`.
+- **AWS MSK:** enable SASL/SCRAM on the cluster, store the user in Secrets Manager and associate it;
+  mechanism `SCRAM-SHA-512`, bootstrap from **View client information**.
+- **Aiven:** create a Kafka service with SASL enabled; download its CA certificate and set
+  `RADREPORT_EVENTS__KAFKA_CA_LOCATION` to the file; mechanism `SCRAM-SHA-256`.
+
+Create the topics first (`radreport.` + each topic name in `events/outbox.py`) unless the broker
+auto-creates them. Then run the relay (`make relay`) and a consumer (`python -m radreport.events
+<name>`); both take the same settings.
+
+### Cloudflare (no app key)
+1. Sign up at https://dash.cloudflare.com, **Add a site**, and change the domain's nameservers at the
+   registrar to the two Cloudflare gives you.
+2. Follow ops/cdn/cloudflare.md for the cache rules.
+3. If the public hostname differs from the one the app sees, add it to `RADREPORT_TRUSTED_ORIGINS`.
+
+### UMLS licence — SNOMED CT (nothing reads it yet)
+1. Create a UTS account at https://uts.nlm.nih.gov/uts/signup-login and request a UMLS licence;
+   approval takes a few working days. SNOMED CT use is free in member countries (India is one).
+2. After approval, the API key is on your UTS profile page.
+3. No code uses it yet: the local SNOMED CT mapper still has to be built, so there is no `.env`
+   line for it.

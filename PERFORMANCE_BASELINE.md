@@ -75,6 +75,41 @@ What the first two rows found, both fixed:
 At 500 users the p95 is queueing on a laptop that also runs the load generator; p50 stays under
 10 ms, which is the sign that the database is not the bottleneck.
 
+## Sync vs async driver
+
+`python -m radreport.devtools.async_bench --clients 200 --seconds 10 [--sleep-ms 20]`. The same
+paged read (20 labs and a count) through a sync route on `read_session()` and an async route on
+`async_read_session()`, with the default pools (sync 30 + 10 on 100 threads, async 5 + 5). The
+server runs in its own process; client and server share one laptop, so read the ratio, not the
+absolute numbers. Three runs each:
+
+| Query | Sync | Async | Async / sync | p95 sync → async |
+|---|---:|---:|---:|---:|
+| fast (no added wait) | 97–197 req/s | 279–412 req/s | 1.4–2.9x | 4.5–5.3 s → 2.0–3.1 s |
+| 20 ms (`pg_sleep`) | 88–91 req/s | 382–390 req/s | **4.3–4.4x** | 5.2–5.6 s → 0.6 s |
+
+A sync route holds a worker thread for the whole query; an async one gives the event loop back
+while it waits, so the gain grows with statement time. With both pools set to 20 + 10, the 20 ms case fell to about 1.1x on this machine, as the two pools together came
+close to Postgres' `max_connections = 100` and requests waited for connections; behind PgBouncer
+that limit is the pooler's, not Postgres'.
+
+### The whole app, bridged vs sync
+
+Every sync route now runs bridged (`db/bridge.py`). The same `loadtest` (300 users, 20 s, 0.2 s
+think time, one worker, direct to Postgres) against a server built from the commit before the
+bridge and one from after it, each run alone:
+
+| Database | Sync (before) | Bridged (after) |
+|---|---|---|
+| local, sub-millisecond | 97–111 req/s, 100% success, p50 2.2 s | 92–101 req/s, 99.9% success, p50 2.3–2.6 s |
+| behind a proxy adding 2 ms per round trip | 91 req/s, **97.97% success** (37 × 500), p50 2.9 s | **95.5 req/s, 100% success**, p50 2.4 s |
+
+On this laptop the process is CPU-bound — the load generator shares the machine and every query
+returns in well under a millisecond — so threads were never what limited it, and the greenlet hop
+costs a few percent. Once the database is a network hop away, the sync server's threads pile up
+waiting and requests fail; the bridged one keeps answering. Statements per request are unchanged
+(4.2–4.3). A like-for-like production comparison is still to do.
+
 ## Caches
 
 | Cache | Measured |
