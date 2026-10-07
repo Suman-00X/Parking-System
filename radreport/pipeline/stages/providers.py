@@ -1,6 +1,7 @@
 """Supplies each stage the lab-specific knowledge it needs -- vocabulary, spoken codes, urgent-finding rules -- without giving it database access.
 
-Order: load everything for one lab once (load_tenant_knowledge) into a TenantKnowledge snapshot,
+Order: load everything for one lab once (load_tenant_knowledge, including the other languages it has
+on) into a TenantKnowledge snapshot,
 which stages then read through KnowledgeProvider (StaticKnowledgeProvider in tests).
 """
 
@@ -18,6 +19,7 @@ from radreport.core.types import CollisionResolution, PatternType, TermType
 from radreport.db.models.knowledge import USED_VARIANTS, AutonomyClass, LexiconSet, LexiconSurfaceVariant, LexiconTerm, Template, TemplateField, TemplateVersion
 from radreport.db.models.onboarding import CollisionAuditFinding
 from radreport.db.models.reporting import CriticalFindingRule
+from radreport.knowledge.languages import LabLanguages, enabled_languages
 from radreport.knowledge.lexicon_versions import current_set
 
 
@@ -74,6 +76,9 @@ class TenantKnowledge:
     unresolved_blocking_collisions: tuple[tuple[str, str], ...] = field(default=())
     """Pairs still open in `collision_audit_finding`."""
 
+    languages: LabLanguages = field(default_factory=LabLanguages)
+    """Other languages whose radiology terms the lab's radiologists use."""
+
     def code_words(self) -> tuple[LexiconEntry, ...]:
         return tuple(e for e in self.lexicon if e.term_type in (TermType.CODE_WORD, TermType.ABBREVIATION))
 
@@ -116,4 +121,4 @@ def load_tenant_knowledge(session: Session, tenant_id: uuid.UUID) -> TenantKnowl
     for version_id, field_key, field_id in session.execute(select(TemplateField.template_version_id, TemplateField.field_key, TemplateField.id).join(TemplateVersion, TemplateVersion.id == TemplateField.template_version_id).where(TemplateField.tenant_id == tenant_id, TemplateVersion.is_current.is_(True))).all():
         template_fields.setdefault(version_id, {})[field_key] = field_id
 
-    return TenantKnowledge(tenant_id=tenant_id, lexicon=lexicon, study_codes=study_codes, critical_rules=critical_rules, template_fields=template_fields, autonomy=autonomy, unresolved_blocking_collisions=blocking)
+    return TenantKnowledge(tenant_id=tenant_id, lexicon=lexicon, study_codes=study_codes, critical_rules=critical_rules, template_fields=template_fields, autonomy=autonomy, unresolved_blocking_collisions=blocking, languages=enabled_languages(session, tenant_id))

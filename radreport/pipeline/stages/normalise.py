@@ -1,16 +1,21 @@
 """Stage 3: decides which of the lab's terms a misheard phrase meant, and refuses to guess when two are too close to call.
 
 Order: find the candidate terms for each span (resolve_spans, phonetic_key) -> pick a winner, or
-escalate when the margin is too small (escalations) -> record what was used (glossary,
+escalate when the margin is too small (escalations) -> add the English for terms said in the lab's
+other languages (translated_spans) -> record what was used (glossary,
 spelled_form).
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from radreport.core.logging import get_logger
+from radreport.knowledge import languages
+from radreport.knowledge.languages import LabLanguages
 from radreport.knowledge.phonetics import TAU_MARGIN, acronym_distance, double_metaphone, is_spelled_acronym, normalised_levenshtein, strip_non_alpha
 from radreport.pipeline.contracts import StageContext, StageResult
 from radreport.pipeline.stages.providers import KnowledgeProvider, LexiconEntry
@@ -63,18 +68,35 @@ class NormaliseStage:
         blocked = _blocked_labels(knowledge.unresolved_blocking_collisions)
 
         resolutions = resolve_spans(state.transcript.text, entries, tau_margin=self._tau, max_distance=self._max_distance, blocked_labels=blocked)
+        translated: list[TermResolution] = []
+        if knowledge.languages.any:
+            # The online translator is a network call; it runs off the event loop, and only for labs that turned it on.
+            translator = languages.translator_from_env() if knowledge.languages.online else None
+            translated = await asyncio.to_thread(translated_spans, state.transcript.text, knowledge.languages, taken=resolutions, translator=translator) if translator else translated_spans(state.transcript.text, knowledge.languages, taken=resolutions)
+        resolutions = sorted(resolutions + translated, key=lambda r: r.char_start)
         state.resolutions = resolutions
 
         escalated = [r for r in resolutions if r.escalated]
         warnings = [f"{r.surface!r} at {r.char_start}: too close to call between {', '.join(r.alternatives)} (margin {r.margin:.3f} < {self._tau})" for r in escalated]
 
-        log.info("normalise_complete", resolutions=len(resolutions), escalated=len(escalated), blocked_pairs=len(blocked), tenant_id=str(state.tenant_id))
+        log.info("normalise_complete", resolutions=len(resolutions), translated=len(translated), escalated=len(escalated), blocked_pairs=len(blocked), tenant_id=str(state.tenant_id))
         return StageResult(
             output=state,
             # A run with an escalated span is not low-confidence overall; it has one span a human must look at.
             confidence=1.0,
             warnings=warnings,
         )
+
+
+def translated_spans(text: str, lab: LabLanguages, *, taken: Sequence[TermResolution] = (), translator: languages.Translator | None = None) -> list[TermResolution]:
+    """A resolution for each term said in another language the lab has on, skipping spans already resolved."""
+    claimed = [(r.char_start, r.char_end) for r in taken]
+    out = []
+    for span in languages.translate(text, lab, translator=translator).spans:
+        if any(a < span.end and span.start < b for a, b in claimed):
+            continue
+        out.append(TermResolution(char_start=span.start, char_end=span.end, surface=span.surface, canonical_form=span.english, margin=1.0))
+    return out
 
 
 def _blocked_labels(pairs: tuple[tuple[str, str], ...]) -> frozenset[str]:
