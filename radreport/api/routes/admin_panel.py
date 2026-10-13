@@ -2,8 +2,10 @@
 
 Order: sign in (login_page, login_submit, logout_submit) -> manage labs (home, labs_page,
 create_lab, lab_page, set_lab_user_password, change_status, lab_readiness_page) -> configure models per step
-(assign_step, activate_step, providers_page, add_provider, add_model) -> onboard a lab
-(onboarding_page, upload_roster, upload_templates, upload_shorthand, upload_corpus, merge_proposals, run_onboarding_step) ->
+(assign_step, activate_step, providers_page, add_provider, add_model) -> onboard a lab in
+nine steps (onboarding_page, upload_roster, upload_templates, upload_shorthand, upload_gold_bundles,
+upload_corpus, merge_proposals, run_onboarding_step, set_critical_alerts, baseline_sample,
+upload_baseline_grades, measure_baseline) ->
 manage platform users (users_page, create_user, deactivate_user, reactivate_user, reset_password)
 -> your own account (account_page, change_own_password).
 """
@@ -32,6 +34,7 @@ from radreport.api.routes.admin_api import SLUG_PATTERN, lab_user_out
 from radreport.api.routing import BridgedRoute
 from radreport.api.ui import admin_page, auth_page, badge, banner, card, esc, facts, flash, icon, pager, progress, stat, status_badge, steps, table, with_demo_tab
 from radreport.auth import lab as lab_auth
+from radreport.core import system_config
 from radreport.core.config import get_settings
 from radreport.core.errors import ModelResolutionError, UngatedActivation
 from radreport.core.tenancy import TenantTransitionError, allowed_transitions
@@ -479,78 +482,82 @@ def add_model(admin: CurrentAdmin, provider_id: Annotated[uuid.UUID, Form()], mo
 _STEP_OPTIONS = {"lexicon-mine": ' <input name="min_frequency" type="number" min="1" max="9999" placeholder="min. frequency" style="width:9em" aria-label="Minimum frequency">', "boilerplate-mine": ' <label class="check" style="margin:0"><input type="checkbox" name="verified_only" value="1"> verified mappings only</label>'}
 
 
+def _upload_form(action: str, field: str, label: str, hint: str, accept: str, button: str, *, multiple: bool = False) -> str:
+    """One file upload with its label and a line on what to send."""
+    return f"""<form method="post" action="{action}" enctype="multipart/form-data">
+ <p class="meta">{hint}</p>
+ <label for="{field}-{button[:6].lower()}" class="sr-only">{_esc(label)}</label>
+ <input id="{field}-{button[:6].lower()}" name="{field}" type="file" accept="{accept}"{" multiple" if multiple else ""} required>
+ <div class="actions"><button type="submit" class="sm">{icon("upload")}{_esc(button)}</button></div>
+ </form>"""
+
+
+def _check_line(checks: dict[str, dict], *check_ids: str) -> str:
+    """The readiness checks a step feeds, as badges."""
+    return " ".join(f"{status_badge(checks[c]['status'])} <code>{_esc(c)}</code>" for c in check_ids if c in checks)
+
+
 @router.get("/labs/{tenant_id}/onboarding", response_class=HTMLResponse)
 def onboarding_page(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, error: str | None = None, notice: str | None = None) -> HTMLResponse:
-    """Where this lab stands in onboarding, and the steps a product admin runs for it."""
+    """Where this lab stands in the nine onboarding steps, and what a product admin does at each."""
     base = f"/admin/labs/{tenant_id}/onboarding"
     can_upload = _can(admin, "POST", f"{base}/roster")
     can_run = _can(admin, "POST", f"{base}/steps/derive-map")
     with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
         tenant = session.get(Tenant, tenant_id)
         assert tenant is not None
-        name = tenant.name
+        name, lab_status, slug = tenant.name, tenant.status, tenant.slug
         overview = onboarding_steps.onboarding_overview(session, tenant_id)
 
+    readiness = overview["readiness"]
+    checks = {c["check_id"]: c for c in readiness["checks"]}
+    gold = overview["gold_bundles"]
+    verification = overview["corpus_verification"]
+
+    def passed(check_id: str) -> bool:
+        return checks.get(check_id, {}).get("status") in (CheckStatus.PASS, CheckStatus.WARN)
+
+    done = (True, passed("voice_enrollment_complete"), gold["active_templates"] > 0, passed("gold_bundles_per_template"), overview["corpus_reports"] > 0, passed("collision_audit_clear") and passed("critical_rules_approved"), passed("baseline_cse_measured"), readiness["passed"], lab_status in (TenantStatus.PILOT, TenantStatus.LIVE))
+    current = next((i for i, ok in enumerate(done) if not ok), len(done))
+    strip = steps([(title, "") for _n, title, _what, _keys in onboarding_steps.PROCESS], current=current)
+
+    def step_buttons(keys: tuple[str, ...]) -> str:
+        if not can_run or not keys:
+            return ""
+        forms = "".join(f'<form class="inline step-form" method="post" action="{base}/steps/{key}"><button type="submit" class="sm">{icon("play")}{_esc(onboarding_steps.STEPS[key][0])}</button>{_STEP_OPTIONS.get(key, "")}</form>' for key in keys)
+        return f'<div class="row" style="gap:10px;margin-top:12px">{forms}</div>'
+
+    bodies: dict[int, str] = {}
+    bodies[1] = f'<p class="meta">Registered as <code>{_esc(slug)}</code>, status {status_badge(lab_status)}. <a href="/admin/labs/{tenant_id}">Lab page</a></p>'
+    bodies[2] = (_upload_form(f"{base}/roster", "file", "Roster (HR CSV export)", "The HR CSV export of every person at the lab. Radiologists then enroll their voice, with signed consent, on the lab side.", ".csv,text/csv", "Import roster") if can_upload else "") + f'<p class="meta">{_check_line(checks, "voice_enrollment_complete")}</p>'
+    bodies[3] = (f'<div class="grid cols-2">{_upload_form(f"{base}/templates", "files", "Report templates", "Word or text documents, one per examination. The lab radiologists approve each one.", "", "Submit templates", multiple=True)}{_upload_form(f"{base}/shorthand", "files", "Shortcut sheet", "Optional. The sheet transcriptionists use: <code>LLL = left lower lobe</code>.", ".pdf,.docx,.txt,.md,.csv", "Add shortcuts", multiple=True)}</div>' if can_upload else "") + f'<p class="meta">{gold["active_templates"]} approved, active template(s). {_check_line(checks, "template_library_ready")}</p>'
+    gold_rows = [f'<tr><td><code>{_esc(code)}</code></td><td class="num">{n}</td><td>{badge("ready", "ok") if n >= gold["per_template"] else badge(f"needs {gold['per_template'] - n} more", "warn")}</td></tr>' for code, n in sorted(gold["templates"].items())]
+    manifest_hint = f"A ZIP with <code>manifest.csv</code> and the audio. Columns: <code>template_code, audio_file, verbatim_text, report_text, radiologist_employee_code, external_report_id</code>; optional <code>capture_device_class, includes_disfluencies, is_deidentified</code>. The verbatim is word for word, hesitations included. {gold['per_template']} per template, from more than one radiologist where the lab can."
+    bodies[4] = (_upload_form(f"{base}/gold-bundles", "file", "Gold bundles (ZIP)", manifest_hint, ".zip,application/zip", "Upload bundles") if can_upload else "") + table(("Template", "Usable bundles", ""), gold_rows, empty_text="No approved templates yet; approve templates first.", empty_icon="mic", numeric=(1,)) + step_buttons(onboarding_steps.PROCESS[3][3]) + f'<p class="meta" style="margin-top:10px">{_check_line(checks, "gold_bundles_per_template")}</p>'
+    bodies[5] = (_upload_form(f"{base}/corpus", "file", "Old signed reports", "CSV with a <code>report_text</code> column, or a JSON array. Add <code>template_code</code> where the lab knows it: those reports are mapped as they load. Mark rows <code>is_deidentified</code> only if they truly are.", ".csv,.json,text/csv,application/json", "Load reports") if can_upload else "") + f'<p class="meta">{overview["corpus_reports"]} report(s) loaded; {verification["verified"]} mapped to a template and verified.</p>' + step_buttons(onboarding_steps.PROCESS[4][3])
+    alerts_on = overview["critical_alerts_on"]
+    toggle = f'<form class="inline" method="post" action="{base}/critical-alerts"><input type="hidden" name="enabled" value="{0 if alerts_on else 1}"><button type="submit" class="sm{" ghost" if alerts_on else ""}">{icon("alert")}{"Switch alerts off" if alerts_on else "Switch alerts on"}</button></form>' if can_run else ""
+    bodies[6] = f'<p class="meta">Critical-finding alerts are {badge("on", "ok") if alerts_on else badge("off", "muted")} for this lab ({overview["active_critical_rules"]} approved rule(s)). {toggle}</p><p class="hint">Off means no report is checked for findings that must be phoned through. Collision findings and rules are settled by the lab\'s radiologists on the lab side.</p>' + step_buttons(onboarding_steps.PROCESS[5][3]) + f'<p class="meta" style="margin-top:10px">{_check_line(checks, "collision_audit_clear", "critical_rules_approved")}</p>'
+    baseline_rows = []
+    for b in overview["baselines"]:
+        audit = f"{base}/baseline/{_esc(b['code'])}"
+        actions = f'<a class="btn sm ghost" href="{audit}/sample">{icon("doc")}Sample to grade</a> <form class="inline" method="post" action="{audit}/grades" enctype="multipart/form-data"><label class="sr-only" for="grades-{_esc(b["code"])}">Grades for {_esc(b["code"])}</label><input id="grades-{_esc(b["code"])}" name="file" type="file" accept=".csv,text/csv" required style="width:14em"> <button type="submit" class="sm">{icon("upload")}Upload grades</button></form> <form class="inline" method="post" action="{audit}/measure"><button type="submit" class="sm">{icon("play")}Set baseline</button></form>' if can_run and b["status"] == "not_evaluated" else ""
+        rate = f"{b['baseline_cse_rate']:.2%}" if b["baseline_cse_rate"] else "not set"
+        baseline_rows.append(f'<tr><td><code>{_esc(b["code"])}</code></td><td>{status_badge(b["status"])}</td><td class="num">{b["graded"]}/{b["min_graded"]}</td><td class="num">{b["cse"]}</td><td class="num">{rate}</td><td>{actions}</td></tr>')
+    bodies[7] = '<p class="meta">Download a sample, have an independent radiologist re-read each study and fill in <code>severity_grade</code> (G0-G4; G3 and G4 are clinically significant) and <code>grader</code>, then upload it. Define classes through <code>POST /admin/api/labs/{lab}/autonomy-classes</code>.</p>' + table(("Class", "Status", "Graded", "Significant errors", "Baseline", ""), baseline_rows, empty_text="No autonomy classes defined yet.", empty_icon="readiness", numeric=(2, 3, 4)) + f'<p class="meta" style="margin-top:10px">{_check_line(checks, "baseline_cse_measured")}</p>'
+    check_rows = [f"<tr><td><code>{_esc(c['check_id'])}</code></td><td>{status_badge(c['status'])}</td></tr>" for c in readiness["checks"]]
+    bodies[8] = table(("Check", "Result"), check_rows) + f'<p class="meta" style="margin-top:10px">{_check_line(checks, "acceptance_accuracy")} measured by a release-gate run on the frozen acceptance set. <a href="/admin/labs/{tenant_id}/readiness">Readiness detail</a></p>'
+    bodies[9] = f'<p class="meta">The lab is {status_badge(lab_status)}. The move to pilot is refused until every blocking check passes; make it from the <a href="/admin/labs/{tenant_id}">lab page</a>.</p>'
+
+    sections = "".join(f'<div class="section">{card(bodies[n], title=f"{n}. {title}", subtitle=what, icon_name="check" if done[n - 1] else "play" if n - 1 == current else "doc")}</div>' for n, title, what, _keys in onboarding_steps.PROCESS)
     batch_rows = [
         f"""<tr><td><code>{_esc(b["id"][:8])}</code></td><td>{_esc(b["batch_type"])}</td><td>{badge(b["stage"], "brand", dot=False)}</td>
             <td>{status_badge(b["status"])}</td><td class="num">{_esc(b["accepted"])}</td><td class="num">{badge(str(b["blocking_issue_count"]), "danger") if b["blocking_issue_count"] else "0"}</td>
             <td>{f'<form class="inline" method="post" action="{base}/batches/{_esc(b["id"])}/merge-proposals"><button type="submit" class="linkish">propose merges</button></form>' if can_run and b["batch_type"] == ImportBatchType.TEMPLATE else ""}</td></tr>"""
         for b in overview["recent_batches"]
     ]
-    readiness = overview["readiness"]
-    verification = overview["corpus_verification"]
-    gold_items = overview["gold_progress"].items()
-    gold_done = sum(v["annotated"] for _, v in gold_items)
-    gold_target = sum(v["target"] for _, v in gold_items)
-    gold_detail = ", ".join(f"{k}: {v['annotated']}/{v['target']}" for k, v in gold_items) or "none yet"
-
-    kpis = f"""<div class="grid cols-4">
-      {stat("Readiness", "Ready" if readiness["passed"] else f"{len(readiness['failures'])} blocking", hint=_esc("ready for pilot" if readiness["passed"] else ", ".join(readiness["failures"])[:90]), tone="ok" if readiness["passed"] else "danger", icon_name="readiness")}
-      {stat("Corpus verified", f"{verification['verified']}/{verification['target']}", hint=progress(verification["verified"], verification["target"]), icon_name="doc")}
-      {stat("Gold transcripts", f"{gold_done}/{gold_target}" if gold_target else "0", hint=_esc(gold_detail[:90]), icon_name="mic")}
-      {stat("Critical rules", str(overview["active_critical_rules"]), hint="active and approved", icon_name="alert")}
-    </div>"""
-
-    uploads = (
-        card(
-            f"""<div class="grid cols-2">
- <form method="post" action="{base}/roster" enctype="multipart/form-data">
- <h3>{icon("users")} Roster</h3><p class="meta">The HR CSV export of every person at the lab.</p>
- <label for="roster" class="sr-only">Roster (HR CSV export)</label>
- <input id="roster" name="file" type="file" accept=".csv,text/csv" required>
- <div class="actions"><button type="submit" class="sm">{icon("upload")}Import roster</button></div>
- </form>
- <form method="post" action="{base}/templates" enctype="multipart/form-data">
- <h3>{icon("doc")} Report templates</h3><p class="meta">Word or text documents, one per template.</p>
- <label for="templates" class="sr-only">Report templates (documents)</label>
- <input id="templates" name="files" type="file" multiple required>
- <div class="actions"><button type="submit" class="sm">{icon("upload")}Submit templates</button></div>
- </form>
- <form method="post" action="{base}/shorthand" enctype="multipart/form-data">
- <h3>{icon("lexicon")} Shorthand reference</h3><p class="meta">Optional. The sheet transcriptionists use: <code>LLL = left lower lobe</code>.</p>
- <label for="shorthand" class="sr-only">Shorthand reference (PDF, Word or text)</label>
- <input id="shorthand" name="files" type="file" accept=".pdf,.docx,.txt,.md,.csv" multiple required>
- <div class="actions"><button type="submit" class="sm">{icon("upload")}Add shorthand</button></div>
- </form>
- <form method="post" action="{base}/corpus" enctype="multipart/form-data">
- <h3>{icon("database")} Signed reports</h3><p class="meta">CSV with a report_text column, or a JSON array.</p>
- <label for="corpus" class="sr-only">Historical signed reports</label>
- <input id="corpus" name="file" type="file" accept=".csv,.json,text/csv,application/json" required>
- <div class="actions"><button type="submit" class="sm">{icon("upload")}Load reports</button></div>
- </form>
- </div>
- <p class="hint">Mark rows <code>is_deidentified</code> only if they truly are: it decides whether a report may ever reach an external model.</p>""",
-            title="Upload data",
-            subtitle="Each upload opens an import batch; nothing goes live until the lab's radiologists approve it.",
-            icon_name="upload",
-        )
-        if can_upload
-        else ""
-    )
-    step_forms = "".join(f'<form class="inline step-form" method="post" action="{base}/steps/{key}"><button type="submit" class="sm">{icon("play")}{_esc(label)}</button>{_STEP_OPTIONS.get(key, "")}</form>' for key, (label, _fn) in onboarding_steps.STEPS.items())
-    run = card(f'<div class="row" style="gap:10px">{step_forms}</div><p class="hint" style="margin-top:14px">Clinical approvals (template candidates, merges, collision findings, critical rules) are made by the lab\'s radiologists on the lab side, not here.</p>', title="Run a step", subtitle="Mining and seeding steps, in the order onboarding usually runs them.", icon_name="play") if can_run else ""
     batches = card(table(("Batch", "Type", "Stage", "Status", "Accepted", "Blocking", ""), batch_rows, empty_text="No batches yet. Upload a roster to start.", empty_icon="jobs", numeric=(4, 5)), title="Recent batches", icon_name="jobs", cls="flush")
-    body = f"""{_messages(error, notice)}{kpis}<div class="section">{uploads}</div><div class="section">{run}</div><div class="section">{batches}</div>"""
+    body = f"""{_messages(error, notice)}<div class="section">{strip}</div>{sections}<div class="section">{batches}</div>"""
     return _page(f"Onboarding — {name}", body, admin=admin, active="labs", eyebrow="Lab onboarding", crumbs=_lab_crumbs(tenant_id, name, "Onboarding"), actions=f'<a class="btn" href="/admin/labs/{tenant_id}/readiness">{icon("readiness")}Readiness</a>')
 
 
@@ -619,6 +626,58 @@ def merge_proposals(tenant_id: uuid.UUID, batch_id: uuid.UUID, request: Request,
     except StepRefused as exc:
         return _redirect(f"/admin/labs/{tenant_id}/onboarding", error=exc.reason)
     return _redirect(f"/admin/labs/{tenant_id}/onboarding", notice=f"Merge proposals — {_summarise(result)}")
+
+
+@router.post("/labs/{tenant_id}/onboarding/gold-bundles")
+@threaded
+def upload_gold_bundles(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, file: Annotated[UploadFile, File()]) -> Response:
+    data = file.file.read()
+    try:
+        with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
+            result = onboarding_steps.import_gold_bundle_file(session, tenant_id, data, file.filename or "bundles.zip")
+    except StepRefused as exc:
+        return _redirect(f"/admin/labs/{tenant_id}/onboarding", error=exc.reason)
+    rejected = f"; {len(result['rejected'])} rejected, first: {result['rejected'][0]['reason']}" if result["rejected"] else ""
+    return _redirect(f"/admin/labs/{tenant_id}/onboarding", notice=f"Gold bundles filed — {result['accepted']} accepted ({result['reused']} already stored){rejected}")
+
+
+@router.post("/labs/{tenant_id}/onboarding/critical-alerts")
+def set_critical_alerts(tenant_id: uuid.UUID, request: Request, admin: CurrentAdmin, enabled: Annotated[int, Form()]) -> Response:
+    with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
+        system_config.set_value(session, "critical_findings.enabled", 1 if enabled else 0, actor_id=admin.platform_user_id, tenant_id=tenant_id)
+    return _redirect(f"/admin/labs/{tenant_id}/onboarding", notice="Critical-finding alerts switched on" if enabled else "Critical-finding alerts switched off")
+
+
+@router.get("/labs/{tenant_id}/onboarding/baseline/{class_code}/sample")
+def baseline_sample(tenant_id: uuid.UUID, class_code: str, request: Request, admin: CurrentAdmin) -> Response:
+    try:
+        with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
+            text = onboarding_steps.baseline_sample_csv(session, tenant_id, class_code)
+    except StepRefused as exc:
+        return _redirect(f"/admin/labs/{tenant_id}/onboarding", error=exc.reason)
+    return Response(text, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="baseline-{class_code}.csv"'})
+
+
+@router.post("/labs/{tenant_id}/onboarding/baseline/{class_code}/grades")
+@threaded
+def upload_baseline_grades(tenant_id: uuid.UUID, class_code: str, request: Request, admin: CurrentAdmin, file: Annotated[UploadFile, File()]) -> Response:
+    data = file.file.read()
+    try:
+        with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
+            result = onboarding_steps.record_baseline_grades(session, tenant_id, class_code, data, actor_id=admin.platform_user_id)
+    except StepRefused as exc:
+        return _redirect(f"/admin/labs/{tenant_id}/onboarding", error=exc.reason)
+    return _redirect(f"/admin/labs/{tenant_id}/onboarding", notice=f"Grades for {class_code} — {result['recorded']} recorded, {result['regraded']} regraded, {len(result['rejected'])} rejected")
+
+
+@router.post("/labs/{tenant_id}/onboarding/baseline/{class_code}/measure")
+def measure_baseline(tenant_id: uuid.UUID, class_code: str, request: Request, admin: CurrentAdmin) -> Response:
+    try:
+        with admin_lab_session(admin, tenant_id, ip_address=client_ip(request)) as session:
+            result = onboarding_steps.measure_baseline(session, tenant_id, class_code, actor_id=admin.platform_user_id)
+    except StepRefused as exc:
+        return _redirect(f"/admin/labs/{tenant_id}/onboarding", error=exc.reason)
+    return _redirect(f"/admin/labs/{tenant_id}/onboarding", notice=f"Baseline for {class_code}: {result['baseline_cse_rate']:.2%} from {result['graded']} graded report(s)")
 
 
 @router.post("/labs/{tenant_id}/onboarding/steps/{step}")

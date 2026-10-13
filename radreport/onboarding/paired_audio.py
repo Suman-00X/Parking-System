@@ -110,7 +110,7 @@ def link_corpus_report(session: Session, *, tenant_id: uuid.UUID, recording_id: 
     return report
 
 
-def submit_verbatim(session: Session, *, tenant_id: uuid.UUID, recording_id: uuid.UUID, text: str, annotator_id: uuid.UUID, includes_disfluencies: bool, source: str = VerbatimSource.HUMAN_ANNOTATION, is_eval_set_member: bool = False, batch: ImportBatch | None = None) -> VerbatimTranscript:
+def submit_verbatim(session: Session, *, tenant_id: uuid.UUID, recording_id: uuid.UUID, text: str, annotator_id: uuid.UUID | None, includes_disfluencies: bool, source: str = VerbatimSource.HUMAN_ANNOTATION, is_eval_set_member: bool = False, batch: ImportBatch | None = None) -> VerbatimTranscript:
     """Record one human-produced verbatim transcript."""
     recording = session.get(Recording, recording_id)
     if recording is None or recording.tenant_id != tenant_id:
@@ -133,7 +133,7 @@ def submit_verbatim(session: Session, *, tenant_id: uuid.UUID, recording_id: uui
         # Not an error — a cleaned transcript is still a usable eval reference.
         log.warning("s4_verbatim_without_disfluencies", tenant_id=str(tenant_id), recording_id=str(recording_id), detail="not ASR-training eligible: a cleaned transcript teaches deletion")
 
-    session.add(AuditLog(tenant_id=tenant_id, actor_id=annotator_id, actor_type=ActorType.USER, action="verbatim_transcript_submitted", entity_type="recording", entity_id=recording_id, after={"source": source, "includes_disfluencies": includes_disfluencies, "capture_device_class": recording.capture_device_class}))
+    session.add(AuditLog(tenant_id=tenant_id, actor_id=annotator_id, actor_type=ActorType.USER if annotator_id else ActorType.SYSTEM, action="verbatim_transcript_submitted", entity_type="recording", entity_id=recording_id, after={"source": source, "includes_disfluencies": includes_disfluencies, "capture_device_class": recording.capture_device_class}))
     session.flush()
     if batch is not None:
         record_counts(session, batch, accepted=1)

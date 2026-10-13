@@ -507,12 +507,27 @@ queue does, because the exposure starts the moment a draft can sit unread.
 - `matches()` / `active_rules()` — the matcher the pipeline's stage 7 consumes
 - S7 blocks the pilot on at least one approved active rule
 
+### `onboarding/gold_bundles.py` — gold bundles per template
+For every template, dictations with their verbatim transcript and final report, uploaded as one ZIP.
+
+- `parse_bundle_zip()` reads `manifest.csv` and the audio it names, with limits on what the ZIP unpacks to
+- `import_gold_bundles()` registers each bundle's study, stores the audio through the ingest gates,
+  records the verbatim and the final report, and maps the report to its template as verified;
+  a bad bundle is rejected alone
+- `candidates_by_template()`, `bundles_per_template()`, `held_per_template()` feed the per-template acceptance set
+
+### `autonomy/baseline_audit.py` — measuring a class's baseline
+- `draw_sample()` / `export_sample_csv()` — random, not yet graded reports of the class's templates
+- `parse_grades_csv()` / `record_grades()` — the grader's G0–G4 per report
+- `compute_baseline()` — the Beta(0.5, 0.5) posterior mean, refused below `autonomy.baseline_min_graded` grades
+
 ### `onboarding/readiness.py` — S7, the pilot gate
 Turns a checklist into a structural precondition: `tenant.status` cannot reach
 `pilot` while any `fail`-severity check is outstanding.
 
-- Seven checks: collision audit clear, corpus→template coverage, voice enrollment,
-  gold set frozen, critical rules approved, baseline CSE measured, template library ready
+- Seven checks: collision audit clear, voice enrollment, gold bundles for every template in the
+  frozen acceptance set, critical rules approved (a warning while the lab has alerts switched off),
+  baseline CSE measured by audit, accuracy on the acceptance set, template library ready
 - `load_facts()` reads everything the checks look at in one statement of scalar subqueries; each check then judges those `ReadinessFacts` without touching the database
 - `evaluate_readiness()` returns the report the admin panel's readiness page and its JSON API both render
 
@@ -1479,14 +1494,16 @@ Lets a product admin manage who signs in to the panel without a shell.
 ### `admin/onboarding_steps.py` — onboarding steps an admin runs
 One implementation behind both the onboarding page and the admin API.
 
-- `onboarding_overview()` — corpus verification, gold progress, active rules, recent batches, readiness
+- `PROCESS` — the nine onboarding steps in order; `onboarding_overview()` — gold bundles per
+  template, corpus counts, the critical-alerts switch, baseline audit progress, recent batches, readiness
 - `import_roster_file()`, `submit_template_files()`, `submit_shorthand_files()`,
-  `load_corpus_records()` / `load_corpus_file()`, `propose_template_merges()`
+  `import_gold_bundle_file()`, `load_corpus_records()` / `load_corpus_file()`, `propose_template_merges()`
+- `baseline_sample_csv()`, `record_baseline_grades()`, `measure_baseline()` — the baseline audit
 - `batches_query()` and `batch_status()` for the batch list and one batch's contents
-- `STEPS` — `derive-map`, `lexicon-mine`, `collision-audit`, `mine-variants`,
-  `boilerplate-mine`, `critical-rules-seed`, `acceptance-assemble` / `acceptance-freeze`
-  (fill and freeze the lab's acceptance set, which the pilot gate needs), and
-  `radlex-annotate` (needs `BIOPORTAL_API_KEY`); `run_step()` runs one by name
+- `STEPS`, in process order — `acceptance-assemble` / `acceptance-freeze` (fill the acceptance
+  set per template and freeze it once every template has its bundles), `derive-map`,
+  `lexicon-mine`, `mine-variants`, `boilerplate-mine`, `radlex-annotate` (needs
+  `BIOPORTAL_API_KEY`), `collision-audit`, `critical-rules-seed`; `run_step()` runs one by name
 - `StepRefused` carries the HTTP status the API answers with
 
 ### `admin/modelconfig.py` — per-lab model configuration

@@ -209,3 +209,20 @@ class AutonomyObservation(Base, TenantScoped):
     """Excludes gold-set overlap — an item that trained or tuned the pipeline cannot also serve as evidence that it works."""
 
     observed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class BaselineAuditGrade(Base, TenantScoped, TimestampMixin):
+    """One signed report an independent grader re-read for an autonomy class's baseline audit, and the grade it got."""
+
+    __tablename__ = "baseline_audit_grade"
+    __table_args__ = tenant_table_args(tenant_fk("autonomy_class_id", "autonomy_class", ondelete="CASCADE"), tenant_fk("corpus_report_id", "corpus_report", ondelete="CASCADE"), UniqueConstraint("autonomy_class_id", "corpus_report_id"), enum_check("severity_grade", SeverityGrade.values()), Index("ix_baseline_audit_grade_class", "tenant_id", "autonomy_class_id"))
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    autonomy_class_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    corpus_report_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    severity_grade: Mapped[str] = mapped_column(String(4), nullable=False)
+    is_cse: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    """G3 or G4."""
+
+    grader: Mapped[str] = mapped_column(Text, nullable=False)
+    """Who re-read the study, as the lab named them; graders are often outside reviewers with no account here."""

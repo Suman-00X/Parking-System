@@ -673,18 +673,19 @@ rather than data-quality ones.
 | POST | `/admin/api/labs/{tenant_id}/onboarding/steps/{step}` | `product_admin` | [`admin_api.py:253`](radreport/api/routes/admin_api.py#L253) |
 
 The parameterless mining and seeding steps share one route. `{step}` is a name
-from [`STEPS`](radreport/admin/onboarding_steps.py#L211):
+from [`STEPS`](radreport/admin/onboarding_steps.py#L301), listed in the order of the nine-step process:
 
 | `{step}` | Does | Section |
 |---|---|---|
+| `acceptance-assemble` | Fill the acceptance set from the gold bundles, per template | [2.8](#28-readiness-and-the-gate-to-pilot) |
+| `acceptance-freeze` | Freeze the acceptance set; refused while any template is short | [2.8](#28-readiness-and-the-gate-to-pilot) |
 | `derive-map` | Derive the report-to-template map | [2.2](#22-feed-the-historical-reports-s2) |
 | `lexicon-mine` | Mine terms from the corpus | [2.3](#23-mine-the-vocabulary-s3) |
-| `collision-audit` | Run the sound-alike collision audit | [2.3](#23-mine-the-vocabulary-s3) |
-| `mine-variants` | Mine what the ASR actually heard | [2.4](#24-verbatim-annotation-s4) |
+| `mine-variants` | Mine how terms are actually said | [2.4](#24-verbatim-annotation-s4) |
 | `boilerplate-mine` | Rank normal statements | [2.5](#25-rank-the-normals-s5) |
+| `radlex-annotate` | Look terms up in RadLex (needs `BIOPORTAL_API_KEY`) | [2.3](#23-mine-the-vocabulary-s3) |
+| `collision-audit` | Run the sound-alike collision audit | [2.3](#23-mine-the-vocabulary-s3) |
 | `critical-rules-seed` | Propose critical-finding rules | [2.6](#26-author-the-safety-rules-s6) |
-| `acceptance-assemble` | Fill the lab's acceptance set from its verbatim transcripts | [2.8](#28-readiness-and-the-gate-to-pilot) |
-| `acceptance-freeze` | Freeze the acceptance set | [2.8](#28-readiness-and-the-gate-to-pilot) |
 
 An unknown name is `404` listing the valid ones. The API takes an optional JSON
 body for the two steps that have options — `{"min_frequency": n}` for
@@ -751,7 +752,10 @@ notice rather than failing the whole file. The API takes
 `{"records": [...], "trigger": "..."}`. Both accept up to 100 MiB. Each record:
 `report_text` (required) plus `external_report_id`,
 `radiologist_employee_code`, `referring_doctor`, `patient_sex`,
-`patient_age_years`, `is_deidentified`. Returns `batch_id`, `loaded`,
+`patient_age_years`, `is_deidentified`, `template_code`. A record that names its
+`template_code` is mapped to that template as it loads, already verified, so
+`derive-map` has nothing to guess for it; a code that is not an active template
+rejects that record alone. Returns `batch_id`, `loaded`, `mapped`,
 `duplicates`, `rejected[]` (`id`, `reason`).
 
 `derive-map` guesses which template each historical report was written from and
@@ -842,6 +846,17 @@ Authoring body: `code`, `finding_label`, `pattern`, `severity`, `sla_minutes`
 (> 0), `escalation_path` (**≥ 1 entry**), `pattern_type` (`lexical`),
 `negation_sensitive` (`true`), `requires_ack` (`true`).
 
+**Alerts are off until switched on.** Each lab has a switch, off by default
+(the `critical_findings.enabled` setting). Off, the pipeline checks no report
+for critical findings and says so in each run's warnings; the readiness check
+for rules is then a warning, not a block. On, at least one approved rule is
+required before the pilot.
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/admin/labs/{tenant_id}/onboarding/critical-alerts` | `product_admin` — form `enabled=1` or `0` | [`admin_panel.py:645`](radreport/api/routes/admin_panel.py#L645) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/critical-alerts` | `product_admin` — `{"enabled": true}` | [`admin_api.py:282`](radreport/api/routes/admin_api.py#L282) |
+
 **A rule with no escalation path is refused.** An alert nobody is obliged to
 receive is not a safety control. The label, SLA and escalation path are
 clinical, which is why authoring is **R** and not an admin step.
@@ -891,20 +906,57 @@ such step. The lab page counts them and says so.
 
 ## 2.8 Readiness and the gate to pilot
 
-**The acceptance set comes first.** The `gold_set_frozen` check needs a frozen
-per-lab acceptance set of at least 40 items. Registration creates it empty; fill
-it once the transcriptionists have produced verbatim transcripts (2.4):
+**Gold bundles come first.** For every approved template the lab sends
+`onboarding.gold_per_template` bundles (4 by default): a dictation, its verbatim
+transcript and the final report. They go up as one ZIP holding `manifest.csv`
+and the audio it names:
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| POST | `/admin/labs/{tenant_id}/onboarding/gold-bundles` | `product_admin` — a file field `file` | [`admin_panel.py:633`](radreport/api/routes/admin_panel.py#L633) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/gold-bundles` | `product_admin` — `file`, optional `trigger` | [`admin_api.py:231`](radreport/api/routes/admin_api.py#L231) |
+
+Manifest columns: `template_code`, `audio_file`, `verbatim_text`,
+`report_text`, `radiologist_employee_code`, `external_report_id`; optional
+`capture_device_class`, `includes_disfluencies` (default true) and
+`is_deidentified`. Each bundle registers its study, stores the audio through the
+normal ingest gates, records the verbatim, and records the final report mapped
+to the named template as verified. A bad bundle (unknown template, unknown
+radiologist, audio missing or refused by the gates) is rejected alone; sending
+the same ZIP again reuses the audio already stored. Returns `accepted`,
+`reused`, `per_template`, `rejected[]` and `problems[]`. Up to 500 MiB.
+
+Then fill and freeze the acceptance set:
 
 ```
-POST /admin/api/labs/{id}/onboarding/steps/acceptance-assemble   → {"items", "target": 40, "short_by"}
-POST /admin/api/labs/{id}/onboarding/steps/acceptance-freeze     → 409 while short of 40
+POST /admin/api/labs/{id}/onboarding/steps/acceptance-assemble   → {"items", "per_template", "templates", "short": {code: missing}}
+POST /admin/api/labs/{id}/onboarding/steps/acceptance-freeze     → 409 while any template is short
 ```
 
 Only current-hardware recordings with disfluency-preserving transcripts are
-used, spread across radiologists and audio quality; chosen transcripts are
-excluded from training for good. Assembling again adds to the set until it is
-frozen; after that both steps answer `409`, because readiness was measured
-against it.
+used, spread across radiologists and audio quality within each template; every
+item records its template version, and chosen transcripts are excluded from
+training for good. A frozen set never changes. Assembling after a freeze starts
+the next version of the set, so a template added later is tested by freezing
+that version; readiness reads the most recently frozen one.
+
+**Accuracy is measured on that set.** The `acceptance_accuracy` check reads the
+latest complete, non-smoke, release-gate eval run on the frozen acceptance set
+and holds it to the first-release limits (`CSE_DRAFT`, `HALLUC_RATE`,
+`ROUTE_TOP1`). Record one with the gate runner, for example
+`python -m radreport.eval.gate_run --lab <slug> --task extraction --model <model> --eval-set <acceptance set name>`.
+
+The seven checks:
+
+| Check | Passes when | Blocks |
+|---|---|---|
+| `collision_audit_clear` | no unresolved `block` collision finding | yes |
+| `voice_enrollment_complete` | every radiologist has a voiceprint and voice consent | yes |
+| `gold_bundles_per_template` | every active template has its bundles in the latest frozen acceptance set | yes |
+| `critical_rules_approved` | at least one approved rule, when alerts are on | only when alerts are on |
+| `baseline_cse_measured` | every autonomy class has a baseline set from at least `autonomy.baseline_min_graded` grades (200 by default) | yes |
+| `acceptance_accuracy` | the latest gate run on the frozen set meets the first-release limits | yes |
+| `template_library_ready` | at least 20 approved templates | no, a warning |
 
 | Method | Path | Who | Source |
 |---|---|---|---|
@@ -914,12 +966,15 @@ against it.
 | GET | `/admin/api/labs/{tenant_id}/readiness` | `product_admin`, `support` | [`admin_api.py:108`](radreport/api/routes/admin_api.py#L108) |
 
 The onboarding status is the view across every stage
-([`onboarding_overview`](radreport/admin/onboarding_steps.py#L36)):
-`corpus_verification` (`verified`, `target`), `gold_progress`,
-`active_critical_rules`, `recent_batches[]` (last 20), and `readiness` with
+([`onboarding_overview`](radreport/admin/onboarding_steps.py#L63)):
+`gold_bundles` (`per_template`, `templates` as code to usable bundles,
+`complete`, `active_templates`), `corpus_reports`, `corpus_verification`
+(`verified`, `target`), `critical_alerts_on`, `active_critical_rules`,
+`baselines[]` (per class: `code`, `status`, `graded`, `cse`, `min_graded`,
+`baseline_cse_rate`), `recent_batches[]` (last 20), and `readiness` with
 `passed`, `failures[]`, `warnings[]` and the full `checks[]`. The onboarding
-page renders the same, with the upload forms, a button per
-[step](#20-the-step-runner) and a *propose merges* link on each template batch.
+page renders the same as nine numbered steps, each with its uploads, its
+[step](#20-the-step-runner) buttons and the readiness checks it feeds.
 
 `GET /admin/api/labs/{id}/readiness` is the gate alone:
 `{"passed": bool, "checks": [{check_id, status, measured_value, threshold,
@@ -927,7 +982,7 @@ detail}]}`. The readiness page is the same report as a screen, blocking checks
 first.
 
 All four evaluate with `persist=False`
-([`evaluate_readiness`](radreport/onboarding/readiness.py#L189)), so none of
+([`evaluate_readiness`](radreport/onboarding/readiness.py#L220)), so none of
 them writes a `readiness_check` row and any of them is a safe dry run. Each
 opens the lab's session through `admin_lab_session`, so RLS sees the lab's rows.
 
@@ -1294,11 +1349,32 @@ removes no review is not worth its risk.
 | GET | `/admin/api/labs/{tenant_id}/autonomy-classes` | `product_admin`, `support` | [`admin_api.py:318`](radreport/api/routes/admin_api.py#L318) |
 | POST | `/admin/api/labs/{tenant_id}/autonomy-classes` | `product_admin` | [`admin_api.py:324`](radreport/api/routes/admin_api.py#L324) |
 
-Body: `{"code": "ROUTINE_ABDOMEN", "display_name", "baseline_cse_rate", "required_n",
-"ni_margin_pp", "template_codes": [...]}`. The baseline must be a **measured** rate between 0
-and 1 (from grading already-signed reports); the templates must exist in the lab. A class can be
-changed while `not_evaluated`; once it is accruing, its baseline and size are fixed (`409`).
-Until a class exists, the accrual and lab autonomy routes in 4.5 answer `404` for its code.
+Body: `{"code": "ROUTINE_ABDOMEN", "display_name", "required_n", "ni_margin_pp",
+"template_codes": [...]}`, plus `baseline_cse_rate` only when it was measured elsewhere (a rate
+between 0 and 1). The templates must exist in the lab. A class can be changed while
+`not_evaluated`; once it is accruing, its baseline and size are fixed (`409`). Until a class
+exists, the accrual and lab autonomy routes in 4.5 answer `404` for its code.
+
+**The baseline audit.** An independent radiologist re-reads a random sample of the lab's signed
+reports for the class and grades each one G0 to G4; G3 and G4 are clinically significant errors.
+The sample comes from reports verified as belonging to the class's templates.
+
+| Method | Path | Who | Source |
+|---|---|---|---|
+| GET | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/baseline-sample?size=` | `product_admin` — CSV | [`admin_api.py:362`](radreport/api/routes/admin_api.py#L362) |
+| POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/baseline-grades` | `product_admin` — the filled-in CSV as `file` | [`admin_api.py:373`](radreport/api/routes/admin_api.py#L373) |
+| POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/baseline` | `product_admin` | [`admin_api.py:382`](radreport/api/routes/admin_api.py#L382) |
+| GET | `/admin/labs/{tenant_id}/onboarding/baseline/{class_code}/sample` | `product_admin` — the page's download | [`admin_panel.py:652`](radreport/api/routes/admin_panel.py#L652) |
+| POST | `/admin/labs/{tenant_id}/onboarding/baseline/{class_code}/grades` | `product_admin` | [`admin_panel.py:663`](radreport/api/routes/admin_panel.py#L663) |
+| POST | `/admin/labs/{tenant_id}/onboarding/baseline/{class_code}/measure` | `product_admin` | [`admin_panel.py:674`](radreport/api/routes/admin_panel.py#L674) |
+
+The sample is, by default, exactly the number of reports the audit still needs, never one already
+graded; it carries `external_report_id`, `report_date`, `report_text` and blank `severity_grade`
+and `grader` columns. The returned file needs `external_report_id`, `severity_grade` and `grader`
+per row; a row left blank is skipped, and grading a report again replaces its grade. Setting the
+baseline is refused (`409`) below `autonomy.baseline_min_graded` grades (200 by default). The rate
+is `(errors + 0.5) / (graded + 1)`, close to errors over graded and never zero, so the monitor
+always has a rate to compare with. Grading stops once the class starts accruing.
 
 ## 4.6 Retrain the engines
 
@@ -1404,7 +1480,7 @@ Role shorthand: **PA** `product_admin`, **S** `support`, **R** `radiologist`,
 | GET | `/ui/refresh` | token-refresh | [3.8](#38-the-screens) | [`review_ui.py:84`](radreport/api/routes/review_ui.py#L84) |
 | POST | `/ui/logout` | token-refresh · 4 KiB | [3.8](#38-the-screens) | [`review_ui.py:97`](radreport/api/routes/review_ui.py#L97) |
 
-### `/admin` — admin panel pages, HTML (31)
+### `/admin` — admin panel pages, HTML (36)
 
 | Method | Path | Who | Limit | Phase | Source |
 |---|---|---|---|---|---|
@@ -1437,10 +1513,15 @@ Role shorthand: **PA** `product_admin`, **S** `support`, **R** `radiologist`,
 | POST | `/admin/config/{key}` | PA | admin-write · 4 KiB | [4.7](#47-costs-query-health-and-settings) | [`admin_ops_panel.py:219`](radreport/api/routes/admin_ops_panel.py#L219) |
 | POST | `/admin/config/{key}/reset` | PA | admin-write · 4 KiB | [4.7](#47-costs-query-health-and-settings) | [`admin_ops_panel.py:229`](radreport/api/routes/admin_ops_panel.py#L229) |
 | POST | `/admin/labs/{tenant_id}/onboarding/corpus` | PA | admin-upload · 100 MiB | [2.2](#22-feed-the-historical-reports-s2) | [`admin_panel.py:600`](radreport/api/routes/admin_panel.py#L600) |
+| POST | `/admin/labs/{tenant_id}/onboarding/gold-bundles` | PA | admin-upload · 500 MiB | [2.8](#28-readiness-and-the-gate-to-pilot) | [`admin_panel.py:633`](radreport/api/routes/admin_panel.py#L633) |
+| POST | `/admin/labs/{tenant_id}/onboarding/critical-alerts` | PA | admin-write · 4 KiB | [2.6](#26-author-the-safety-rules-s6) | [`admin_panel.py:645`](radreport/api/routes/admin_panel.py#L645) |
+| GET | `/admin/labs/{tenant_id}/onboarding/baseline/{class_code}/sample` | PA | admin-read | [4.5a](#45a-define-the-autonomy-classes) | [`admin_panel.py:652`](radreport/api/routes/admin_panel.py#L652) |
+| POST | `/admin/labs/{tenant_id}/onboarding/baseline/{class_code}/grades` | PA | admin-upload · 10 MiB | [4.5a](#45a-define-the-autonomy-classes) | [`admin_panel.py:663`](radreport/api/routes/admin_panel.py#L663) |
+| POST | `/admin/labs/{tenant_id}/onboarding/baseline/{class_code}/measure` | PA | admin-write · 4 KiB | [4.5a](#45a-define-the-autonomy-classes) | [`admin_panel.py:674`](radreport/api/routes/admin_panel.py#L674) |
 | GET | `/admin/account` | PA, S | admin-read | [I](#platform-users) | [`admin_panel.py:750`](radreport/api/routes/admin_panel.py#L750) |
 | POST | `/admin/account/password` | PA, S | login · 4 KiB | [I](#platform-users) | [`admin_panel.py:769`](radreport/api/routes/admin_panel.py#L769) |
 
-### `/admin/api` — admin panel, JSON (39)
+### `/admin/api` — admin panel, JSON (44)
 
 | Method | Path | Who | Limit | Phase | Source |
 |---|---|---|---|---|---|
@@ -1455,6 +1536,8 @@ Role shorthand: **PA** `product_admin`, **S** `support`, **R** `radiologist`,
 | POST | `/admin/api/labs/{tenant_id}/onboarding/roster` | PA | admin-upload · 50 MiB | [1.4](#14-add-the-people) | [`admin_api.py:189`](radreport/api/routes/admin_api.py#L189) |
 | POST | `/admin/api/labs/{tenant_id}/onboarding/templates` | PA | admin-upload · 50 MiB | [2.1](#21-templates-s1) | [`admin_api.py:199`](radreport/api/routes/admin_api.py#L199) |
 | POST | `/admin/api/labs/{tenant_id}/onboarding/corpus` | PA | admin-upload · 100 MiB | [2.2](#22-feed-the-historical-reports-s2) | [`admin_api.py:236`](radreport/api/routes/admin_api.py#L236) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/gold-bundles` | PA | admin-upload · 500 MiB | [2.8](#28-readiness-and-the-gate-to-pilot) | [`admin_api.py:231`](radreport/api/routes/admin_api.py#L231) |
+| POST | `/admin/api/labs/{tenant_id}/onboarding/critical-alerts` | PA | admin-write · 4 KiB | [2.6](#26-author-the-safety-rules-s6) | [`admin_api.py:282`](radreport/api/routes/admin_api.py#L282) |
 | POST | `/admin/api/labs/{tenant_id}/onboarding/batches/{batch_id}/merge-proposals` | PA | admin-write · 4 KiB | [2.1](#21-templates-s1) | [`admin_api.py:243`](radreport/api/routes/admin_api.py#L243) |
 | POST | `/admin/api/labs/{tenant_id}/onboarding/steps/{step}` | PA | admin-write · 4 KiB | [2.0](#20-the-step-runner) | [`admin_api.py:253`](radreport/api/routes/admin_api.py#L253) |
 | GET | `/admin/api/labs/{tenant_id}/autonomy/{class_code}` | PA, S | admin-read | [4.5](#45-autonomy) | [`admin_api.py:334`](radreport/api/routes/admin_api.py#L334) |
@@ -1483,6 +1566,9 @@ Role shorthand: **PA** `product_admin`, **S** `support`, **R** `radiologist`,
 | POST | `/admin/api/account/password` | PA, S | login · 4 KiB | [I](#platform-users) | [`admin_api.py:483`](radreport/api/routes/admin_api.py#L483) |
 | GET | `/admin/api/labs/{tenant_id}/autonomy-classes` | PA, S | admin-read | [4.5a](#45a-define-the-autonomy-classes) | [`admin_api.py:318`](radreport/api/routes/admin_api.py#L318) |
 | POST | `/admin/api/labs/{tenant_id}/autonomy-classes` | PA | admin-write · 16 KiB | [4.5a](#45a-define-the-autonomy-classes) | [`admin_api.py:324`](radreport/api/routes/admin_api.py#L324) |
+| GET | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/baseline-sample` | PA | admin-read | [4.5a](#45a-define-the-autonomy-classes) | [`admin_api.py:362`](radreport/api/routes/admin_api.py#L362) |
+| POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/baseline-grades` | PA | admin-upload · 10 MiB | [4.5a](#45a-define-the-autonomy-classes) | [`admin_api.py:373`](radreport/api/routes/admin_api.py#L373) |
+| POST | `/admin/api/labs/{tenant_id}/autonomy/{class_code}/baseline` | PA | admin-write · 4 KiB | [4.5a](#45a-define-the-autonomy-classes) | [`admin_api.py:382`](radreport/api/routes/admin_api.py#L382) |
 
 ### `/ingest` — capture (3)
 

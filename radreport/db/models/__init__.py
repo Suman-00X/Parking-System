@@ -14,7 +14,7 @@ from radreport.db.models.modelconfig import ModelDefinition, ModelProvider, Task
 from radreport.db.models.onboarding import BoilerplateCandidate, CollisionAuditFinding, CorpusReport, CorpusReportTemplateMap, ImportArtifact, ImportBatch, LexiconMiningRun, OnboardingReadinessCheck, TemplateImportCandidate, TemplateMergeProposal
 from radreport.db.models.ops import LabShard, SystemConfig
 from radreport.db.models.orchestration import AuditLog, PipelineRun, StageExecution
-from radreport.db.models.reporting import AutonomyObservation, CriticalFindingAlert, CriticalFindingRule, ProvenanceSpan, ReportDraft, ReportFieldValue, RoutingDecision, VerificationFinding
+from radreport.db.models.reporting import AutonomyObservation, BaselineAuditGrade, CriticalFindingAlert, CriticalFindingRule, ProvenanceSpan, ReportDraft, ReportFieldValue, RoutingDecision, VerificationFinding
 from radreport.db.models.review import DraftUsefulnessReport, EditEvent, FinalReport, ReportRevision
 from radreport.db.models.tenancy import PlatformUser, RateLimitCounter, Tenant, TenantBranding, TrainingConsentEventLog
 
@@ -59,6 +59,7 @@ __all__ = [
     "CriticalFindingRule",
     "CriticalFindingAlert",
     "AutonomyObservation",
+    "BaselineAuditGrade",
     # review
     "ReportRevision",
     "EditEvent",

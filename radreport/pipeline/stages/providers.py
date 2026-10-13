@@ -21,6 +21,7 @@ from radreport.db.models.onboarding import CollisionAuditFinding
 from radreport.db.models.reporting import CriticalFindingRule
 from radreport.knowledge.languages import LabLanguages, enabled_languages
 from radreport.knowledge.lexicon_versions import current_set
+from radreport.onboarding.critical_rules import alerts_enabled
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +78,9 @@ class TenantKnowledge:
     """Pairs still open in `collision_audit_finding`."""
 
     languages: LabLanguages = field(default_factory=LabLanguages)
+
+    critical_alerts_on: bool = True
+    """The lab's critical-findings switch; a snapshot built by hand keeps alerting on, the loader reads the lab's setting."""
     """Other languages whose radiology terms the lab's radiologists use."""
 
     def code_words(self) -> tuple[LexiconEntry, ...]:
@@ -121,4 +125,4 @@ def load_tenant_knowledge(session: Session, tenant_id: uuid.UUID) -> TenantKnowl
     for version_id, field_key, field_id in session.execute(select(TemplateField.template_version_id, TemplateField.field_key, TemplateField.id).join(TemplateVersion, TemplateVersion.id == TemplateField.template_version_id).where(TemplateField.tenant_id == tenant_id, TemplateVersion.is_current.is_(True))).all():
         template_fields.setdefault(version_id, {})[field_key] = field_id
 
-    return TenantKnowledge(tenant_id=tenant_id, lexicon=lexicon, study_codes=study_codes, critical_rules=critical_rules, template_fields=template_fields, autonomy=autonomy, unresolved_blocking_collisions=blocking, languages=enabled_languages(session, tenant_id))
+    return TenantKnowledge(tenant_id=tenant_id, lexicon=lexicon, study_codes=study_codes, critical_rules=critical_rules, template_fields=template_fields, autonomy=autonomy, unresolved_blocking_collisions=blocking, languages=enabled_languages(session, tenant_id), critical_alerts_on=alerts_enabled(session, tenant_id))

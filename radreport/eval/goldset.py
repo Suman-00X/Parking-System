@@ -1,7 +1,8 @@
 """Assembles the held-back set of reports accuracy is measured against, keeping archive and current-hardware audio apart.
 
 Order: find eligible recordings (eligible_candidates, quality_bucket, resolve_tenant_slug) ->
-assemble the set (assemble) -> freeze it so it cannot drift (freeze) -> prove none of it was
+assemble the set (assemble, or assemble_by_template for a lab's per-template acceptance set) ->
+freeze it so it cannot drift (freeze) -> prove none of it was
 used for training (assert_no_training_leakage, partition_summary).
 """
 
@@ -120,6 +121,31 @@ def assemble(session: Session, *, eval_set: EvalSet, candidates: list[Candidate]
     session.flush()
 
     log.info("eval_set_assembled", eval_set_id=str(eval_set.id), items=len(result.added), by_device_class=dict(result.by_device_class), strata={f"{d}/{q}": n for (d, q), n in result.strata.items()})
+    return result
+
+
+def assemble_by_template(session: Session, *, eval_set: EvalSet, groups: dict[uuid.UUID, list[Candidate]], per_template: int, seed: int = 0, actor_id: uuid.UUID | None = None) -> AssemblyResult:
+    """Fill an eval set with up to `per_template` items for every template, keyed by template version, spread across speakers and audio quality."""
+    if eval_set.is_frozen:
+        raise ValueError(f"eval_set {eval_set.id} is frozen; assemble a new version rather than adding to a set that release gates have already been measured against")
+
+    existing = {row for row in session.execute(select(EvalItem.recording_id).where(EvalItem.eval_set_id == eval_set.id)).scalars().all()}
+    held = Counter(session.execute(select(EvalItem.gold_template_version_id).where(EvalItem.eval_set_id == eval_set.id)).scalars().all())
+    result = AssemblyResult(eval_set=eval_set)
+    rng = random.Random(seed)
+    chosen_ids: list[uuid.UUID] = []
+    for version_id in sorted(groups, key=str):
+        available = [c for c in groups[version_id] if c.recording_id not in existing]
+        for candidate in _sample_spread(available, max(0, per_template - held[version_id]), rng):
+            session.add(EvalItem(tenant_id=eval_set.tenant_id, eval_set_id=eval_set.id, recording_id=candidate.recording_id, source_tenant_id=candidate.tenant_id, gold_transcript_verbatim=candidate.verbatim, gold_template_version_id=version_id, capture_device_class=candidate.capture_device_class, audio_quality_bucket=candidate.quality_bucket))
+            result.strata[(candidate.capture_device_class, candidate.quality_bucket)] += 1
+            chosen_ids.append(candidate.transcript_id)
+    _mark_excluded_from_training(session, chosen_ids)
+    session.flush()
+    result.added = list(session.execute(select(EvalItem).where(EvalItem.eval_set_id == eval_set.id)).scalars().all())
+    session.add(AuditLog(tenant_id=eval_set.tenant_id, actor_id=actor_id, actor_type="user" if actor_id else "system", action="eval_set_assembled", entity_type="eval_set", entity_id=eval_set.id, after={"items": len(result.added), "per_template": per_template, "templates": len(groups), "seed": seed}))
+    session.flush()
+    log.info("eval_set_assembled_by_template", eval_set_id=str(eval_set.id), items=len(result.added), templates=len(groups), per_template=per_template)
     return result
 
 

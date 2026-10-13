@@ -2,7 +2,7 @@
 
 Order: propose starting rules from the corpus (seed_candidate_rules) -> write one (author_rule)
 -> a radiologist approves it (approve_rule) -> match a report against the live set
-(matches, active_rules).
+(matches, active_rules), but only for a lab that has switched alerts on (alerts_enabled).
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from radreport.core import system_config
 from radreport.core.logging import get_logger
 from radreport.core.text import split_sentences
 from radreport.core.types import ActorType, AlertSeverity, PatternType
@@ -236,6 +237,11 @@ def matches(rule: CriticalFindingRule, transcript: str) -> bool:
             continue
         return True
     return False
+
+
+def alerts_enabled(session: Session, tenant_id: uuid.UUID) -> bool:
+    """Whether this lab has critical-finding alerts switched on; off unless a product admin turns them on."""
+    return bool(int(system_config.resolve(session, "critical_findings.enabled", tenant_id=tenant_id).value))
 
 
 def active_rules(session: Session, *, tenant_id: uuid.UUID) -> list[CriticalFindingRule]:

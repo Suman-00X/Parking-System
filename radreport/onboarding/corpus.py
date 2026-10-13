@@ -1,7 +1,7 @@
 """The lab's historical signed reports, and the template map, usage counts and referrer ranking derived from them.
 
-Order: read an uploaded file (parse_corpus_file) -> bulk-load the reports (load_corpus) -> work
-out which template each one used
+Order: read an uploaded file (parse_corpus_file) -> bulk-load the reports, mapping at once each
+one whose row names its template (load_corpus) -> work out which template each other one used
 (derive_template_map) -> spot-check that mapping by hand (verify_mapping,
 verification_progress) -> count how often each template is used (usage_histogram,
 refresh_usage_counts) -> rank who refers the work (referrer_prior).
@@ -56,9 +56,12 @@ class CorpusRecord:
     is_deidentified: bool = False
     """**Gates every external API call**."""
 
+    template_code: str | None = None
+    """The template the lab says this report was written on; such a report is mapped at load, as already verified."""
+
 
 #: Columns a corpus file may carry; only report_text is required.
-CORPUS_COLUMNS = ("report_text", "external_report_id", "report_date", "radiologist_employee_code", "referring_doctor", "patient_sex", "patient_age_years", "is_deidentified")
+CORPUS_COLUMNS = ("report_text", "external_report_id", "report_date", "radiologist_employee_code", "referring_doctor", "patient_sex", "patient_age_years", "is_deidentified", "template_code")
 _TRUE = frozenset({"true", "yes", "1", "y"})
 
 
@@ -100,7 +103,7 @@ def parse_corpus_file(data: bytes, filename: str) -> tuple[list[CorpusRecord], l
             problems.append(f"row {line_no}: patient_age_years or report_date is malformed")
             continue
         deidentified = row.get("is_deidentified")
-        records.append(CorpusRecord(report_text=report_text, external_report_id=str(row["external_report_id"]) if row.get("external_report_id") else None, report_date=report_date, radiologist_employee_code=str(row["radiologist_employee_code"]) if row.get("radiologist_employee_code") else None, referring_doctor=str(row["referring_doctor"]) if row.get("referring_doctor") else None, patient_sex=str(row["patient_sex"]) if row.get("patient_sex") else None, patient_age_years=age, is_deidentified=deidentified is True or str(deidentified).strip().lower() in _TRUE))
+        records.append(CorpusRecord(report_text=report_text, external_report_id=str(row["external_report_id"]) if row.get("external_report_id") else None, report_date=report_date, radiologist_employee_code=str(row["radiologist_employee_code"]) if row.get("radiologist_employee_code") else None, referring_doctor=str(row["referring_doctor"]) if row.get("referring_doctor") else None, patient_sex=str(row["patient_sex"]) if row.get("patient_sex") else None, patient_age_years=age, is_deidentified=deidentified is True or str(deidentified).strip().lower() in _TRUE, template_code=str(row["template_code"]).strip() if row.get("template_code") else None))
     return records, problems
 
 
@@ -109,6 +112,8 @@ class CorpusLoadResult:
     batch: ImportBatch
     loaded: int = 0
     duplicates: int = 0
+    mapped: int = 0
+    """Reports that named their template and were mapped as they loaded."""
     rejected: list[tuple[str, str]] = field(default_factory=list)
 
 
@@ -123,7 +128,9 @@ def load_corpus(session: Session, *, tenant_id: uuid.UUID, records: list[CorpusR
 
     existing_ids = {row for row in session.execute(select(CorpusReport.external_report_id).where(CorpusReport.tenant_id == tenant_id, CorpusReport.external_report_id.isnot(None))).scalars().all()}
 
+    templates = {code: template_id for code, template_id in session.execute(select(Template.code, Template.id).where(Template.tenant_id == tenant_id, Template.is_active.is_(True))).all()}
     rows: list[dict[str, object]] = []
+    maps: list[dict[str, object]] = []
     for record in records:
         if not record.report_text.strip():
             result.rejected.append((record.external_report_id or "<no id>", "empty report text"))
@@ -131,8 +138,15 @@ def load_corpus(session: Session, *, tenant_id: uuid.UUID, records: list[CorpusR
         if record.external_report_id and record.external_report_id in existing_ids:
             result.duplicates += 1
             continue
+        template_id = templates.get(record.template_code) if record.template_code else None
+        if record.template_code and template_id is None:
+            result.rejected.append((record.external_report_id or "<no id>", f"no active template {record.template_code!r}"))
+            continue
 
-        rows.append({"tenant_id": tenant_id, "import_batch_id": batch.id, "external_report_id": record.external_report_id, "report_text": record.report_text, "report_date": _as_datetime(record.report_date), "radiologist_id": by_employee_code.get(record.radiologist_employee_code or ""), "referring_doctor": record.referring_doctor, "patient_sex": record.patient_sex, "patient_age_years": record.patient_age_years, "is_deidentified": record.is_deidentified})
+        report_id = uuid.uuid4()
+        if template_id is not None:
+            maps.append({"tenant_id": tenant_id, "corpus_report_id": report_id, "template_id": template_id, "match_method": MatchMethod.HUMAN, "confidence": 1.0, "is_verified": True})
+        rows.append({"id": report_id, "tenant_id": tenant_id, "import_batch_id": batch.id, "external_report_id": record.external_report_id, "report_text": record.report_text, "report_date": _as_datetime(record.report_date), "radiologist_id": by_employee_code.get(record.radiologist_employee_code or ""), "referring_doctor": record.referring_doctor, "patient_sex": record.patient_sex, "patient_age_years": record.patient_age_years, "is_deidentified": record.is_deidentified})
         result.loaded += 1
         if record.external_report_id:
             existing_ids.add(record.external_report_id)
@@ -141,6 +155,9 @@ def load_corpus(session: Session, *, tenant_id: uuid.UUID, records: list[CorpusR
     session.flush()
     # Thousands of reports at a time: batched INSERTs rather than one statement, and one read-back, per row.
     bulk_insert(session, CorpusReport, rows)
+    # The lab named these reports' templates, so derive_template_map has nothing to guess for them.
+    bulk_insert(session, CorpusReportTemplateMap, maps)
+    result.mapped = len(maps)
     record_counts(session, batch, accepted=result.loaded, rejected=len(result.rejected))
 
     log.info("s2_corpus_loaded", tenant_id=str(tenant_id), batch_id=str(batch.id), loaded=result.loaded, duplicates=result.duplicates, rejected=len(result.rejected))

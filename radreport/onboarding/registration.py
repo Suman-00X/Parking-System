@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from radreport.cache.lookups import forget_tenant
+from radreport.core import system_config
 from radreport.core.logging import get_logger
 from radreport.core.tenancy import assert_transition_allowed
 from radreport.core.types import ActorType, TenantStatus, TrainingConsentEvent, UserRole
@@ -93,7 +94,8 @@ def _provision(session: Session, tenant: Tenant, registration: LabRegistration, 
 
     session.add(TenantBranding(tenant_id=tenant.id))
 
-    acceptance_set = EvalSet(tenant_id=tenant.id, name=f"{registration.slug}-acceptance", description=("Per-lab acceptance set: ~40 items, readiness readiness only. Not a release gate — that is the canonical set."), is_frozen=False, is_canonical=False, stratification_spec={"target_size": 40, "stratify_by": ["capture_device_class", "template"]})
+    per_template = int(system_config.resolve(session, "onboarding.gold_per_template", tenant_id=tenant.id).value)
+    acceptance_set = EvalSet(tenant_id=tenant.id, name=f"{registration.slug}-acceptance", description="Per-lab acceptance set for the pilot gate: gold bundles for every template. Not a release gate; that is the canonical set.", is_frozen=False, is_canonical=False, stratification_spec={"per_template": per_template, "stratify_by": ["template", "radiologist", "audio_quality_bucket"]})
     session.add(acceptance_set)
 
     # No roster batch here: the first roster import opens its own, and a placeholder only sat in `uploading` forever.

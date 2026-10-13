@@ -391,7 +391,7 @@ def test_the_readiness_screen_lists_every_check(admin_fixture) -> None:
     page = client.get(f"/admin/labs/{f['tenant_id']}/readiness")
     assert page.status_code == 200
     # Passing and failing alike, so the screen is a report rather than a verdict.
-    for check_id in ("collision_audit_clear", "corpus_template_coverage", "voice_enrollment_complete"):
+    for check_id in ("collision_audit_clear", "gold_bundles_per_template", "voice_enrollment_complete", "acceptance_accuracy"):
         assert check_id in page.text
     # A lab with no onboarding data behind it cannot be ready.
     assert "blocking" in page.text
@@ -411,9 +411,9 @@ def test_the_readiness_screen_sees_the_labs_own_rows(admin_fixture) -> None:
 
     client, _cookie = _signed_in(f["email"])
     report = client.get(f"/admin/api/labs/{f['tenant_id']}/readiness").json()
-    gold = next(c for c in report["checks"] if c["check_id"] == "gold_set_frozen")
-    # Still failing on size (no items), but the check found the lab's frozen set rather than "none exists".
-    assert eval_set_id in gold["detail"]["item_counts"], gold
+    gold = next(c for c in report["checks"] if c["check_id"] == "gold_bundles_per_template")
+    # Still failing (no templates), but the check found the lab's frozen set rather than "none exists".
+    assert gold["detail"]["acceptance_set_id"] == eval_set_id, gold
 
 
 def test_the_readiness_screen_does_not_record_a_check(admin_fixture) -> None:

@@ -6,6 +6,7 @@ import uuid
 
 import pytest
 
+from radreport.core import system_config
 from radreport.core.errors import ApprovalRequired, BatchBlocked, ConsentRequired
 from radreport.core.types import AbsencePolicy, AudioFormat, CandidateReviewStatus, CaptureDeviceClass, CollisionResolution, CollisionSeverity, ImportStatus, MatchMethod, VerbatimSource
 from radreport.db.models.identity import AppUser, Patient, RadiologistProfile, Study
@@ -408,7 +409,13 @@ def test_s7_stays_red_until_the_blocking_checks_are_satisfied(migrated_db: str, 
         assert before.passed is False
         failing = {o.check_id for o in before.failures}
         assert "collision_audit_clear" not in failing  # nothing mined yet
-        assert {"corpus_template_coverage", "voice_enrollment_complete", "gold_set_frozen", "critical_rules_approved", "baseline_cse_measured"} <= failing
+        assert {"voice_enrollment_complete", "gold_bundles_per_template", "baseline_cse_measured", "acceptance_accuracy"} <= failing
+        # Alerts are off by default, so missing rules are a warning rather than a block.
+        assert "critical_rules_approved" in {o.check_id for o in before.warnings}
+
+        system_config.set_value(session, "critical_findings.enabled", 1, actor_id=None, tenant_id=tenant_id)
+        switched_on = evaluate_readiness(session, tenant_id, persist=False)
+        assert "critical_rules_approved" in {o.check_id for o in switched_on.failures}
 
         critical_rules.author_rule(session, tenant_id=tenant_id, code="PNEUMOTHORAX", finding_label="Pneumothorax", pattern="pneumothorax", severity="red", sla_minutes=30, escalation_path=[{"step": 1, "contact": "on-call", "after_minutes": 0}], authored_by=reviewer)
         rule = critical_rules.active_rules(session, tenant_id=tenant_id)
@@ -422,7 +429,7 @@ def test_s7_stays_red_until_the_blocking_checks_are_satisfied(migrated_db: str, 
         after = evaluate_readiness(session, tenant_id, persist=False)
         assert after.passed is False
         assert "critical_rules_approved" not in {o.check_id for o in after.failures}
-        assert len(after.failures) == len(before.failures) - 1
+        assert len(after.failures) == len(switched_on.failures) - 1
 
 
 def test_s7_persists_its_outcomes_for_audit(migrated_db: str, lab) -> None:
@@ -434,7 +441,7 @@ def test_s7_persists_its_outcomes_for_audit(migrated_db: str, lab) -> None:
         evaluate_readiness(session, tenant_id, persist=True)
         rows = session.query(OnboardingReadinessCheck).filter(OnboardingReadinessCheck.tenant_id == tenant_id).all()
         assert len(rows) == 7
-        assert {r.check_id for r in rows} == {"collision_audit_clear", "corpus_template_coverage", "voice_enrollment_complete", "gold_set_frozen", "critical_rules_approved", "baseline_cse_measured", "template_library_ready"}
+        assert {r.check_id for r in rows} == {"collision_audit_clear", "voice_enrollment_complete", "gold_bundles_per_template", "critical_rules_approved", "baseline_cse_measured", "acceptance_accuracy", "template_library_ready"}
 
 
 def test_a_known_unresolved_collision_blocks_every_batch_that_carries_it(migrated_db: str, lab) -> None:

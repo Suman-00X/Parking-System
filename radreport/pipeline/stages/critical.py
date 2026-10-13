@@ -1,6 +1,7 @@
 """Stage 7: spots findings someone must be told about immediately, and raises the alert.
 
-Order: match the dictation against the lab's rules (detect_alerts, scanned_labels) -> take the
+Order: skip the report, with a warning, for a lab that has alerts switched off -> match the
+dictation against the lab's rules (detect_alerts, scanned_labels) -> take the
 most serious (highest_severity) -> decide whether it skips the normal queue (bypasses_queue).
 It runs early on purpose, so an alert still fires on a report that later fails.
 """
@@ -65,6 +66,10 @@ class CriticalFindingsStage:
             raise ValueError("critical-findings detection runs on a transcript; none is present")
 
         knowledge = self._knowledge.for_tenant(state.tenant_id)
+        if not knowledge.critical_alerts_on:
+            # Switched off for the lab, said out loud on every report rather than looking like a report with nothing urgent in it.
+            log.info("critical_findings_switched_off", tenant_id=str(state.tenant_id))
+            return StageResult(output=state, confidence=1.0, warnings=["critical-finding alerts are switched off for this lab; this report was not checked"])
         if not knowledge.critical_rules:
             # Not an error here — readiness gate is what blocks a lab from reaching pilot with no rules.
             log.warning("no_active_critical_rules", tenant_id=str(state.tenant_id), detail="this report has no alert path; readiness gates the pilot on it")

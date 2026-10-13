@@ -2,8 +2,9 @@
 
 Order: labs (list_labs, register_lab_json, readiness, change_status) -> models per step
 (steps, propose, activate) -> onboarding (onboarding_status, upload_roster, upload_templates,
-upload_corpus, merge_proposals, run_onboarding_step) -> lab users' sign-in (list_lab_users,
-set_lab_user_password) -> autonomy and adaptation (get_accrual,
+upload_gold_bundles, upload_corpus, merge_proposals, run_onboarding_step, set_critical_alerts) ->
+lab users' sign-in (list_lab_users, set_lab_user_password) -> autonomy and adaptation
+(define_autonomy_class, baseline_sample, upload_baseline_grades, measure_baseline, get_accrual,
 open_accrual, grant_autonomy, revoke_autonomy, adaptation_gates, require_adaptation_gates) ->
 platform users (list_users, create_user, deactivate_user, reactivate_user, reset_user_password,
 change_own_password).
@@ -15,6 +16,7 @@ import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Response, UploadFile, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -31,6 +33,7 @@ from radreport.auth import lab as lab_auth
 from radreport.autonomy import accrual, grant
 from radreport.autonomy import classes as autonomy_classes
 from radreport.autonomy.grant import GrantRefused
+from radreport.core import system_config
 from radreport.core.errors import ModelResolutionError, UngatedActivation
 from radreport.core.tenancy import TenantTransitionError
 from radreport.core.types import AdaptationTarget, ImportTrigger
@@ -215,11 +218,22 @@ class CorpusRecordIn(BaseModel):
     patient_sex: str | None = None
     patient_age_years: int | None = None
     is_deidentified: bool = False
+    template_code: str | None = None
 
 
 class CorpusLoadRequest(BaseModel):
     records: list[CorpusRecordIn]
     trigger: str = ImportTrigger.INITIAL_ONBOARDING
+
+
+@router.post("/labs/{tenant_id}/onboarding/gold-bundles")
+@threaded
+def upload_gold_bundles(tenant_id: uuid.UUID, session: AdminLabDb, file: Annotated[UploadFile, File()], trigger: Annotated[str, Form()] = ImportTrigger.INITIAL_ONBOARDING) -> dict[str, Any]:
+    """A ZIP of gold bundles: `manifest.csv` naming each dictation's template, verbatim and final report, plus the audio."""
+    try:
+        return onboarding_steps.import_gold_bundle_file(session, tenant_id, file.file.read(), file.filename or "bundles.zip", trigger=trigger)
+    except StepRefused as exc:
+        raise _refused(exc) from exc
 
 
 @router.post("/labs/{tenant_id}/onboarding/shorthand", status_code=status.HTTP_201_CREATED)
@@ -258,6 +272,17 @@ def run_onboarding_step(tenant_id: uuid.UUID, step: str, session: AdminLabDb, op
         return onboarding_steps.run_step(session, tenant_id, step, options)
     except StepRefused as exc:
         raise _refused(exc) from exc
+
+
+class CriticalAlertsRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/labs/{tenant_id}/onboarding/critical-alerts")
+def set_critical_alerts(tenant_id: uuid.UUID, body: CriticalAlertsRequest, session: AdminLabDb, admin: CurrentAdmin) -> dict[str, Any]:
+    """Switch the lab's critical-finding alerts on or off; off is the default."""
+    resolved = system_config.set_value(session, "critical_findings.enabled", int(body.enabled), actor_id=admin.platform_user_id, tenant_id=tenant_id)
+    return {"enabled": bool(resolved.value), "source": resolved.source}
 
 
 # ======================================================= lab users' sign-in ===
@@ -309,7 +334,9 @@ def set_lab_user_password(tenant_id: uuid.UUID, user_id: uuid.UUID, body: LabPas
 class AutonomyClassRequest(BaseModel):
     code: str = Field(pattern="^[A-Z][A-Z0-9_]{1,39}$")
     display_name: str = Field(min_length=1, max_length=120)
-    baseline_cse_rate: float = Field(gt=0, lt=1)
+    baseline_cse_rate: float | None = Field(default=None, gt=0, lt=1)
+    """Leave out to measure it with the class's baseline audit."""
+
     required_n: int = Field(ge=30, le=100_000)
     ni_margin_pp: float = Field(default=1.0, gt=0, le=10)
     template_codes: list[str] = Field(min_length=1, max_length=50)
@@ -323,12 +350,41 @@ def list_autonomy_classes(tenant_id: uuid.UUID, session: AdminLabDb) -> list[dic
 
 @router.post("/labs/{tenant_id}/autonomy-classes", status_code=status.HTTP_201_CREATED)
 def define_autonomy_class(tenant_id: uuid.UUID, body: AutonomyClassRequest, session: AdminLabDb, admin: CurrentAdmin) -> dict[str, Any]:
-    """Create a class with its measured baseline and attach templates, or change it before evidence collection starts."""
+    """Create a class and attach templates, or change it before evidence collection starts; its baseline comes from the audit unless given."""
     try:
         klass = autonomy_classes.define_class(session, tenant_id, autonomy_classes.ClassSpec(code=body.code, display_name=body.display_name, baseline_cse_rate=body.baseline_cse_rate, required_n=body.required_n, ni_margin_pp=body.ni_margin_pp, template_codes=tuple(body.template_codes)), platform_user_id=admin.platform_user_id)
     except autonomy_classes.ClassRefused as exc:
         raise HTTPException(status.HTTP_409_CONFLICT if "fixed once" in str(exc) else status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     return {"code": klass.code, "status": klass.status, "required_n": klass.required_n}
+
+
+@router.get("/labs/{tenant_id}/autonomy/{class_code}/baseline-sample", response_class=PlainTextResponse)
+def baseline_sample(tenant_id: uuid.UUID, class_code: str, session: AdminLabDb, size: int | None = None) -> PlainTextResponse:
+    """The signed reports a grader should re-read next for this class, as a CSV to fill in and send back."""
+    try:
+        text = onboarding_steps.baseline_sample_csv(session, tenant_id, class_code, size=size)
+    except StepRefused as exc:
+        raise _refused(exc) from exc
+    return PlainTextResponse(text, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="baseline-{class_code}.csv"'})
+
+
+@router.post("/labs/{tenant_id}/autonomy/{class_code}/baseline-grades")
+@threaded
+def upload_baseline_grades(tenant_id: uuid.UUID, class_code: str, session: AdminLabDb, admin: CurrentAdmin, file: Annotated[UploadFile, File()]) -> dict[str, Any]:
+    """The grader's filled-in CSV: external_report_id, severity_grade (G0-G4) and grader per row."""
+    try:
+        return onboarding_steps.record_baseline_grades(session, tenant_id, class_code, file.file.read(), actor_id=admin.platform_user_id)
+    except StepRefused as exc:
+        raise _refused(exc) from exc
+
+
+@router.post("/labs/{tenant_id}/autonomy/{class_code}/baseline")
+def measure_baseline(tenant_id: uuid.UUID, class_code: str, session: AdminLabDb, admin: CurrentAdmin) -> dict[str, Any]:
+    """Set the class's baseline error rate from its grades, once enough reports are graded."""
+    try:
+        return onboarding_steps.measure_baseline(session, tenant_id, class_code, actor_id=admin.platform_user_id)
+    except StepRefused as exc:
+        raise _refused(exc) from exc
 
 
 @router.get("/labs/{tenant_id}/autonomy/{class_code}")
